@@ -1,0 +1,408 @@
+# Dilion vs upstream supabase/auth (GoTrue) — intentional-deviation allow-list.
+#
+# This is the machine-readable catalogue the differential harness
+# (harness_test.go) consults. When a diff between the Dilion response and the
+# real GoTrue response matches an entry here, the differ downgrades it from
+# FAIL to KNOWN instead of failing the test.
+#
+# Each entry:
+#   id        stable slug (referenced in test output)
+#   op        openapi-auth.yaml operationId this applies to ("*" = any op)
+#   endpoint  human-readable route (documentation only)
+#   aspect    status | body-field | header | redirect | error-shape | jwt-claim
+#   field     JSON path / header name / claim the deviation touches
+#             (substring-matched against the differ's diff path; "" = whole response)
+#   dilion    what Dilion emits
+#   upstream  what GoTrue emits
+#   reason    why the deviation exists (source: in-code comment or empirical run)
+#   source    file:line of the authoritative in-code note, or "empirical" when
+#             observed against supabase/auth:v2.196.0 in this environment
+#
+# Provenance: every entry below is either harvested from a "Deviation" / "DILION
+# DEVIATION" / "DILION-ONLY" comment in internal/auth/*.go, or was observed
+# directly by booting supabase/auth:v2.196.0 during harness bring-up.
+#
+# NOTE on config-twinning vs deviations: many *apparent* differences (autoconfirm
+# default, refresh-token reuse interval, mailer URL paths) are neutralised by
+# giving both servers identical config (see README env matrix). Those are NOT
+# listed here — only the differences that REMAIN when both servers run identical
+# config are true deviations.
+
+deviations:
+  # ---- verified empirically against supabase/auth:v2.196.0 -------------------
+  - id: health-version
+    op: authHealth
+    endpoint: GET /auth/v1/health
+    aspect: body-field
+    field: version
+    dilion: "0.1.0 (auth.Version const)"
+    upstream: "the GoTrue release string, e.g. v2.196.0"
+    reason: >
+      Both report name="GoTrue" and the identical description (supabase-js and
+      the Supabase CLI match on those). Only the build version differs; it is a
+      volatile build identifier and is scrubbed before diffing.
+    source: "internal/auth/auth.go:34,278 (empirical: upstream reported v2.196.0)"
+
+  - id: settings-saml-next-key
+    op: authSettings
+    endpoint: GET /auth/v1/settings
+    aspect: body-field
+    field: saml_private_key_next_configured
+    dilion: "always false"
+    upstream: "reflects whether a staged 'next' SAML key exists (observed true even unconfigured)"
+    reason: >
+      Dilion has no SAML key-rotation slot yet, so it hard-codes false
+      (settings.go). Every other /settings field is byte-identical when the
+      feature flags are twinned.
+    source: "internal/auth/settings.go:104 (empirical: upstream emitted true)"
+
+  # ---- error envelope shape (RFC6749 vs gotrue envelope) --------------------
+  - id: oauth-token-error-shape
+    op: authOAuthToken
+    endpoint: POST /auth/v1/oauth/token
+    aspect: error-shape
+    field: ""
+    dilion: '{"error":"...","error_description":"..."} with HTTP 400'
+    upstream: "same RFC 6749 shape, HTTP 400"
+    reason: >
+      Deliberately NOT the gotrue {code,error_code,msg} envelope — OAuth clients
+      parse RFC 6749. This is parity WITH upstream, catalogued so the differ does
+      not expect the gotrue envelope on this route.
+    source: web/openapi-auth.yaml (two-error-families note); internal/auth/oauthserver_token.go
+
+  - id: idtoken-grant-error-shape
+    op: authToken
+    endpoint: POST /auth/v1/token?grant_type=id_token
+    aspect: error-shape
+    field: ""
+    dilion: '{"error":"...","error_description":"..."} with HTTP 400'
+    upstream: "same RFC 6749 shape"
+    reason: id_token grant parameter/verification failures use the OAuth error shape, as upstream does.
+    source: web/openapi-auth.yaml; internal/auth/oidc_grant.go
+
+  # ---- redirects -------------------------------------------------------------
+  - id: mailer-verify-path-prefix
+    op: authVerifyGet
+    endpoint: GET /auth/v1/verify
+    aspect: redirect
+    field: Location.path
+    dilion: "emailed action links + default redirects are built on /auth/v1/verify"
+    upstream: "built on /verify (API owns its host root)"
+    reason: >
+      Dilion mounts the compatible surface under /auth/v1, so the default mailer
+      URL path carries that prefix. GOTRUE_MAILER_URLPATHS_* /
+      DILION_AUTH_MAILER_URLPATHS_* override it, so a reverse-proxied deployment
+      can restore upstream's value. The differ compares the redirect target host
+      + result params, not the fixed path prefix.
+    source: internal/auth/conf.go:60,565; internal/auth/mailflow.go:109
+
+  # ---- JWKS / OIDC discovery -------------------------------------------------
+  - id: jwks-alg-reflects-keys
+    op: authOpenIDConfiguration
+    endpoint: GET /auth/v1/.well-known/openid-configuration
+    aspect: body-field
+    field: id_token_signing_alg_values_supported
+    dilion: 'reflects what the deployment can verify: ["ES256"] with a key set, ["HS256"] symmetric-only'
+    upstream: 'hard-coded ["RS256","HS256","ES256"] (upstream carries a TODO to do the same)'
+    reason: Dilion advertises only algorithms it can actually verify.
+    source: internal/auth/wellknown.go:76
+
+  - id: oidc-issuer-fallback
+    op: authOpenIDConfiguration
+    endpoint: GET /auth/v1/.well-known/openid-configuration
+    aspect: body-field
+    field: issuer
+    dilion: "falls back to SiteURL + /auth/v1 when JWT_ISSUER unset (no API_EXTERNAL_URL concept)"
+    upstream: "derives issuer from API_EXTERNAL_URL"
+    reason: >
+      Dilion has no API_EXTERNAL_URL. Twin by setting DILION_AUTH_JWT_ISSUER ==
+      GOTRUE_JWT_ISSUER to a shared value so the issuer matches exactly.
+    source: internal/auth/wellknown.go:76
+
+  - id: oidc-endpoint-urls
+    op: authOpenIDConfiguration
+    endpoint: GET /auth/v1/.well-known/openid-configuration
+    aspect: body-field
+    field: _endpoint
+    dilion: "advertises absolute endpoint URLs rooted at issuer (SiteURL + /auth/v1)"
+    upstream: "advertises host-root-relative paths (/oauth/authorize, /oauth/token, ...)"
+    reason: >
+      Same base-URL root cause as oidc-issuer-fallback and mailer-verify-path-prefix:
+      Dilion has no API_EXTERNAL_URL and roots the document at issuer+/auth/v1.
+      Matches authorization_endpoint / token_endpoint / userinfo_endpoint /
+      jwks_uri / registration_endpoint (all share the `_endpoint`/`_uri` suffix).
+      Twin the base URLs (shared JWT_ISSUER) to make these identical.
+    source: internal/auth/wellknown.go:76
+
+  - id: oidc-jwks-uri
+    op: authOpenIDConfiguration
+    endpoint: GET /auth/v1/.well-known/openid-configuration
+    aspect: body-field
+    field: jwks_uri
+    dilion: "absolute jwks_uri rooted at issuer + /auth/v1"
+    upstream: "host-root-relative /.well-known/jwks.json"
+    reason: same base-URL deviation class as oidc-endpoint-urls (jwks_uri has no _endpoint suffix so it is listed explicitly).
+    source: internal/auth/wellknown.go:76
+
+  - id: jwks-empty-symmetric
+    op: authJwks
+    endpoint: GET /auth/v1/.well-known/jwks.json
+    aspect: body-field
+    field: keys
+    dilion: "empty key set on the HS256-only developer path"
+    upstream: "empty key set on the HS256-only path (identical)"
+    reason: >
+      Parity — a symmetric-only deployment publishes {"keys":[]} on both. Listed
+      so the differ treats an empty-vs-empty as expected and, when ES256 keys are
+      configured, compares public JWK fields (kid/kty/crv/x/y) ignoring order.
+    source: internal/auth/auth.go:287
+
+  # ---- MFA / factors ---------------------------------------------------------
+  - id: admin-factor-no-phone
+    op: authAdminUpdateFactor
+    endpoint: PUT /auth/v1/admin/users/{user_id}/factors/{factor_id}
+    aspect: body-field
+    field: phone
+    dilion: "ignores a `phone` field (no phone factors)"
+    upstream: "accepts `phone` for phone factors"
+    reason: Dilion has no phone MFA factor; upstream guards the update with factor.IsPhoneFactor().
+    source: internal/auth/admin_factors.go:91
+
+  - id: aal-amr-sso-decoration
+    op: authGetUser
+    endpoint: "* (token aal/amr derivation)"
+    aspect: jwt-claim
+    field: amr
+    dilion: "does not decorate an sso/saml amr entry with a provider field"
+    upstream: "adds provider metadata to the sso/saml amr entry"
+    reason: minor amr-entry shape difference for SSO sessions.
+    source: internal/auth/mfa_models.go:196
+
+  # ---- OAuth 2.1 authorization server ---------------------------------------
+  - id: oauth-authcode-ttl
+    op: authOAuthAuthorizePost
+    endpoint: POST /auth/v1/oauth/authorize
+    aspect: body-field
+    field: "authorization_code lifetime"
+    dilion: "authorization codes live 3 minutes"
+    upstream: "10 minutes (default)"
+    reason: Dilion pins the shorter RFC-recommended lifetime; not externally observable except via expiry timing.
+    source: internal/auth/oauthserver.go:77
+
+  - id: oauth-default-redirect
+    op: authOAuthAuthorizeGet
+    endpoint: GET /auth/v1/oauth/authorize
+    aspect: redirect
+    field: "unconfigured consent redirect"
+    dilion: "defaults a consent/redirect target"
+    upstream: "no default — redirects back with error=server_error"
+    reason: Dilion supplies a sane default where an unconfigured upstream errors.
+    source: internal/auth/oauthserver.go:91
+
+  - id: oauth-dcr-always-on
+    op: authOAuthDynamicRegisterClient
+    endpoint: POST /auth/v1/oauth/clients/register
+    aspect: status
+    field: ""
+    dilion: "Dynamic Client Registration allowed whenever the OAuth server is enabled"
+    upstream: "gated by an additional allow-registration switch"
+    reason: Dilion couples DCR availability to OAuth-server-enabled.
+    source: internal/auth/oauthserver.go:99
+
+  - id: oauth-userinfo-issuer
+    op: authOAuthToken
+    endpoint: POST /auth/v1/oauth/token
+    aspect: jwt-claim
+    field: iss
+    dilion: "emits a resolved issuer (SiteURL+/auth/v1 fallback)"
+    upstream: "emits config.JWT.Issuer, which may be empty"
+    reason: Dilion never emits an empty issuer; twin via a shared JWT_ISSUER.
+    source: internal/auth/oauthserver_token.go:558
+
+  - id: oauth-client-delete-cascade
+    op: authAdminDeleteOAuthClient
+    endpoint: DELETE /auth/v1/admin/oauth/clients/{client_id}
+    aspect: body-field
+    field: ""
+    dilion: "also revokes the consents users granted the deleted client (hardening)"
+    upstream: "deletes the client only"
+    reason: Defence-in-depth cleanup on client deletion.
+    source: internal/auth/oauthserver_clients.go:456
+
+  # ---- passkeys / webauthn ---------------------------------------------------
+  - id: passkey-ratelimit-verify
+    op: authPasskeyAuthenticationVerify
+    endpoint: POST /auth/v1/passkeys/authentication/verify
+    aspect: status
+    field: ""
+    dilion: "rate-limits the verify step too"
+    upstream: "rate-limits only .../options, leaves verify open"
+    reason: Dilion closes a brute-force gap upstream leaves open.
+    source: internal/auth/passkeys.go:72
+
+  - id: passkey-rp-fallback
+    op: authPasskeyRegistrationOptions
+    endpoint: POST /auth/v1/passkeys/registration/options
+    aspect: body-field
+    field: rp
+    dilion: "falls back to deriving RP id/origin from SiteURL when unset"
+    upstream: "REQUIRES WEBAUTHN_RP_ID + WEBAUTHN_RP_ORIGINS and refuses otherwise"
+    reason: >
+      Dilion has a documented fallback. Twin by setting
+      DILION_AUTH_WEBAUTHN_RP_ID/ORIGINS == GOTRUE_MFA_WEB_AUTHN_* equivalents.
+    source: internal/auth/passkeys.go:159
+
+  - id: passkey-aaguid-table
+    op: authPasskeyList
+    endpoint: GET /auth/v1/passkeys
+    aspect: body-field
+    field: aaguid
+    dilion: "does not embed the full passkey-authenticator-aaguids name table"
+    upstream: "maps aaguid to a human authenticator name via the embedded table"
+    reason: Dilion returns the raw aaguid; upstream enriches it with a friendly name.
+    source: internal/auth/passkey_models.go:231
+
+  - id: passkey-register-no-aal2
+    op: authPasskeyRegistrationVerify
+    endpoint: POST /auth/v1/passkeys/registration/verify
+    aspect: status
+    field: ""
+    dilion: "no AAL2 gate on registration"
+    upstream: "requires an AAL2 session for registration"
+    reason: documented divergence in passkey enrolment assurance requirement.
+    source: internal/auth/passkeys_manage.go:90
+
+  # ---- SAML ------------------------------------------------------------------
+  - id: saml-external-url
+    op: authSamlMetadata
+    endpoint: GET /auth/v1/sso/saml/metadata
+    aspect: body-field
+    field: entityID
+    dilion: "builds SP entityID/ACS from SiteURL+/auth/v1 (no API_EXTERNAL_URL)"
+    upstream: "builds them from API_EXTERNAL_URL"
+    reason: same root cause as the OIDC issuer fallback; twin via matching base URLs.
+    source: internal/auth/saml_sp.go:29
+
+  # ---- external id_token grant ----------------------------------------------
+  - id: idtoken-allowed-issuers
+    op: authToken
+    endpoint: POST /auth/v1/token?grant_type=id_token
+    aspect: body-field
+    field: ""
+    dilion: "does not honour GOTRUE_EXTERNAL_ALLOWED_ID_TOKEN_ISSUERS the same way"
+    upstream: "honours the allowed-id-token-issuers list"
+    reason: Dilion restricts id_token issuers to configured providers only.
+    source: internal/auth/oidc_grant.go:216
+
+  # ---- phone / SMS -----------------------------------------------------------
+  - id: phone-signup-requires-password
+    op: authSignup
+    endpoint: POST /auth/v1/signup (phone)
+    aspect: status
+    field: password
+    dilion: "phone signup REQUIRES a password (422 otherwise)"
+    upstream: "accepts an empty password, stores hash of \"\""
+    reason: >
+      Dilion refuses the empty-password phone account upstream allows; passwordless
+      phone sign-in is POST /otp instead.
+    source: internal/auth/signup.go:282
+
+  - id: sms-twilio-api-base
+    op: "*"
+    endpoint: "* (SMS delivery)"
+    aspect: body-field
+    field: ""
+    dilion: "adds DILION_AUTH_SMS_TWILIO_API_BASE / GOTRUE_SMS_TWILIO_API_BASE to point Twilio at a mock"
+    upstream: "no equivalent knob (owns its provider client)"
+    reason: Dilion-only test seam for the Twilio base URL; not observable on the auth wire.
+    source: internal/auth/conf.go:328; internal/auth/sms_twilio.go:18
+
+  # ---- token signing ---------------------------------------------------------
+  - id: es256-not-rs256
+    op: "*"
+    endpoint: "* (asymmetric JWT signing)"
+    aspect: jwt-claim
+    field: alg
+    dilion: "asymmetric signing is ES256 (small curve/keys/tokens)"
+    upstream: "supports RS256 as well"
+    reason: >
+      Project decision, not upstream parity. HS256 (shared secret) is fully
+      cross-verifiable, which is what the harness uses; ES256 vs RS256 only
+      matters for the asymmetric path.
+    source: internal/auth/token.go:47
+
+  # ---- verify phone confirmation --------------------------------------------
+  - id: verify-phone-columns
+    op: authVerifyPost
+    endpoint: POST /auth/v1/verify (phone)
+    aspect: body-field
+    field: confirmation_token
+    dilion: "touches a narrower set of confirmation columns"
+    upstream: "ConfirmPhone touches confirmation_token and more"
+    reason: internal column-write difference; the user-visible confirmed state is identical.
+    source: internal/auth/verify.go:734
+
+  # ---- discovered empirically during harness bring-up (identical config) -----
+  # These are real Dilion<->GoTrue differences observed with both servers on the
+  # twinned config in compose.parity.yml against supabase/auth:v2.196.0.
+  - id: user-metadata-not-mirrored
+    op: "*"
+    endpoint: "* (user object on signup / token / GET-PUT user)"
+    aspect: body-field
+    field: user_metadata
+    dilion: "user_metadata is left as the caller supplied it (empty for a bare email signup)"
+    upstream: "populates user_metadata with email, email_verified, phone_verified and sub"
+    reason: >
+      Upstream copies the verified identity attributes into user_metadata; Dilion
+      keeps user_metadata as caller-owned data only. Consistent across authSignup,
+      authToken and authGetUser/authUpdateUser.
+    source: "empirical vs supabase/auth:v2.196.0 (internal/auth/user.go, signup.go)"
+
+  - id: identity-email-verified
+    op: "*"
+    endpoint: "* (identities[].identity_data)"
+    aspect: body-field
+    field: identity_data.email_verified
+    dilion: "identity_data.email_verified = true for a confirmed email identity"
+    upstream: "identity_data.email_verified = false"
+    reason: >
+      Dilion marks the email identity verified once the address is confirmed;
+      upstream leaves the identity-level flag false and tracks verification on the
+      user object. Observed on authToken / authGetUser / authUpdateUser.
+    source: "empirical vs supabase/auth:v2.196.0 (internal/auth/identity.go)"
+
+  - id: signup-confirmed-at-present
+    op: authSignup
+    endpoint: POST /auth/v1/signup
+    aspect: body-field
+    field: confirmed_at
+    dilion: "the signup user object carries confirmed_at"
+    upstream: "omits confirmed_at from the signup response user object"
+    reason: >
+      With autoconfirm on, Dilion already stamps and returns confirmed_at at
+      signup; upstream fills it on the next fetch. The value itself is volatile
+      (scrubbed); only its presence differs.
+    source: "empirical vs supabase/auth:v2.196.0"
+
+  - id: token-weak-password-field
+    op: authToken
+    endpoint: POST /auth/v1/token
+    aspect: body-field
+    field: weak_password
+    dilion: "omits the weak_password field on a successful password grant"
+    upstream: "includes weak_password: null"
+    reason: upstream always carries the weak_password advisory slot; Dilion emits it only when populated.
+    source: "empirical vs supabase/auth:v2.196.0"
+
+  - id: admin-link-header-prefix
+    op: authAdminListUsers
+    endpoint: GET /auth/v1/admin/users
+    aspect: header
+    field: Link
+    dilion: "the Link pagination header paths carry the /auth/v1 mount prefix"
+    upstream: "Link paths are host-root relative (/admin/users)"
+    reason: >
+      Same root cause as mailer-verify-path-prefix: Dilion mounts under /auth/v1.
+      (The harness also stops comparing Link / X-Total-Count outright, because the
+      row COUNT they encode is per-database and volatile across two instances.)
+    source: "empirical vs supabase/auth:v2.196.0 (internal/auth/admin.go)"
