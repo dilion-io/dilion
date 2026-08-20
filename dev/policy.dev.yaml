@@ -1,0 +1,9 @@
+# Dev/E2E policy override: zero grace period so the erasure pipeline runs
+# immediately after a deletion request. NEVER use in production — kr 정책의
+# 유예·고지 요건은 project.md §2.9 참조.
+compliance:
+  default-policy: gdpr
+  policies:
+    gdpr:
+      erasure:
+        grace-period-days: 0

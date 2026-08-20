@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (build · vet · tests · openapi drift)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start test environment (docker compose)
+        run: make up
+
+      - name: Build, vet, full test suite (DB integration, -race)
+        run: make test-db
+
+      - name: OpenAPI spec drift check
+        run: make openapi-check
+
+      - name: Teardown
+        if: always()
+        run: make down
+
+  frontend:
+    name: Frontend (codegen drift · typecheck · lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Codegen drift check (openapi.yaml → schema.d.ts)
+        run: |
+          npm run gen:api
+          git diff --exit-code src/api/schema.d.ts
+
+      - name: Typecheck + build
+        run: npm run build
+
+      - name: Lint
+        run: npx oxlint
