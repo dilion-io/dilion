@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: dilion-db
+    environment:
+      POSTGRES_USER: dilion
+      POSTGRES_PASSWORD: dilion
+      POSTGRES_DB: dilion_dev
+    ports:
+      - "55432:5432"
+    volumes:
+      - dilion-pgdata:/var/lib/postgresql/data
+      - ./compose/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dilion -d dilion_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  dilion-pgdata:

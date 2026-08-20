@@ -1,0 +1,10 @@
+.dev/
+nohup.out
+web/node_modules/
+web/dist/
+*.local
+
+# Dev-only secrets and local server artifacts (never commit)
+dev/masterkey.dev
+/dilion-server
+scratchpad/
