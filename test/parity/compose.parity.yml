@@ -1,0 +1,156 @@
+# Differential parity stack: real upstream GoTrue + Dilion, each on its OWN
+# throwaway database, wired with IDENTICAL config (same JWT secret so tokens are
+# cross-verifiable, same SITE_URL, same feature flags) so any behavioural
+# difference is a real difference — not a config artifact.
+#
+#   docker-compose -f test/parity/compose.parity.yml up -d --build   # bring up
+#   docker-compose -f test/parity/compose.parity.yml down -v         # tear down
+#
+# Run from the REPO ROOT (the Dilion build context is `../..`). Verified against
+# docker-compose v5 and image supabase/auth:v2.196.0.
+#
+# Ports on the host:  postgres 55433 · gotrue 9999 · dilion 8787
+# (55433 avoids clashing with the dev dilion-db on 55432.)
+
+# ---- twinned config: the single source of truth for BOTH servers ------------
+x-parity-secret: &jwt_secret "parity-super-secret-shared-jwt-key-0123456789"
+x-parity-site-url: &site_url "http://localhost:3000"
+x-parity-jwt-exp: &jwt_exp "3600"
+x-parity-jwt-aud: &jwt_aud "authenticated"
+x-parity-admin-roles: &admin_roles "service_role,supabase_admin"
+
+services:
+  # --------------------------------------------------------------------------
+  # One Postgres cluster, two logical databases (dilion_parity, gotrue_parity)
+  # plus the Supabase roles GoTrue's migrations require (see initdb/00-init.sql).
+  # --------------------------------------------------------------------------
+  postgres-parity:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: parity
+      POSTGRES_PASSWORD: parity
+      POSTGRES_DB: parity
+    ports:
+      - "55433:5432"
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parity -d parity"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data   # throwaway: never persists
+
+  # --------------------------------------------------------------------------
+  # GoTrue migrations are a SEPARATE step (the image does NOT auto-migrate).
+  # This one-shot runs `gotrue migrate` then exits 0; the server waits on it.
+  # --------------------------------------------------------------------------
+  gotrue-migrate:
+    image: supabase/auth:v2.196.0
+    depends_on:
+      postgres-parity:
+        condition: service_healthy
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: "postgres://parity:parity@postgres-parity:5432/gotrue_parity?search_path=auth"
+      GOTRUE_DB_NAMESPACE: auth
+      # Both spellings: migrate resolves the unprefixed name, serve the prefixed.
+      API_EXTERNAL_URL: "http://localhost:9999"
+      GOTRUE_API_EXTERNAL_URL: "http://localhost:9999"
+      GOTRUE_SITE_URL: *site_url
+      GOTRUE_JWT_SECRET: *jwt_secret
+    command: ["gotrue", "migrate"]
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # Real upstream GoTrue server.
+  # --------------------------------------------------------------------------
+  gotrue:
+    image: supabase/auth:v2.196.0
+    depends_on:
+      postgres-parity:
+        condition: service_healthy
+      gotrue-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "9999:9999"
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: "postgres://parity:parity@postgres-parity:5432/gotrue_parity?search_path=auth"
+      GOTRUE_DB_NAMESPACE: auth
+      API_EXTERNAL_URL: "http://localhost:9999"
+      GOTRUE_API_EXTERNAL_URL: "http://localhost:9999"
+      GOTRUE_API_HOST: "0.0.0.0"
+      PORT: "9999"
+      GOTRUE_SITE_URL: *site_url
+      GOTRUE_JWT_SECRET: *jwt_secret
+      GOTRUE_JWT_EXP: *jwt_exp
+      GOTRUE_JWT_AUD: *jwt_aud
+      GOTRUE_JWT_ADMIN_ROLES: *admin_roles
+      # Dilion defaults an empty user role to "authenticated"; GoTrue only does
+      # so when this is set — twin it or the `role` claim/field diverges.
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: *jwt_aud
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+      GOTRUE_SECURITY_REFRESH_TOKEN_REUSE_INTERVAL: "10"
+      # Feature-flagged surfaces — OFF on both by default. Flip a matched PAIR
+      # (here + the DILION_AUTH_* twin below) to compare that surface.
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SAML_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_OAUTH_SERVER_ENABLED: "false"
+      GOTRUE_MFA_WEB_AUTHN_ENROLL_ENABLED: "false"
+      GOTRUE_MFA_WEB_AUTHN_VERIFY_ENABLED: "false"
+    command: ["gotrue", "serve"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9999/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # --------------------------------------------------------------------------
+  # Dilion server. Builds from source; migrates its own database on boot.
+  # The DILION_AUTH_<NAME> vars are the exact twins of the GOTRUE_<NAME> vars
+  # above (Dilion reads DILION_AUTH_<NAME>, falling back to GOTRUE_<NAME>).
+  # --------------------------------------------------------------------------
+  dilion:
+    build:
+      context: ../..
+      dockerfile: test/parity/Dockerfile.dilion
+    depends_on:
+      postgres-parity:
+        condition: service_healthy
+    ports:
+      - "8787:8787"
+    environment:
+      DILION_DSN: "postgres://parity:parity@postgres-parity:5432/dilion_parity"
+      DILION_ADDR: ":8787"
+      # HS256 signing secret — MUST equal GOTRUE_JWT_SECRET for cross-verifiable
+      # tokens. DILION_JWT_SECRET sets the signer; DILION_AUTH_JWT_SECRET sets the
+      # /auth config's view of it. Keep them identical.
+      DILION_JWT_SECRET: *jwt_secret
+      DILION_AUTH_JWT_SECRET: *jwt_secret
+      # Fixed KMS key so the built-in vault is stable across restarts (base64 of
+      # 32 bytes). Value is a throwaway dev key.
+      DILION_MASTER_KEY: "cGFyaXR5LW1hc3Rlci1rZXktMzItYnl0ZXMtbGVuISE="
+      DILION_DEV_NO_ADMIN_MFA: "1"
+      # ---- twins of the GOTRUE_* config above ----
+      DILION_AUTH_SITE_URL: *site_url
+      DILION_AUTH_JWT_EXP: *jwt_exp
+      DILION_AUTH_JWT_AUD: *jwt_aud
+      DILION_AUTH_JWT_ADMIN_ROLES: *admin_roles
+      DILION_AUTH_MAILER_AUTOCONFIRM: "true"
+      DILION_AUTH_EXTERNAL_EMAIL_ENABLED: "true"
+      DILION_AUTH_DISABLE_SIGNUP: "false"
+      DILION_AUTH_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+      DILION_AUTH_SECURITY_REFRESH_TOKEN_REUSE_INTERVAL: "10"
+      DILION_AUTH_SAML_ENABLED: "false"
+      DILION_AUTH_OAUTH_SERVER_ENABLED: "false"
+      DILION_AUTH_PASSKEY_ENABLED: "false"
+      DILION_AUTH_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+    # No container healthcheck: the distroless image has no shell and Dilion has
+    # no self-probe flag. `make parity-up` polls http://localhost:8787/auth/v1/health
+    # from the host after `up`, which is what the test runner also does.

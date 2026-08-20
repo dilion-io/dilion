@@ -1,0 +1,23 @@
+# Builds the Dilion server for the parity stack. Build context is the REPO ROOT
+# (compose sets `context: ../..`), so the whole module is available.
+#
+#   docker build -f test/parity/Dockerfile.dilion -t dilion-parity .
+#
+# Dilion runs its own migrations at startup (dilion.Server.Migrate), so no
+# separate migrate step is needed — unlike GoTrue.
+
+FROM golang:1.26 AS build
+WORKDIR /src
+# Cache module downloads.
+COPY go.mod go.sum ./
+RUN go mod download
+# Build.
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/dilion ./cmd/dilion
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/dilion /usr/local/bin/dilion
+# Default listen address; compose maps it to the host.
+ENV DILION_ADDR=:8787
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/dilion"]
