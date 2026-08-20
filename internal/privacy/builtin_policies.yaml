@@ -1,0 +1,72 @@
+# Built-in compliance policies (project.md §2.8).
+# Legal knowledge lives here as data — never hard-coded in Go.
+# User-supplied YAML is merged over this file with SECTION-REPLACE semantics:
+# providing `erasure` (or `retention`, or `consent`) for a policy replaces that
+# whole section of the built-in definition.
+compliance:
+  default-policy: gdpr
+  retention-batch-size: 1000
+  policies:
+    kr:
+      erasure:
+        grace-period-days: 30
+        manual-review: false
+        domains:
+          # 접속기록은 안전성 확보조치 기준 §8의 보존 의무 대상 — 탈퇴 시 절단 금지,
+          # retention(P3Y) 경과 후 DELETE.
+          audit-log: KEEP
+      retention:
+        - domain: consent-evidence
+          period: P3Y
+          from: erasure
+          action: CRYPTO_SHRED
+          basis: "신용정보법 §20②"
+        - domain: audit-log
+          period: P3Y
+          from: created
+          action: DELETE
+          basis: "개인정보의 안전성 확보조치 기준 §8"
+      consent:
+        required-keys: [terms, privacy]
+        reconfirm:
+          "marketing.*": P2Y
+
+    gdpr:
+      erasure:
+        grace-period-days: 30
+        manual-review: false
+        domains: {}
+      retention:
+        - domain: consent-evidence
+          period: P3Y
+          from: erasure
+          action: CRYPTO_SHRED
+          basis: "GDPR Art. 7(1) — demonstrability of consent"
+      consent:
+        required-keys: [terms, privacy]
+        reconfirm: {}
+
+    hipaa:
+      erasure:
+        # No grace period; every erasure is reviewed by a human before execution.
+        grace-period-days: 0
+        manual-review: true
+        domains:
+          external-system: KEEP
+          audit-log: KEEP
+          account: KEEP
+          oauth-identity: KEEP
+      retention:
+        - domain: audit-log
+          period: P6Y
+          from: created
+          action: DELETE
+          basis: "45 CFR §164.316(b)(2)(i)"
+        - domain: consent-evidence
+          period: P6Y
+          from: created
+          action: CRYPTO_SHRED
+          basis: "45 CFR §164.316(b)(2)(i)"
+      consent:
+        required-keys: [terms, privacy]
+        reconfirm: {}
