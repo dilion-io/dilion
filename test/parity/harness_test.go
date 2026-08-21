@@ -128,6 +128,10 @@ func newFixtures() []fixtureUser {
 	return []fixtureUser{
 		{name: "userA", email: fmt.Sprintf("parity-usera-%d@example.test", stamp), password: "Sup3rSecret!pw-A"},
 		{name: "userB", email: fmt.Sprintf("parity-userb-%d@example.test", stamp), password: "Sup3rSecret!pw-B"},
+		// userC/userD are dedicated to the stateful MFA flows so enrolling factors
+		// on them never perturbs the userA/userB single-request scenarios.
+		{name: "userC", email: fmt.Sprintf("parity-userc-%d@example.test", stamp), password: "Sup3rSecret!pw-C"},
+		{name: "userD", email: fmt.Sprintf("parity-userd-%d@example.test", stamp), password: "Sup3rSecret!pw-D"},
 	}
 }
 
@@ -183,10 +187,10 @@ func (e *harnessEnv) mintServiceRole(t *testing.T) string {
 type bodyCompare int
 
 const (
-	compareFull      bodyCompare = iota // deep structural diff after scrubbing
-	compareTopKeys                      // only the set of top-level object keys
-	compareRedirect                     // compare Location, not the body
-	compareNone                         // status + headers only
+	compareFull     bodyCompare = iota // deep structural diff after scrubbing
+	compareTopKeys                     // only the set of top-level object keys
+	compareRedirect                    // compare Location, not the body
+	compareNone                        // status + headers only
 )
 
 // scenario is one differential request executed against both servers.
@@ -203,6 +207,10 @@ type scenario struct {
 	// wantStatus, when non-zero, additionally asserts BOTH servers returned it
 	// (a guard that the scenario actually exercised the path it claims to).
 	wantStatus int
+	// profile gates a scenario on the feature-flag twin: "" runs always, "off"
+	// only when the flagged surfaces are DISABLED (the default stack), "on" only
+	// when PARITY_FLAGS=1 brings the flagged twin up on both servers.
+	profile string
 }
 
 // scenarios is the working slice. Each exercises a distinct span of the surface;
@@ -246,6 +254,14 @@ func scenarios() []scenario {
 
 		// ---- Admin (cross-verifiable service_role token) ----
 		{name: "admin-list-users", method: "GET", path: "/admin/users", cred: "service_role", compare: compareTopKeys, wantStatus: 200},
+		// Admin SSO provider listing is NOT gated on the SAML feature flag, so an
+		// empty catalogue ({"items":[]}) is comparable on the default stack.
+		{name: "admin-list-sso-providers", method: "GET", path: "/admin/sso/providers", cred: "service_role", compare: compareFull, wantStatus: 200},
+		// Admin audit log: both expose it and return a 200 JSON array, but the rows
+		// are each instance's OWN audit history (different actors/actions/counts),
+		// so only status + content-type are comparable; Dilion additionally
+		// decorates payload.traits (dilion_action/dilion_event_id) — see deviation.
+		{name: "admin-audit-log", method: "GET", path: "/admin/audit", cred: "service_role", compare: compareNone, wantStatus: 200},
 
 		// ---- Error case ----
 		{
@@ -256,6 +272,81 @@ func scenarios() []scenario {
 
 		// ---- Redirect case ----
 		{name: "verify-redirect", method: "GET", path: "/verify?type=signup&token=deadbeefdeadbeefdeadbeef&redirect_to=http://localhost:3000/welcome", compare: compareRedirect},
+
+		// ---- Request-side email/SMS OTP flows (enumeration-safe 200 {} shapes) ----
+		// These accept-and-acknowledge without a real inbox; the OTP-CONSUMING half
+		// is driven through admin generate_link in flows() (otp-recovery/magiclink).
+		{
+			name: "otp-email", method: "POST", path: "/otp", compare: compareFull, wantStatus: 200,
+			headers: jsonHdr(), body: fmt.Sprintf(`{"email":"parity-otp-%d@example.test"}`, time.Now().UnixNano()),
+		},
+		{
+			name: "magiclink-request", method: "POST", path: "/magiclink", compare: compareFull, wantStatus: 200,
+			headers: jsonHdr(), body: fmt.Sprintf(`{"email":"parity-ml-%d@example.test"}`, time.Now().UnixNano()),
+		},
+		{
+			name: "recover-request", method: "POST", path: "/recover", compare: compareFull, wantStatus: 200,
+			headers: jsonHdr(), body: fmt.Sprintf(`{"email":"parity-rec-%d@example.test"}`, time.Now().UnixNano()),
+		},
+		{
+			name: "resend-signup", method: "POST", path: "/resend", compare: compareFull, wantStatus: 200,
+			headers: jsonHdr(), body: fmt.Sprintf(`{"type":"signup","email":"parity-res-%d@example.test"}`, time.Now().UnixNano()),
+		},
+
+		// ---- Reauthenticate (authenticated user, mails a nonce → 200 {}) ----
+		{name: "reauthenticate", method: "GET", path: "/reauthenticate", cred: "userA", compare: compareFull, wantStatus: 200},
+
+		// ---- Invite (service_role; returns the invited user object) ----
+		{
+			name: "invite", method: "POST", path: "/invite", cred: "service_role", compare: compareFull, wantStatus: 200,
+			headers: jsonHdr(), body: fmt.Sprintf(`{"email":"parity-invite-%d@example.test","data":{"team":"parity"}}`, time.Now().UnixNano()),
+		},
+
+		// ---- External OAuth start: an unconfigured provider must be REFUSED
+		// identically (no client id/secret on either) — 400 validation_failed. ----
+		{name: "external-authorize-github", method: "GET", path: "/authorize?provider=github", compare: compareFull, wantStatus: 400},
+
+		// ---- SAML/SSO on the DEFAULT (flags-off) stack: both must report the
+		// feature disabled identically. The flags-on twin exercises the live paths. ----
+		{name: "sso-disabled", method: "POST", path: "/sso", headers: jsonHdr(), body: `{"domain":"parity.example.com"}`, compare: compareFull, wantStatus: 404, profile: "off"},
+		// SAML stays disabled in BOTH the default and the flagged twin (the flags
+		// overlay does not supply SAML key material), so the disabled-metadata shape
+		// is comparable under either profile — hence profile "" (always run).
+		{name: "saml-metadata-disabled", method: "GET", path: "/sso/saml/metadata", compare: compareFull, wantStatus: 404},
+
+		// ============================================================================
+		// FLAGGED surfaces (PARITY_FLAGS=1 brings the twin up on BOTH servers).
+		// ============================================================================
+
+		// ---- OAuth 2.1 authorization server ----
+		// Dynamic Client Registration (public): a fresh client each run.
+		{
+			name: "oauth-dcr", method: "POST", path: "/oauth/clients/register", compare: compareFull, wantStatus: 201, profile: "on",
+			headers: jsonHdr(), body: `{"redirect_uris":["http://localhost:3000/callback"],"client_name":"parity-dcr","grant_types":["authorization_code","refresh_token"]}`,
+		},
+		// authorize with a bogus/unregistered client_id → JSON 400 on both.
+		{name: "oauth-authorize-get-badclient", method: "GET", path: "/oauth/authorize?client_id=00000000-0000-0000-0000-000000000000&redirect_uri=http://localhost:3000/callback&response_type=code&code_challenge=abc&code_challenge_method=S256", compare: compareFull, wantStatus: 400, profile: "on"},
+		// token with no client credentials → RFC 6749 / gotrue error on both.
+		{name: "oauth-token-noclient", method: "POST", path: "/oauth/token", headers: jsonHdr(), body: `{"grant_type":"authorization_code","code":"nope"}`, compare: compareFull, profile: "on"},
+
+		// ---- Passkeys / WebAuthn (options endpoints; a full ceremony needs a
+		// software authenticator — see README) ----
+		{name: "passkey-list", method: "GET", path: "/passkeys", cred: "userA", compare: compareFull, wantStatus: 200, profile: "on"},
+		{name: "passkey-registration-options", method: "POST", path: "/passkeys/registration/options", cred: "userA", headers: jsonHdr(), body: `{}`, compare: compareFull, wantStatus: 200, profile: "on"},
+		{name: "passkey-authentication-options", method: "POST", path: "/passkeys/authentication/options", headers: jsonHdr(), body: `{}`, compare: compareFull, wantStatus: 200, profile: "on"},
+
+		// OAuth userinfo with a normal user access token → 200 {sub:...} on both.
+		{name: "oauth-userinfo", method: "GET", path: "/oauth/userinfo", cred: "userA", compare: compareFull, wantStatus: 200, profile: "on"},
+
+		// ---- SSO on the flags-on stack: an unknown domain is refused identically. ----
+		{name: "sso-unknown-domain", method: "POST", path: "/sso", headers: jsonHdr(), body: `{"domain":"no-such-provider.example.com"}`, compare: compareFull, profile: "on"},
+
+		// ---- Manual identity linking (SECURITY_MANUAL_LINKING_ENABLED on both) ----
+		// Link start for an unconfigured external provider is refused identically.
+		{name: "link-identity-github", method: "GET", path: "/user/identities/authorize?provider=github", cred: "userA", compare: compareFull, wantStatus: 400, profile: "on"},
+		// Unlinking the sole (email) identity is refused identically — a bogus id
+		// still trips the "must keep ≥1 identity" guard on both before any lookup.
+		{name: "unlink-identity-guard", method: "DELETE", path: "/user/identities/00000000-0000-0000-0000-000000000001", cred: "userA", compare: compareFull, wantStatus: 422, profile: "on"},
 	}
 }
 
@@ -263,6 +354,10 @@ func scenarios() []scenario {
 
 func TestParity(t *testing.T) {
 	e := loadEnv(t)
+
+	flagsOn := os.Getenv("PARITY_FLAGS") == "1"
+	t.Logf("parity profile: PARITY_FLAGS=%q (flagged surfaces %s)", os.Getenv("PARITY_FLAGS"),
+		map[bool]string{true: "ENABLED on both", false: "disabled (default stack)"}[flagsOn])
 
 	fixtures := newFixtures()
 	dilionCreds := e.bootstrap(t, e.dilionURL, fixtures)
@@ -274,6 +369,9 @@ func TestParity(t *testing.T) {
 
 	for _, sc := range scenarios() {
 		sc := sc
+		if !profileMatches(sc.profile, flagsOn) {
+			continue
+		}
 		t.Run(sc.name, func(t *testing.T) {
 			op := e.contract.Resolve(sc.method, sc.path)
 			if op != "" {
@@ -309,8 +407,33 @@ func TestParity(t *testing.T) {
 		})
 	}
 
+	// ---- multi-step flows (admin lifecycle, MFA/TOTP, OTP-consuming email) ----
+	for _, f := range flows() {
+		if !profileMatches(f.profile, flagsOn) {
+			continue
+		}
+		k, fl := e.runFlow(t, f, dilionCreds, gotrueCreds, serviceRole, hit)
+		knownCount += k
+		failCount += fl
+	}
+
 	reportCoverage(t, e.contract, hit)
 	t.Logf("parity summary: %d KNOWN deviations tolerated, %d FAIL diffs", knownCount, failCount)
+}
+
+// profileMatches reports whether a scenario/flow tagged with the given profile
+// ("" any, "off" flags-disabled only, "on" flags-enabled only) runs under the
+// current flag state.
+func profileMatches(profile string, flagsOn bool) bool {
+	switch profile {
+	case "", "any":
+		return true
+	case "off":
+		return !flagsOn
+	case "on":
+		return flagsOn
+	}
+	return true
 }
 
 // exec issues one scenario request against base and returns status/headers/body.
@@ -422,48 +545,36 @@ func reportCoverage(t *testing.T, c *Contract, hit map[string]bool) {
 	}
 }
 
-// TODOScaffold documents, per still-uncovered operation, the credential and the
-// prerequisite state a future scenario needs. Filling in a row is mechanical:
-// add a scenario{} to scenarios() with the method/path/cred below and the right
-// compare mode, then add any genuinely-new intentional difference to
-// deviations.yaml. This lives as a test so it shows up in `go test -tags parity
-// -run TestParityTODO -v` and never drifts silently.
+// TODOScaffold documents the operations STILL uncovered after this expansion and
+// the concrete blocker each hits in a no-inbox / no-external-IdP / no-SMS /
+// no-software-authenticator environment. The covered ops (default profile: 36;
+// PARITY_FLAGS=1 flagged profile: 51 — the flagged run is the superset) are
+// exercised by scenarios() and flows(); reportCoverage prints the live
+// covered/uncovered split each run. The 18 below each need a capability this
+// harness deliberately does not fake:
 //
-//	op                              cred           prerequisite / notes
-//	------------------------------- -------------- -------------------------------------------
-//	authVerifyPost                  none           POST /verify {type,token,...}; needs a real OTP (mint via /admin/generate_link)
-//	authOtp                         none           POST /otp {email}; asserts 200 + rate-limit headers
-//	authMagicLink                   none           POST /magiclink {email}
-//	authRecover                     none           POST /recover {email}
-//	authResend                      none           POST /resend {type,email}
-//	authReauthenticate              userA          GET /reauthenticate
-//	authInvite                      service_role   POST /invite {email}
-//	authAdminGenerateLink           service_role   POST /admin/generate_link {type,email} — also the OTP source for authVerifyPost
-//	authExternalAuthorize           none           GET /authorize?provider=github — assert redirect host (external OAuth start)
-//	authExternalCallbackGet/Post    none           GET|POST /callback — needs a stubbed provider; compare error redirect
-//	authLinkIdentity                userA          GET /user/identities/authorize (SECURITY_MANUAL_LINKING_ENABLED on both)
-//	authUnlinkIdentity              userA          DELETE /user/identities/{identity_id}
-//	authEnrollFactor                userA          POST /factors {factor_type:totp} (MFA_TOTP_ENROLL_ENABLED on both)
-//	authChallengeFactor             userA          POST /factors/{id}/challenge
-//	authVerifyFactor                userA          POST /factors/{id}/verify {code} — needs a TOTP code from the enrol secret
-//	authUnenrollFactor              userA          DELETE /factors/{id}
-//	authAdminListFactors            service_role   GET /admin/users/{user_id}/factors
-//	authAdminUpdateFactor           service_role   PUT /admin/users/{user_id}/factors/{id}
-//	authAdminDeleteFactor           service_role   DELETE /admin/users/{user_id}/factors/{id}
-//	authPasskey* (7 ops)            mixed          enable passkeys on BOTH (DILION_AUTH_PASSKEY_ENABLED / GOTRUE_MFA_WEB_AUTHN_*)
-//	authSingleSignOn                none           POST /sso {domain} (SAML enabled on both) — compare redirect
-//	authSamlMetadata                none           GET /sso/saml/metadata — compare XML entityID (see saml-external-url deviation)
-//	authSamlAcs                     none           POST /sso/saml/acs — needs a signed SAML response fixture
-//	authAdmin*SSOProvider (5 ops)   service_role   /admin/sso/providers CRUD (SAML enabled on both)
-//	authOAuth* (12 ops)             mixed          enable the OAuth2.1 server on both (DILION_AUTH_OAUTH_SERVER_ENABLED / GOTRUE_OAUTH_SERVER_ENABLED); register a client, run DCR/authorize/token/userinfo/consent/grants
-//	authAdminGetUser                service_role   GET /admin/users/{user_id}
-//	authAdminCreateUser             service_role   POST /admin/users {email,password}
-//	authAdminUpdateUser             service_role   PUT /admin/users/{user_id}
-//	authAdminDeleteUser             service_role   DELETE /admin/users/{user_id} — assert 200/204 + outbox side-effect is Dilion-only (deviation)
-//	authAdminAuditLog               service_role   GET /admin/audit — Dilion translates its own audit store (see admin_audit.go)
+//	authPasskeyRegistrationVerify / authPasskeyAuthenticationVerify /
+//	authPasskeyUpdate / authPasskeyDelete / authAdminPasskeyList /
+//	authAdminPasskeyDelete  - the /passkeys OPTIONS endpoints are covered, but the
+//	  verify/update/delete + admin passkey surface need a real (or ported test)
+//	  software WebAuthn authenticator to sign the ceremony / enrol a credential.
+//	authOAuthAuthorizePost  - upstream v2.196.0 has no POST /oauth/authorize route
+//	  (returns 405); Dilion implements it, so there is nothing to differentially
+//	  test (a Dilion-only capability, not a parity gap).
+//	authOAuthGetAuthorization / authOAuthConsent / authListOAuthGrants /
+//	authRevokeOAuthGrant  - need a live authorize->consent flow: a browser session
+//	  cookie / logged-in principal to reach the consent screen and record a grant,
+//	  then read/revoke it (the authorize step 302s to the consent UI).
+//	authExternalCallbackGet / authExternalCallbackPost  - need a stubbed external
+//	  OAuth provider returning a signed state+code to /callback.
+//	authAdminCreateSSOProvider / authAdminGetSSOProvider /
+//	authAdminUpdateSSOProvider / authAdminDeleteSSOProvider  - need VALID SAML IdP
+//	  metadata; a malformed doc diverges (Dilion 400 vs upstream 500), so these
+//	  need a real metadata fixture (e.g. the crewjam test IdP). List IS covered.
+//	authSamlAcs  - needs a signed SAML assertion posted to the ACS URL.
 //
-// See internal/auth/*.go for each handler; the deviations.yaml already carries
-// the intentional differences most of these will surface.
+// See internal/auth/*.go for each handler; deviations.yaml carries the intentional
+// differences the covered ops surface.
 const TODOScaffold = "see the table in the doc comment above"
 
 // ---- small helpers ---------------------------------------------------------

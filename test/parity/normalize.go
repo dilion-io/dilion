@@ -40,13 +40,15 @@ var volatileKeys = map[string]bool{
 	"id": true, "sub": true, "user_id": true, "session_id": true,
 	"identity_id": true, "factor_id": true, "provider_id": true,
 	"authorization_id": true, "client_id": true, "flow_state_id": true,
+	"challenge_id": true, // passkey/MFA challenge handle, minted per request
 	// tokens / secrets / one-time material
 	"access_token": true, "refresh_token": true, "provider_token": true,
 	"provider_refresh_token": true, "token": true, "token_hash": true,
 	"hashed_token": true, "confirmation_token": true, "recovery_token": true,
 	"email_change_token": true, "email_change_token_new": true,
 	"email_change_token_current": true, "reauthentication_token": true,
-	"code": true, "code_challenge": true, "client_secret": true,
+	"email_otp": true, // admin generate_link: the plaintext OTP, minted per-database
+	"code":      true, "code_challenge": true, "client_secret": true,
 	"csrf_token": true, "nonce": true, "secret": true, "qr_code": true,
 	"uri": true, "challenge": true, "public_key": true, "credential_id": true,
 	// timestamps
@@ -56,7 +58,8 @@ var volatileKeys = map[string]bool{
 	"confirmation_sent_at": true, "recovery_sent_at": true,
 	"email_change_sent_at": true, "phone_change_sent_at": true,
 	"reauthentication_sent_at": true, "not_after": true, "refreshed_at": true,
-	"expires_in": true, "expires_at": true, "iat": true, "exp": true, "nbf": true,
+	"last_challenged_at": true, // MFA factor: set to a per-instance timestamp once challenged
+	"expires_in":         true, "expires_at": true, "iat": true, "exp": true, "nbf": true,
 	"timestamp": true, // amr-claim method timestamp
 	// diagnostics gotrue attaches to some error bodies
 	"error_id": true, "request_id": true,
