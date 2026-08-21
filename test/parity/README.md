@@ -10,10 +10,24 @@ to both; responses are normalised (volatile ids/timestamps/tokens scrubbed) and
 diffed structurally. A diff that matches an entry in [`deviations.yaml`](./deviations.yaml)
 is downgraded from **FAIL** to **KNOWN**; anything else fails the test.
 
-> Status: **working smoke slice verified end-to-end** against
-> `supabase/auth:v2.196.0`. 14 scenarios spanning 12 of the 69 curated operations
-> (17.4%) run **green** (0 FAIL, 34 known deviations tolerated). The remaining 57
-> operations have a mechanical TODO scaffold (see below).
+> Status: **verified end-to-end** against `supabase/auth:v2.196.0`, both profiles
+> green (0 FAIL):
+>
+> | profile | how it runs | ops exercised | result |
+> | --- | --- | --- | --- |
+> | **default** (flags off) | `compose.parity.yml` | **36 / 69 (52.2%)** | PASS · 67 KNOWN |
+> | **flagged** (`PARITY_FLAGS=1`) | `+ compose.parity.flags.yml` | **51 / 69 (73.9%)** | PASS · 76 KNOWN |
+>
+> The flagged run is a **superset** — 51 of the 69 curated operations are covered
+> in all (up from the original 12 / 17.4%). Coverage grew via three mechanisms:
+> single-request `scenario`s, multi-step `flow`s (flows_test.go — admin lifecycle,
+> the full MFA/TOTP enrol→challenge→verify→aal2 chain, admin factors, and
+> `generate_link`→`verify` OTP redemption without an inbox), and a matched
+> feature-flag twin overlay (OAuth 2.1 server, passkeys, manual linking). The
+> remaining 18 ops each need a capability the harness deliberately does not fake
+> (software WebAuthn authenticator, signed SAML assertion, scriptable consent
+> cookie, stubbed external IdP) — see the coverage section and the TODO scaffold
+> in harness_test.go.
 
 ---
 
@@ -182,21 +196,44 @@ this is the source of several deviations), `GOTRUE_API_HOST`, `PORT`.
 ### Enabling the feature-flagged surfaces on BOTH
 
 Flip a **matched pair** to compare a feature-flagged surface. Defaults are OFF on
-both. (`⚠` marks GoTrue env-name quirks found in upstream `configuration.go`.)
+both.
+
+The parity stack ships the tested subset as a compose overlay,
+[`compose.parity.flags.yml`](./compose.parity.flags.yml), which flips **OAuth 2.1
+server + passkeys + manual identity linking** on for BOTH servers and supplies the
+WebAuthn relying-party material. Layer it and run with `PARITY_FLAGS=1`:
+
+```bash
+docker-compose -f test/parity/compose.parity.yml \
+               -f test/parity/compose.parity.flags.yml up -d gotrue dilion
+PARITY_FLAGS=1 PARITY_DILION_URL=http://localhost:8787/auth/v1 \
+  PARITY_GOTRUE_URL=http://localhost:9999 \
+  PARITY_JWT_SECRET=parity-super-secret-shared-jwt-key-0123456789 \
+  go test -tags parity ./test/parity/ -run TestParity -v
+# restore the flags-off stack:
+docker-compose -f test/parity/compose.parity.yml up -d gotrue dilion
+```
+
+`PARITY_FLAGS=1` tells the harness that the flagged twin is live, so scenarios and
+flows tagged `profile:"on"` run and the flagged surfaces are asserted with their
+enabled behaviour instead of the disabled 404s.
 
 | Surface | Dilion | GoTrue |
 | --- | --- | --- |
-| Passkeys / WebAuthn | `DILION_AUTH_PASSKEY_ENABLED=true` (+ `DILION_AUTH_WEBAUTHN_RP_ID`, `DILION_AUTH_WEBAUTHN_RP_ORIGINS`) | `GOTRUE_MFA_WEB_AUTHN_ENROLL_ENABLED=true` + `GOTRUE_MFA_WEB_AUTHN_VERIFY_ENABLED=true` ⚠ `WEB_AUTHN` is split |
-| OAuth 2.1 server | `DILION_AUTH_OAUTH_SERVER_ENABLED=true` | `GOTRUE_OAUTH_SERVER_ENABLED=true` |
+| Passkeys / WebAuthn | `DILION_AUTH_PASSKEY_ENABLED=true` (+ `DILION_AUTH_WEBAUTHN_RP_ID`, `_RP_NAME`, `_RP_ORIGINS`) | `GOTRUE_PASSKEY_ENABLED=true` (+ `GOTRUE_WEBAUTHN_RP_ID`, `GOTRUE_WEBAUTHN_RP_DISPLAY_NAME`, `GOTRUE_WEBAUTHN_RP_ORIGINS`) — **empirically confirmed**: passkeys are a SEPARATE `PASSKEY_ENABLED` block upstream, NOT the MFA-WebAuthn factor; RP config is required or GoTrue logs `WebAuthn configuration is invalid` |
+| OAuth 2.1 server | `DILION_AUTH_OAUTH_SERVER_ENABLED=true` | `GOTRUE_OAUTH_SERVER_ENABLED=true` (+ `GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION=true` for DCR) |
+| Manual identity linking | `DILION_AUTH_SECURITY_MANUAL_LINKING_ENABLED=true` | `GOTRUE_SECURITY_MANUAL_LINKING_ENABLED=true` |
 | Phone / SMS | *(driven by SMS provider config)* `DILION_AUTH_SMS_PROVIDER=…` | `GOTRUE_EXTERNAL_PHONE_ENABLED=true` + `GOTRUE_SMS_PROVIDER=…` |
-| SAML | `DILION_AUTH_SAML_ENABLED=true` (+ `DILION_AUTH_SAML_PRIVATE_KEY`) | `GOTRUE_SAML_ENABLED=true` ⚠ (example.env uses `GOTRUE_EXTERNAL_SAML_ENABLED`) |
+| SAML | `DILION_AUTH_SAML_ENABLED=true` (+ `DILION_AUTH_SAML_PRIVATE_KEY`) | `GOTRUE_SAML_ENABLED=true` |
 | Anonymous users | `DILION_AUTH_EXTERNAL_ANONYMOUS_USERS_ENABLED=true` | `GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED=true` |
-| MFA TOTP | `DILION_AUTH_MFA_TOTP_ENROLL_ENABLED` / `_VERIFY_ENABLED` | `GOTRUE_MFA_TOTP_ENROLL_ENABLED` / `_VERIFY_ENABLED` |
+| MFA TOTP *(default ON both)* | `DILION_AUTH_MFA_TOTP_ENROLL_ENABLED` / `_VERIFY_ENABLED` | `GOTRUE_MFA_TOTP_ENROLL_ENABLED` / `_VERIFY_ENABLED` |
 | Captcha | `DILION_AUTH_SECURITY_CAPTCHA_ENABLED` (+ provider/secret) | `GOTRUE_SECURITY_CAPTCHA_ENABLED` (+ provider/secret) |
 
-For passkeys/SAML/OAuth-server you must supply the matching key material
-(WebAuthn RP id/origins, SAML private key, an OAuth client) to BOTH, or the
-surfaces answer different setup errors.
+MFA/TOTP is ON by default on both, so the full enrol→challenge→verify→aal2 chain
+runs in the **default** profile (no overlay needed). For passkeys/SAML/OAuth-server
+you must supply the matching key material to BOTH, or the surfaces answer
+different setup errors — the overlay does this for OAuth + passkeys; SAML key
+material is not supplied (SAML stays off in both profiles).
 
 ---
 
@@ -227,7 +264,10 @@ Entries are harvested from the authoritative in-code notes (grep
 `Deviation|DILION-ONLY|DILION DEVIATION` across `internal/auth/*.go`) plus
 differences **observed empirically** during bring-up (e.g. `user_metadata` is not
 mirrored by Dilion; upstream's `/settings` reports `saml_private_key_next_configured:true`).
-Current catalogue: **32 entries.**
+Current catalogue: **38 entries.** (The six added during this expansion:
+`admin-create-confirmed-at`, `admin-generate-link-action-link`, and the four
+`oauth-as-*` entries mirroring the OIDC base-URL/alg deviations onto the
+`/.well-known/oauth-authorization-server` document.)
 
 Config-neutralisable differences (autoconfirm default, refresh reuse interval,
 mailer URL paths) are **not** deviations — they are removed by the env matrix
@@ -287,34 +327,52 @@ parity-down:          ## tear the stack down and drop the throwaway volumes
 
 ## What is covered, and reaching full coverage
 
-**Working slice (12/69 ops, 17.4%, all green):** `authHealth`, `authSettings`,
-`authJwks`, `authOpenIDConfiguration`, `authOAuthAuthorizationServerMetadata`,
-`authSignup`, `authToken` (password + refresh + a bad-credential error case),
-`authGetUser`, `authUpdateUser`, `authLogout`, `authAdminListUsers`
-(service_role, cross-verifiable HS256 token), `authVerifyGet` (redirect).
+**Covered — 51/69 (73.9%), all green** (the `PARITY_FLAGS=1` flagged run; the
+default flags-off run covers 36 of these). Grouped by how they are exercised:
 
-The remaining **57 operations** each have a row in the **TODO table** in the
-`harness_test.go` doc comment (also emitted by the coverage report), listing the
-credential and prerequisite state each needs. Filling one in is mechanical:
+- **Core / discovery:** `authHealth`, `authSettings`, `authJwks`,
+  `authOpenIDConfiguration`, `authOAuthAuthorizationServerMetadata`.
+- **Signup / token / user:** `authSignup`, `authToken` (password + refresh +
+  bad-credential), `authGetUser`, `authUpdateUser`, `authLogout`.
+- **Request-side email OTP (enumeration-safe 200 shapes):** `authOtp`,
+  `authMagicLink`, `authRecover`, `authResend`, `authReauthenticate`.
+- **Admin user surface (service_role):** `authAdminListUsers`,
+  `authAdminCreateUser`, `authAdminGetUser`, `authAdminUpdateUser`,
+  `authAdminDeleteUser`, `authInvite`, `authAdminGenerateLink`,
+  `authAdminListSSOProviders`, `authAdminAuditLog`.
+- **OTP-consuming email flows via `generate_link`** (flows_test.go — mint the
+  hashed_token with admin `generate_link`, redeem it through `POST /verify` → a
+  real session; no inbox): `authVerifyPost` (recovery + magiclink), `authVerifyGet`.
+- **MFA / TOTP end-to-end** (flows_test.go — enrol, parse the secret, compute an
+  RFC-6238 code in-test via `pquerna/otp`, challenge, verify → **aal2** asserted
+  in the JWT on both): `authEnrollFactor`, `authChallengeFactor`,
+  `authVerifyFactor`, `authUnenrollFactor`, plus admin factors
+  `authAdminListFactors`, `authAdminUpdateFactor`, `authAdminDeleteFactor`.
+- **External OAuth / identity (`PARITY_FLAGS=1` for linking):**
+  `authExternalAuthorize`, `authLinkIdentity`, `authUnlinkIdentity`,
+  `authSingleSignOn`, `authSamlMetadata`.
+- **OAuth 2.1 server (`PARITY_FLAGS=1`):** `authOAuthDynamicRegisterClient`,
+  `authAdminRegisterOAuthClient`, `authAdminGetOAuthClient`,
+  `authAdminListOAuthClients`, `authAdminUpdateOAuthClient`,
+  `authAdminDeleteOAuthClient`, `authAdminRegenerateOAuthClientSecret`,
+  `authOAuthAuthorizeGet`, `authOAuthToken`, `authOAuthUserInfo`.
+- **Passkeys (`PARITY_FLAGS=1`, options only):** `authPasskeyList`,
+  `authPasskeyRegistrationOptions`, `authPasskeyAuthenticationOptions`.
 
-1. add a `scenario{}` to `scenarios()` with the method/path/cred and the right
-   `compare` mode;
-2. run it — the differ shows what diverges;
-3. add any genuinely-new intentional difference to `deviations.yaml`.
+**Remaining 18 (each blocked by a capability the harness does not fake)** — the
+`harness_test.go` TODO scaffold and the coverage report list these live:
 
-Priority order to reach full coverage:
+| group | ops | blocker |
+| --- | --- | --- |
+| Passkey ceremony | `authPasskeyRegistrationVerify`, `authPasskeyAuthenticationVerify`, `authPasskeyUpdate`, `authPasskeyDelete`, `authAdminPasskeyList`, `authAdminPasskeyDelete` | a software WebAuthn authenticator to sign the ceremony / enrol a credential |
+| OAuth consent + grants | `authOAuthGetAuthorization`, `authOAuthConsent`, `authListOAuthGrants`, `authRevokeOAuthGrant` | a scriptable browser/consent session cookie to reach the consent screen and record a grant |
+| OAuth authorize POST | `authOAuthAuthorizePost` | upstream v2.196.0 has no POST `/oauth/authorize` (405); Dilion-only capability — nothing to differentially test |
+| External callback | `authExternalCallbackGet`, `authExternalCallbackPost` | a stubbed external OAuth provider returning a signed state+code |
+| SSO provider CRUD | `authAdminCreateSSOProvider`, `authAdminGetSSOProvider`, `authAdminUpdateSSOProvider`, `authAdminDeleteSSOProvider` | valid SAML IdP metadata (a malformed doc diverges 400 vs 500); list IS covered |
+| SAML ACS | `authSamlAcs` | a signed SAML assertion posted to the ACS URL |
 
-1. **Admin user CRUD** (`authAdminCreateUser/GetUser/UpdateUser/DeleteUser`) and
-   `authAdminGenerateLink` — all `service_role`, no feature flags. `generate_link`
-   also unlocks the **OTP-consuming** flows (`authVerifyPost`, `authOtp`,
-   `authMagicLink`, `authRecover`, `authResend`) by giving the harness a real
-   token to redeem.
-2. **MFA/TOTP** (`authEnrollFactor` → `authChallengeFactor` → `authVerifyFactor`,
-   admin factor ops) — needs a TOTP code computed from the enrol secret.
-3. **Feature-flagged surfaces** — enable the matched pairs and add scenarios:
-   passkeys (7 ops), OAuth 2.1 server (12 ops), SAML/SSO (8 ops).
-4. **External OAuth start/callback** (`authExternalAuthorize`, callbacks) — assert
-   the redirect target with a stubbed provider.
-
-Each newly-covered op raises the coverage % the report prints; the goal is 69/69
-with every non-green diff either fixed in Dilion or catalogued as a deviation.
+Filling one in is mechanical: add a `scenario{}` (single request) or a `flow{}`
+(stateful sequence with `capture`/substitution) — run it, the differ shows what
+diverges, then add any genuinely-new intentional difference to `deviations.yaml`
+(never loosen the differ). The goal is 69/69 with every non-green diff either
+fixed in Dilion or catalogued as a deviation.

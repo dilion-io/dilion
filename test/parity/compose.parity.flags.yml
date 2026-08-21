@@ -1,0 +1,38 @@
+# Feature-flag TWIN overlay for the parity stack. Layer it on top of
+# compose.parity.yml to flip the matched flag pairs to ON — on BOTH servers at
+# once — so the flagged surfaces (OAuth 2.1 server, passkeys/WebAuthn, manual
+# identity linking) answer the SAME setup state and are differentially testable:
+#
+#   docker-compose -f test/parity/compose.parity.yml \
+#                  -f test/parity/compose.parity.flags.yml up -d gotrue dilion
+#   PARITY_FLAGS=1 <the usual PARITY_* env> go test -tags parity ./test/parity/ -run TestParity -v
+#
+# Restore the default (flags-off) stack with a plain
+#   docker-compose -f test/parity/compose.parity.yml up -d gotrue dilion
+#
+# WebAuthn RP id/origins are supplied to BOTH so the passkey options endpoints
+# produce a comparable relying-party (upstream REQUIRES them; Dilion would
+# otherwise fall back to SiteURL — see deviation passkey-rp-fallback).
+services:
+  gotrue:
+    environment:
+      GOTRUE_OAUTH_SERVER_ENABLED: "true"
+      GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION: "true"
+      # Passkeys are a SEPARATE config block in upstream (not the MFA WebAuthn
+      # factor): the /passkeys routes are gated by GOTRUE_PASSKEY_ENABLED.
+      GOTRUE_PASSKEY_ENABLED: "true"
+      GOTRUE_MFA_WEB_AUTHN_ENROLL_ENABLED: "true"
+      GOTRUE_MFA_WEB_AUTHN_VERIFY_ENABLED: "true"
+      GOTRUE_WEBAUTHN_RP_ID: "localhost"
+      GOTRUE_WEBAUTHN_RP_DISPLAY_NAME: "Parity"
+      GOTRUE_WEBAUTHN_RP_ORIGINS: "http://localhost:3000"
+      GOTRUE_SECURITY_MANUAL_LINKING_ENABLED: "true"
+
+  dilion:
+    environment:
+      DILION_AUTH_OAUTH_SERVER_ENABLED: "true"
+      DILION_AUTH_PASSKEY_ENABLED: "true"
+      DILION_AUTH_WEBAUTHN_RP_ID: "localhost"
+      DILION_AUTH_WEBAUTHN_RP_NAME: "Parity"
+      DILION_AUTH_WEBAUTHN_RP_ORIGINS: "http://localhost:3000"
+      DILION_AUTH_SECURITY_MANUAL_LINKING_ENABLED: "true"
