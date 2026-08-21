@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -95,9 +96,15 @@ func newTestEnvWithConfig(t *testing.T, cfg *Config) *testEnv {
 	return env
 }
 
-// applySchema installs migration 0100 plus the prerequisites owned by other
-// agents (0001_core's extensions/schemas and 0200's outbox table). Those are
-// created HERE ONLY — never in migrations/0100_auth.sql.
+// applySchema installs the WHOLE auth migration chain (0100 + 0110..0116) plus
+// the prerequisites owned by other packages (0001_core's extensions/schemas and
+// 0200's outbox table). Those prerequisites are created HERE ONLY — never in
+// migrations/0100_auth.sql.
+//
+// The full chain matters: grantSession writes auth.mfa_amr_claims (0112) on
+// every sign-in, so a harness that stops at 0100 only passes when some earlier
+// test in the same run happened to create that table — a hidden ordering
+// dependency that fails on a genuinely fresh database (as CI proved).
 func applySchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -118,13 +125,24 @@ func applySchema(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("create test prerequisites: %v", err)
 	}
 
-	path := filepath.Join("..", "..", "migrations", "0100_auth.sql")
-	sql, err := os.ReadFile(path)
+	// Every auth migration, in lexicographic order — the same order the real
+	// runner (internal/store.Migrate) uses. All are idempotent.
+	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "01*.sql"))
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("glob auth migrations: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(sql)); err != nil {
-		t.Fatalf("apply 0100_auth.sql: %v", err)
+	if len(files) == 0 {
+		t.Fatal("no auth migrations found")
+	}
+	sort.Strings(files)
+	for _, path := range files {
+		sql, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", path, rerr)
+		}
+		if _, eerr := pool.Exec(ctx, string(sql)); eerr != nil {
+			t.Fatalf("apply %s: %v", filepath.Base(path), eerr)
+		}
 	}
 }
 
