@@ -452,12 +452,71 @@ type MFATOTPConfig struct {
 	VerifyEnabled bool `json:"verify_enabled"`
 }
 
+// MFAFactorTypeConfig mirrors upstream's per-factor enroll/verify toggle
+// (conf.MFAFactorTypeConfiguration), used by the phone and webauthn factors.
+type MFAFactorTypeConfig struct {
+	// EnrollEnabled mirrors GOTRUE_MFA_<TYPE>_ENROLL_ENABLED (default false).
+	EnrollEnabled bool `json:"enroll_enabled"`
+	// VerifyEnabled mirrors GOTRUE_MFA_<TYPE>_VERIFY_ENABLED (default false).
+	VerifyEnabled bool `json:"verify_enabled"`
+}
+
 // MFAConfig mirrors upstream conf.MFAConfiguration. FIELDS ONLY.
 type MFAConfig struct {
 	// TOTP mirrors GOTRUE_MFA_TOTP_*.
 	TOTP MFATOTPConfig `json:"totp"`
+	// Phone mirrors GOTRUE_MFA_PHONE_* (SMS-delivered MFA factor). Default off.
+	Phone MFAFactorTypeConfig `json:"phone"`
+	// WebAuthn mirrors GOTRUE_MFA_WEB_AUTHN_* (WebAuthn as a second factor,
+	// distinct from first-class Passkeys). Default off.
+	WebAuthn MFAFactorTypeConfig `json:"web_authn"`
 	// MaxEnrolledFactors mirrors GOTRUE_MFA_MAX_ENROLLED_FACTORS (default 10).
 	MaxEnrolledFactors int `json:"max_enrolled_factors"`
+	// PhoneOTPLength / PhoneOTPExp mirror the MFA phone challenge OTP shape
+	// (default 6 / 300s).
+	PhoneOTPLength int           `json:"phone_otp_length"`
+	PhoneOTPExp    time.Duration `json:"phone_otp_exp"`
+}
+
+// HookEndpointConfig configures one Supabase-compatible auth hook. A hook is an
+// external extension point invoked at a fixed lifecycle moment; the URI scheme
+// selects the driver: https?:// -> HTTP webhook (HMAC-signed with Secrets),
+// pg-functions://<db>/<schema>.<func> -> a Postgres function called in-tx.
+// FIELDS ONLY (drivers implemented elsewhere).
+type HookEndpointConfig struct {
+	// Enabled mirrors GOTRUE_HOOK_<NAME>_ENABLED (default false).
+	Enabled bool `json:"enabled"`
+	// URI mirrors GOTRUE_HOOK_<NAME>_URI (http(s):// or pg-functions://...).
+	URI string `json:"uri"`
+	// Secrets mirrors GOTRUE_HOOK_<NAME>_SECRETS (v1,whsec_... — HMAC signing,
+	// supports rotation as a comma list). HTTP driver only.
+	Secrets []string `json:"-"`
+}
+
+// HooksConfig mirrors upstream conf.HookConfiguration. Each field is one hook
+// point Supabase exposes to external code. FIELDS ONLY.
+type HooksConfig struct {
+	// CustomAccessToken mirrors GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_* — rewrites the
+	// access-token claims before signing (in addition to the in-process
+	// ports.TokenClaims hook).
+	CustomAccessToken HookEndpointConfig `json:"custom_access_token"`
+	// SendEmail mirrors GOTRUE_HOOK_SEND_EMAIL_* — overrides email delivery.
+	SendEmail HookEndpointConfig `json:"send_email"`
+	// SendSMS mirrors GOTRUE_HOOK_SEND_SMS_* — overrides SMS delivery.
+	SendSMS HookEndpointConfig `json:"send_sms"`
+	// BeforeUserCreated mirrors GOTRUE_HOOK_BEFORE_USER_CREATED_* — may reject a
+	// signup before the row is written.
+	BeforeUserCreated HookEndpointConfig `json:"before_user_created"`
+	// AfterUserCreated mirrors GOTRUE_HOOK_AFTER_USER_CREATED_* — observes a new
+	// user post-commit.
+	AfterUserCreated HookEndpointConfig `json:"after_user_created"`
+	// MFAVerificationAttempt mirrors GOTRUE_HOOK_MFA_VERIFICATION_ATTEMPT_* —
+	// may reject an MFA challenge verification.
+	MFAVerificationAttempt HookEndpointConfig `json:"mfa_verification_attempt"`
+	// PasswordVerificationAttempt mirrors
+	// GOTRUE_HOOK_PASSWORD_VERIFICATION_ATTEMPT_* — observes/limits a password
+	// check.
+	PasswordVerificationAttempt HookEndpointConfig `json:"password_verification_attempt"`
 }
 
 // PasskeyConfig mirrors upstream conf.PasskeyConfiguration +
@@ -525,6 +584,7 @@ type Config struct {
 	FlowStateExpiry time.Duration `json:"flow_state_expiry"`
 
 	MFA         MFAConfig         `json:"mfa"`
+	Hooks       HooksConfig       `json:"hooks"`
 	Passkeys    PasskeyConfig     `json:"passkeys"`
 	SAML        SAMLConfig        `json:"saml"`
 	OAuthServer OAuthServerConfig `json:"oauth_server"`
@@ -609,7 +669,11 @@ func DefaultConfig() *Config {
 		FlowStateExpiry: 5 * time.Minute,
 		MFA: MFAConfig{
 			TOTP:               MFATOTPConfig{EnrollEnabled: true, VerifyEnabled: true},
+			Phone:              MFAFactorTypeConfig{},
+			WebAuthn:           MFAFactorTypeConfig{},
 			MaxEnrolledFactors: 10,
+			PhoneOTPLength:     6,
+			PhoneOTPExp:        300 * time.Second,
 		},
 		CleanupEnabled:        true,
 		CleanupInterval:       5 * time.Minute,
@@ -733,7 +797,20 @@ func LoadConfig() (*Config, error) {
 	// MFA / passkeys / SAML / OAuth server.
 	c.MFA.TOTP.EnrollEnabled = envBool("MFA_TOTP_ENROLL_ENABLED", c.MFA.TOTP.EnrollEnabled, fail)
 	c.MFA.TOTP.VerifyEnabled = envBool("MFA_TOTP_VERIFY_ENABLED", c.MFA.TOTP.VerifyEnabled, fail)
+	c.MFA.Phone.EnrollEnabled = envBool("MFA_PHONE_ENROLL_ENABLED", c.MFA.Phone.EnrollEnabled, fail)
+	c.MFA.Phone.VerifyEnabled = envBool("MFA_PHONE_VERIFY_ENABLED", c.MFA.Phone.VerifyEnabled, fail)
+	c.MFA.WebAuthn.EnrollEnabled = envBool("MFA_WEB_AUTHN_ENROLL_ENABLED", c.MFA.WebAuthn.EnrollEnabled, fail)
+	c.MFA.WebAuthn.VerifyEnabled = envBool("MFA_WEB_AUTHN_VERIFY_ENABLED", c.MFA.WebAuthn.VerifyEnabled, fail)
 	c.MFA.MaxEnrolledFactors = envInt("MFA_MAX_ENROLLED_FACTORS", c.MFA.MaxEnrolledFactors, fail)
+	c.MFA.PhoneOTPLength = envInt("MFA_PHONE_OTP_LENGTH", c.MFA.PhoneOTPLength, fail)
+	// Hooks (Supabase-compatible external extension points).
+	parseHook(&c.Hooks.CustomAccessToken, "HOOK_CUSTOM_ACCESS_TOKEN", fail)
+	parseHook(&c.Hooks.SendEmail, "HOOK_SEND_EMAIL", fail)
+	parseHook(&c.Hooks.SendSMS, "HOOK_SEND_SMS", fail)
+	parseHook(&c.Hooks.BeforeUserCreated, "HOOK_BEFORE_USER_CREATED", fail)
+	parseHook(&c.Hooks.AfterUserCreated, "HOOK_AFTER_USER_CREATED", fail)
+	parseHook(&c.Hooks.MFAVerificationAttempt, "HOOK_MFA_VERIFICATION_ATTEMPT", fail)
+	parseHook(&c.Hooks.PasswordVerificationAttempt, "HOOK_PASSWORD_VERIFICATION_ATTEMPT", fail)
 	c.Passkeys.Enabled = envBool("PASSKEY_ENABLED", c.Passkeys.Enabled, fail)
 	c.Passkeys.RPID = envString("WEBAUTHN_RP_ID", c.Passkeys.RPID)
 	c.Passkeys.RPOrigins = envStringSlice("WEBAUTHN_RP_ORIGINS", c.Passkeys.RPOrigins)
@@ -1138,6 +1215,17 @@ func lookupEnv(name string) (string, bool) {
 		return v, true
 	}
 	return os.LookupEnv(LegacyEnvPrefix + name)
+}
+
+// parseHook fills a HookEndpointConfig from GOTRUE_<prefix>_{ENABLED,URI,SECRETS}
+// (DILION_AUTH_<prefix>_* preferred). Enabling a hook without a URI is fatal.
+func parseHook(h *HookEndpointConfig, prefix string, fail func(string, ...any)) {
+	h.Enabled = envBool(prefix+"_ENABLED", h.Enabled, fail)
+	h.URI = envString(prefix+"_URI", h.URI)
+	h.Secrets = envStringSlice(prefix+"_SECRETS", h.Secrets)
+	if h.Enabled && strings.TrimSpace(h.URI) == "" {
+		fail("hook %s enabled but %s_URI is empty", prefix, prefix)
+	}
 }
 
 func envString(name, def string) string {

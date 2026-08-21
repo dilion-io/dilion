@@ -88,9 +88,10 @@ func (a *api) adminListFactors(w http.ResponseWriter, r *http.Request) error {
 
 // adminUpdateFactor implements PUT /admin/users/{user_id}/factors/{factor_id}.
 //
-// Deviation: upstream also accepts `phone` for phone factors. Dilion has no
-// phone factor, so a `phone` value on a TOTP factor is ignored exactly as
-// upstream ignores it (its update is guarded by `factor.IsPhoneFactor()`).
+// Upstream accepts a `friendly_name` on any factor and, for a phone factor, a
+// `phone` (re-normalized to E.164); the phone update is guarded by
+// `factor.IsPhoneFactor()`, so a `phone` sent for a TOTP/webauthn factor is
+// ignored.
 func (a *api) adminUpdateFactor(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	u, factor, err := a.adminLoadFactor(r)
@@ -118,6 +119,29 @@ func (a *api) adminUpdateFactor(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		factor.FriendlyName = name
+		factor.UpdatedAt = now
+	}
+
+	// Phone re-assignment, guarded to phone factors as upstream is.
+	if params.Phone != "" && factor.FactorType == FactorTypePhone {
+		phone, perr := validatePhone(params.Phone)
+		if perr != nil {
+			return perr
+		}
+		now := a.now()
+		if err := a.inTx(ctx, func(tx pgx.Tx) error {
+			if uerr := updateFactorPhone(ctx, tx, factor.ID, phone, now); uerr != nil {
+				if isUniqueViolation(uerr, "unique_phone_factor_per_user") {
+					return unprocessableEntityError(ErrorCodeMFAVerifiedFactorExists,
+						"A phone factor already exists for this number, unenroll to continue")
+				}
+				return internalServerError("Database error updating factor").withInternal(uerr)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		factor.Phone = phone
 		factor.UpdatedAt = now
 	}
 

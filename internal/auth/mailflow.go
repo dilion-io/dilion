@@ -419,6 +419,16 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 		return internalServerError("Error sending reauthentication email").withInternal(err)
 	}
 
+	// send_email (external hook) owns delivery when enabled.
+	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+		Token:           otp,
+		TokenHash:       hash,
+		EmailActionType: mailReauthentication,
+		SiteURL:         a.cfg.SiteURL,
+	}); handled {
+		return herr
+	}
+
 	text, htmlBody := renderActionMail("Your verification code",
 		"Use the code below to verify your identity. It expires shortly.", "", otp)
 	return a.deliver(ctx, u.Email, a.subjectFor(mailReauthentication, otp), text, htmlBody, "reauthentication")
@@ -484,10 +494,25 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, internalServerError("Error building email action link").withInternal(err)
 	}
-	text, htmlBody := renderActionMail("Confirm your new email address",
-		"Follow the link below to confirm "+newEmail+" as your new email address.", linkNew, otpNew)
-	if err := a.deliver(ctx, newEmail, subject, text, htmlBody, "email change"); err != nil {
-		return nil, nil, err
+	// send_email (external hook) owns delivery of BOTH the new-address and (when
+	// secure email change is on) the current-address confirmations.
+	emailChangeHooked := a.cfg.Hooks.SendEmail.Enabled
+	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+		Token:           otpNew,
+		TokenHash:       hashNew,
+		RedirectTo:      referrer,
+		EmailActionType: mailEmailChangeNew,
+		SiteURL:         a.cfg.SiteURL,
+	}); handled {
+		if herr != nil {
+			return nil, nil, herr
+		}
+	} else {
+		text, htmlBody := renderActionMail("Confirm your new email address",
+			"Follow the link below to confirm "+newEmail+" as your new email address.", linkNew, otpNew)
+		if err := a.deliver(ctx, newEmail, subject, text, htmlBody, "email change"); err != nil {
+			return nil, nil, err
+		}
 	}
 	tokNew := &mailToken{OTP: otpNew, Hash: hashNew, Link: linkNew, RedirectTo: referrer}
 
@@ -499,10 +524,22 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, internalServerError("Error building email action link").withInternal(err)
 	}
-	text, htmlBody = renderActionMail("Confirm your new email address",
-		"Follow the link below to confirm "+newEmail+" as your new email address.", linkCurrent, otpCurrent)
-	if err := a.deliver(ctx, u.Email, subject, text, htmlBody, "email change"); err != nil {
-		return nil, nil, err
+	if emailChangeHooked {
+		if _, herr := a.sendEmailViaHook(ctx, u, EmailData{
+			Token:           otpCurrent,
+			TokenHash:       hashCurrent,
+			RedirectTo:      referrer,
+			EmailActionType: mailEmailChangeCurrent,
+			SiteURL:         a.cfg.SiteURL,
+		}); herr != nil {
+			return nil, nil, herr
+		}
+	} else {
+		text, htmlBody := renderActionMail("Confirm your new email address",
+			"Follow the link below to confirm "+newEmail+" as your new email address.", linkCurrent, otpCurrent)
+		if err := a.deliver(ctx, u.Email, subject, text, htmlBody, "email change"); err != nil {
+			return nil, nil, err
+		}
 	}
 	return tokNew, &mailToken{OTP: otpCurrent, Hash: hashCurrent, Link: linkCurrent, RedirectTo: referrer}, nil
 }
@@ -575,6 +612,23 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 	link, err := a.actionLink(r, p.actionType, hash, p.linkType, referrer)
 	if err != nil {
 		return nil, internalServerError("Error building email action link").withInternal(err)
+	}
+
+	// send_email (external hook): when enabled the hook owns delivery and the
+	// built-in mailer is skipped. It receives the OTP, its stored hash (PKCE
+	// prefix included), the action type and the resolved redirect, so it can
+	// render and deliver the message itself.
+	if handled, herr := a.sendEmailViaHook(ctx, p.user, EmailData{
+		Token:           otp,
+		TokenHash:       hash,
+		RedirectTo:      referrer,
+		EmailActionType: p.linkType,
+		SiteURL:         a.cfg.SiteURL,
+	}); handled {
+		if herr != nil {
+			return nil, herr
+		}
+		return &mailToken{OTP: otp, Hash: hash, Link: link, RedirectTo: referrer}, nil
 	}
 
 	text, htmlBody := renderActionMail(p.headline, p.sentence, link, otp)

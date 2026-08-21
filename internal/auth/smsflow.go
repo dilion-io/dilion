@@ -344,6 +344,17 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 		u.ReauthenticationSentAt = &now
 	}
 
+	// send_sms (external hook): when enabled the hook owns delivery and the
+	// built-in provider is skipped. It receives the user, the raw OTP, the OTP
+	// type and the destination number, and reports no provider message id (a bare
+	// `{}` response, exactly as an injected ports.SMSSender does).
+	if handled, herr := a.sendSMSViaHook(ctx, u, SMS{OTP: otp, SMSType: otpType, Phone: phone}); handled {
+		if herr != nil {
+			return "", herr
+		}
+		return "", nil
+	}
+
 	return a.deliverSMS(ctx, phone, otp, otpType, defaultChannel(channel))
 }
 

@@ -360,13 +360,35 @@ func findFactorsByUserID(ctx context.Context, q querier, userID string) ([]*Fact
 
 func insertFactor(ctx context.Context, q querier, f *Factor, now time.Time) error {
 	_, err := q.Exec(ctx, `
-		insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret)
-		values ($1::uuid, $2::uuid, nullif($3, ''), $4::auth.factor_type, $5::auth.factor_status, $6, $6, nullif($7, ''))`,
-		f.ID, f.UserID, f.FriendlyName, f.FactorType, f.Status, now, f.Secret)
+		insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret, phone)
+		values ($1::uuid, $2::uuid, nullif($3, ''), $4::auth.factor_type, $5::auth.factor_status, $6, $6, nullif($7, ''), nullif($8, ''))`,
+		f.ID, f.UserID, f.FriendlyName, f.FactorType, f.Status, now, f.Secret, f.Phone)
 	if err == nil {
 		f.CreatedAt, f.UpdatedAt = now, now
 	}
 	return err
+}
+
+// updateFactorWebAuthnCredential persists the go-webauthn credential blob and
+// its AAGUID onto a webauthn MFA factor — upstream Factor.SaveWebAuthnCredential.
+// The credential lives on auth.mfa_factors.web_authn_credential (jsonb), NOT in
+// auth.webauthn_credentials: the MFA webauthn FACTOR and the first-class PASSKEY
+// are two separate surfaces (see the split documented in passkey_models.go).
+func updateFactorWebAuthnCredential(ctx context.Context, q querier, id string, credential []byte, aaguid *string, now time.Time) error {
+	_, err := q.Exec(ctx, `
+		update auth.mfa_factors
+		   set web_authn_credential = $2::jsonb, web_authn_aaguid = $3::uuid, updated_at = $4
+		 where id = $1::uuid`, id, credential, aaguid, now)
+	return err
+}
+
+// findFactorWebAuthnCredential reads back the stored credential blob (nil when
+// the factor has none, e.g. an unverified webauthn factor mid-enrolment).
+func findFactorWebAuthnCredential(ctx context.Context, q querier, id string) ([]byte, error) {
+	var blob []byte
+	err := q.QueryRow(ctx,
+		`select web_authn_credential from auth.mfa_factors where id = $1::uuid`, id).Scan(&blob)
+	return blob, err
 }
 
 func updateFactorStatus(ctx context.Context, q querier, id, status string, now time.Time) error {
@@ -380,6 +402,15 @@ func updateFactorFriendlyName(ctx context.Context, q querier, id, name string, n
 	_, err := q.Exec(ctx,
 		`update auth.mfa_factors set friendly_name = nullif($2, ''), updated_at = $3 where id = $1::uuid`,
 		id, name, now)
+	return err
+}
+
+// updateFactorPhone re-assigns a phone factor's number (upstream
+// Factor.UpdatePhone). The (user_id, phone) unique index enforces uniqueness.
+func updateFactorPhone(ctx context.Context, q querier, id, phone string, now time.Time) error {
+	_, err := q.Exec(ctx,
+		`update auth.mfa_factors set phone = nullif($2, ''), updated_at = $3 where id = $1::uuid`,
+		id, phone, now)
 	return err
 }
 
@@ -454,6 +485,51 @@ func insertChallenge(ctx context.Context, q querier, c *mfaChallenge, now time.T
 		c.CreatedAt = now
 	}
 	return err
+}
+
+// insertPhoneChallenge is insertChallenge for a phone factor: it additionally
+// stores the OTP token hash in auth.mfa_challenges.otp_code (upstream
+// Factor.CreatePhoneChallenge). The stored value is generateTokenHash(phone,
+// otp) — the same sha224(phone+otp) construction the email/SMS lifecycle uses —
+// so the plaintext OTP never touches the database.
+func insertPhoneChallenge(ctx context.Context, q querier, c *mfaChallenge, otpHash string, now time.Time) error {
+	_, err := q.Exec(ctx, `
+		insert into auth.mfa_challenges (id, factor_id, created_at, ip_address, otp_code)
+		values ($1::uuid, $2::uuid, $3, $4::inet, $5)`, c.ID, c.FactorID, now, c.IPAddress, otpHash)
+	if err == nil {
+		c.CreatedAt = now
+	}
+	return err
+}
+
+// insertWebAuthnChallenge is insertChallenge for a webauthn factor: it stores
+// the go-webauthn SessionData JSON in auth.mfa_challenges.web_authn_session_data
+// (upstream WebAuthnSessionData.ToChallenge + WriteChallengeToDatabase).
+func insertWebAuthnChallenge(ctx context.Context, q querier, c *mfaChallenge, sessionData []byte, now time.Time) error {
+	_, err := q.Exec(ctx, `
+		insert into auth.mfa_challenges (id, factor_id, created_at, ip_address, web_authn_session_data)
+		values ($1::uuid, $2::uuid, $3, $4::inet, $5::jsonb)`, c.ID, c.FactorID, now, c.IPAddress, sessionData)
+	if err == nil {
+		c.CreatedAt = now
+	}
+	return err
+}
+
+// findChallengeOTP reads the otp_code hash stored on a phone challenge.
+func findChallengeOTP(ctx context.Context, q querier, challengeID string) (string, error) {
+	var otp string
+	err := q.QueryRow(ctx,
+		`select coalesce(otp_code, '') from auth.mfa_challenges where id = $1::uuid`, challengeID).Scan(&otp)
+	return otp, err
+}
+
+// findChallengeWebAuthnSessionData reads the go-webauthn SessionData stored on a
+// webauthn challenge.
+func findChallengeWebAuthnSessionData(ctx context.Context, q querier, challengeID string) ([]byte, error) {
+	var data []byte
+	err := q.QueryRow(ctx,
+		`select web_authn_session_data from auth.mfa_challenges where id = $1::uuid`, challengeID).Scan(&data)
+	return data, err
 }
 
 // findChallengeByID is upstream Factor.FindChallengeByID: a challenge is only
