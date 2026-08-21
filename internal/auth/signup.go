@@ -180,14 +180,32 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request) error {
 			if !a.cfg.Mailer.Autoconfirm {
 				confirmedAt = nil
 			}
+			newID := uuid.NewString()
+			appMeta := JSONMap{"provider": ProviderEmail, "providers": []any{ProviderEmail}}
+			// before_user_created (external hook): may reject the signup before
+			// the row is written. Runs in the signup transaction; its error
+			// (carrying the hook's chosen status/message) propagates unchanged.
+			if herr := a.runBeforeUserCreated(ctx, tx, &User{
+				ID:           newID,
+				Aud:          aud,
+				Role:         RoleAuthenticated,
+				Email:        params.Email,
+				AppMetaData:  appMeta,
+				UserMetaData: JSONMap(params.Data),
+				Identities:   []Identity{},
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}); herr != nil {
+				return herr
+			}
 			user, cerr = insertUser(ctx, tx, newUserParams{
-				ID:                uuid.NewString(),
+				ID:                newID,
 				Aud:               aud,
 				Role:              RoleAuthenticated,
 				Email:             params.Email,
 				EncryptedPassword: ptr(hashed),
 				EmailConfirmedAt:  confirmedAt,
-				AppMetaData:       JSONMap{"provider": ProviderEmail, "providers": []any{ProviderEmail}},
+				AppMetaData:       appMeta,
 				UserMetaData:      JSONMap(params.Data),
 				Now:               now,
 			})
@@ -253,6 +271,8 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request) error {
 			"provider":   ProviderEmail,
 			"project_id": DefaultProjectID,
 		})
+		// after_user_created (external hook): observes the new user post-commit.
+		a.observeAfterUserCreated(ctx, user)
 	}
 
 	if session != nil {
@@ -379,6 +399,23 @@ func (a *api) signupWithPhone(w http.ResponseWriter, r *http.Request, params *Si
 			user = existing
 
 		default:
+			// before_user_created (external hook): may reject before the row is
+			// written. The provisional user carries the phone and metadata; the
+			// persisted row's UUID is minted by insertPhoneUser (the hook keys off
+			// phone/metadata, not the id).
+			if herr := a.runBeforeUserCreated(ctx, tx, &User{
+				ID:           uuid.NewString(),
+				Aud:          aud,
+				Role:         RoleAuthenticated,
+				Phone:        phone,
+				AppMetaData:  JSONMap{"provider": ProviderPhone, "providers": []any{ProviderPhone}},
+				UserMetaData: JSONMap(params.Data),
+				Identities:   []Identity{},
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}); herr != nil {
+				return herr
+			}
 			var cerr error
 			user, cerr = a.insertPhoneUser(ctx, tx, phone, aud, hashed, params.Data, a.cfg.SMS.Autoconfirm, now)
 			if cerr != nil {
@@ -432,6 +469,8 @@ func (a *api) signupWithPhone(w http.ResponseWriter, r *http.Request, params *Si
 			"provider":   ProviderPhone,
 			"project_id": DefaultProjectID,
 		})
+		// after_user_created (external hook): observes the new user post-commit.
+		a.observeAfterUserCreated(ctx, user)
 	}
 	if session != nil {
 		return sendJSON(w, http.StatusOK, session)
@@ -526,11 +565,27 @@ func (a *api) signupAnonymously(w http.ResponseWriter, r *http.Request, params *
 
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		var cerr error
-		user, cerr = insertUser(ctx, tx, newUserParams{
-			ID:           uuid.NewString(),
+		newID := uuid.NewString()
+		appMeta := JSONMap{"provider": ProviderAnonymous, "providers": []any{ProviderAnonymous}}
+		// before_user_created (external hook): may reject an anonymous sign-in.
+		if herr := a.runBeforeUserCreated(ctx, tx, &User{
+			ID:           newID,
 			Aud:          aud,
 			Role:         RoleAuthenticated,
-			AppMetaData:  JSONMap{"provider": ProviderAnonymous, "providers": []any{ProviderAnonymous}},
+			AppMetaData:  appMeta,
+			UserMetaData: JSONMap(params.Data),
+			Identities:   []Identity{},
+			IsAnonymous:  true,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}); herr != nil {
+			return herr
+		}
+		user, cerr = insertUser(ctx, tx, newUserParams{
+			ID:           newID,
+			Aud:          aud,
+			Role:         RoleAuthenticated,
+			AppMetaData:  appMeta,
 			UserMetaData: JSONMap(params.Data),
 			IsAnonymous:  true,
 			Now:          now,
@@ -553,6 +608,8 @@ func (a *api) signupAnonymously(w http.ResponseWriter, r *http.Request, params *
 		"provider":   ProviderAnonymous,
 		"project_id": DefaultProjectID,
 	})
+	// after_user_created (external hook): observes the new user post-commit.
+	a.observeAfterUserCreated(ctx, user)
 
 	return sendJSON(w, http.StatusOK, session)
 }

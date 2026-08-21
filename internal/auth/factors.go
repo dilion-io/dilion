@@ -15,11 +15,13 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"image/color"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/boombuler/barcode/qr"
 	"github.com/go-chi/chi/v5"
@@ -87,12 +89,38 @@ type ChallengeFactorResponse struct {
 	ID        string `json:"id"`
 	Type      string `json:"type"`
 	ExpiresAt int64  `json:"expires_at,omitempty"`
+	// WebAuthn carries the go-webauthn credential options for a webauthn factor
+	// challenge (upstream ChallengeFactorResponse.WebAuthn). It is absent for
+	// TOTP and phone.
+	WebAuthn *WebAuthnChallengeData `json:"webauthn,omitempty"`
+}
+
+// WebAuthnChallengeData is the `webauthn` member of a webauthn factor challenge
+// (upstream api.WebAuthnChallengeData). Type is "create" for an unverified
+// factor (BeginRegistration) and "request" for a verified one (BeginLogin);
+// CredentialOptions is the raw PublicKeyCredential(Creation|Request)Options the
+// browser hands to navigator.credentials.
+type WebAuthnChallengeData struct {
+	Type              string `json:"type"`
+	CredentialOptions any    `json:"credential_options"`
 }
 
 // VerifyFactorParams is the POST /factors/{id}/verify body.
 type VerifyFactorParams struct {
 	ChallengeID string `json:"challenge_id"`
 	Code        string `json:"code"`
+	// WebAuthn carries the authenticator's response for a webauthn factor verify
+	// (upstream VerifyFactorParams.WebAuthn). `credential` is the raw
+	// CredentialCreationResponse ("create") or CredentialAssertionResponse
+	// ("request"); the ceremony is inferred from the factor's status, so the
+	// client-supplied type is advisory.
+	WebAuthn *WebAuthnVerifyData `json:"webauthn"`
+}
+
+// WebAuthnVerifyData is the `webauthn` member of a webauthn factor verify.
+type WebAuthnVerifyData struct {
+	Type       string          `json:"type"`
+	Credential json.RawMessage `json:"credential"`
 }
 
 // UnenrollFactorResponse is the DELETE /factors/{id} body.
@@ -161,10 +189,15 @@ func (a *api) enrollFactor(w http.ResponseWriter, r *http.Request) error {
 		}
 		return a.enrollTOTPFactor(w, r, mc, params)
 	case FactorTypePhone:
-		// Not implemented; upstream's answer for a default deployment.
-		return unprocessableEntityError(ErrorCodeMFAPhoneEnrollDisabled, "MFA enroll is disabled for Phone")
+		if !a.cfg.MFA.Phone.EnrollEnabled {
+			return unprocessableEntityError(ErrorCodeMFAPhoneEnrollDisabled, "MFA enroll is disabled for Phone")
+		}
+		return a.enrollPhoneFactor(w, r, mc, params)
 	case FactorTypeWebAuthn:
-		return unprocessableEntityError(ErrorCodeMFAWebAuthnEnrollDisabled, "MFA enroll is disabled for WebAuthn")
+		if !a.cfg.MFA.WebAuthn.EnrollEnabled {
+			return unprocessableEntityError(ErrorCodeMFAWebAuthnEnrollDisabled, "MFA enroll is disabled for WebAuthn")
+		}
+		return a.enrollWebAuthnFactor(w, r, mc, params)
 	default:
 		return badRequestError(ErrorCodeValidationFailed, "factor_type needs to be totp, phone, or webauthn")
 	}
@@ -309,14 +342,27 @@ func (a *api) challengeFactor(w http.ResponseWriter, r *http.Request) error {
 		if !a.cfg.MFA.TOTP.VerifyEnabled {
 			return unprocessableEntityError(ErrorCodeMFATOTPVerifyDisabled, "MFA verification is disabled for TOTP")
 		}
+		return a.challengeTOTPFactor(w, r, factor)
 	case FactorTypePhone:
-		return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
+		if !a.cfg.MFA.Phone.VerifyEnabled {
+			return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
+		}
+		return a.challengePhoneFactor(w, r, factor, params)
 	case FactorTypeWebAuthn:
-		return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
+		if !a.cfg.MFA.WebAuthn.VerifyEnabled {
+			return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
+		}
+		return a.challengeWebAuthnFactor(w, r, factor)
 	default:
 		return badRequestError(ErrorCodeValidationFailed, "factor_type needs to be totp, phone, or webauthn")
 	}
+}
 
+// challengeTOTPFactor stores a bare challenge for a TOTP factor: the code the
+// user enters is verified against the shared secret at verify time, so nothing
+// factor-specific is persisted on the challenge.
+func (a *api) challengeTOTPFactor(w http.ResponseWriter, r *http.Request, factor *Factor) error {
+	ctx := r.Context()
 	challenge := &mfaChallenge{
 		ID:        uuid.NewString(),
 		FactorID:  factor.ID,
@@ -344,8 +390,11 @@ func (a *api) challengeFactor(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
-// validateChallenge is upstream api.validateChallenge.
-func (a *api) validateChallenge(ctx context.Context, r *http.Request, q querier, factor *Factor, challengeID string) (*mfaChallenge, error) {
+// validateChallenge is upstream api.validateChallenge. `expiry` is the factor's
+// challenge lifetime: mfaChallengeExpiryDuration for TOTP/webauthn, and
+// Config.MFA.PhoneOTPExp for the phone factor (upstream reads the OTP expiry
+// from the factor's own config).
+func (a *api) validateChallenge(ctx context.Context, r *http.Request, q querier, factor *Factor, challengeID string, expiry time.Duration) (*mfaChallenge, error) {
 	if _, err := uuid.Parse(challengeID); err != nil {
 		return nil, unprocessableEntityError(ErrorCodeMFAFactorNotFound,
 			"MFA factor with the provided challenge ID not found")
@@ -362,7 +411,7 @@ func (a *api) validateChallenge(ctx context.Context, r *http.Request, q querier,
 		return nil, unprocessableEntityError(ErrorCodeMFAIPAddressMismatch,
 			"Challenge and verify IP addresses mismatch.")
 	}
-	if c.hasExpired(a.now(), mfaChallengeExpiryDuration) {
+	if c.hasExpired(a.now(), expiry) {
 		if err := deleteChallenge(ctx, q, c.ID); err != nil {
 			return nil, internalServerError("Database error deleting challenge").withInternal(err)
 		}
@@ -393,24 +442,40 @@ func (a *api) verifyFactor(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeBody(r, params); err != nil {
 		return err
 	}
-	if params.Code == "" {
-		return badRequestError(ErrorCodeValidationFailed, "Code needs to be non-empty")
-	}
 
 	switch factor.FactorType {
 	case FactorTypeTOTP:
 		if !a.cfg.MFA.TOTP.VerifyEnabled {
 			return unprocessableEntityError(ErrorCodeMFATOTPVerifyDisabled, "MFA verification is disabled for TOTP")
 		}
+		return a.verifyTOTPFactor(w, r, mc, factor, params)
 	case FactorTypePhone:
-		return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
+		if !a.cfg.MFA.Phone.VerifyEnabled {
+			return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
+		}
+		return a.verifyPhoneFactor(w, r, mc, factor, params)
 	case FactorTypeWebAuthn:
-		return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
+		if !a.cfg.MFA.WebAuthn.VerifyEnabled {
+			return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
+		}
+		return a.verifyWebAuthnFactor(w, r, mc, factor, params)
 	default:
 		return badRequestError(ErrorCodeValidationFailed, "factor_type needs to be totp, phone, or webauthn")
 	}
+}
 
-	challenge, cerr := a.validateChallenge(ctx, r, pool, factor, params.ChallengeID)
+// verifyTOTPFactor validates a code against the factor's shared secret and, on
+// success, upgrades the session to aal2.
+func (a *api) verifyTOTPFactor(w http.ResponseWriter, r *http.Request, mc *mfaContext, factor *Factor, params *VerifyFactorParams) error {
+	ctx := r.Context()
+	pool, perr := a.db(ctx)
+	if perr != nil {
+		return perr
+	}
+	if params.Code == "" {
+		return badRequestError(ErrorCodeValidationFailed, "Code needs to be non-empty")
+	}
+	challenge, cerr := a.validateChallenge(ctx, r, pool, factor, params.ChallengeID, mfaChallengeExpiryDuration)
 	if cerr != nil {
 		return cerr
 	}
@@ -423,16 +488,36 @@ func (a *api) verifyFactor(w http.ResponseWriter, r *http.Request) error {
 		Digits:    otp.DigitsSix,
 		Algorithm: otp.AlgorithmSHA1,
 	})
-
-	// NOTE: upstream additionally runs the MFAVerificationAttempt hook here,
-	// which may reject a technically valid code and log the user out
-	// everywhere. ports.HookPoint has no such point yet (ports/ is owned
-	// elsewhere), so the hook is deliberately absent rather than faked; the
-	// upstream error code it would raise is declared as
-	// ErrorCodeMFAVerificationRejected for when it lands.
 	if !valid {
 		return unprocessableEntityError(ErrorCodeMFAVerificationFailed, "Invalid TOTP code entered").
 			withInternal(verr)
+	}
+	return a.finalizeFactorVerification(w, r, mc, factor, challenge, nil)
+}
+
+// finalizeFactorVerification is the session-upgrade half every factor type
+// shares once its own credential check has passed (upstream
+// updateMFASessionAndClaims / GrantRefreshTokenSwap). It runs the
+// mfa_verification_attempt hook, marks the challenge consumed, promotes the
+// factor to verified on first use, writes the factor's AMR claim, raises the
+// session to aal2, rotates the refresh token so the aal1 token can never be
+// replayed, drops every other sub-aal2 session and garbage collects the user's
+// leftover unverified factors of this type.
+//
+// `store`, when non-nil, runs inside the same transaction right after the
+// challenge is consumed — the webauthn factor uses it to persist the credential
+// it just verified, so enrolment is atomic with the session upgrade.
+func (a *api) finalizeFactorVerification(w http.ResponseWriter, r *http.Request, mc *mfaContext, factor *Factor, challenge *mfaChallenge, store func(ctx context.Context, tx pgx.Tx, now time.Time) error) error {
+	ctx := r.Context()
+
+	// The mfa_verification_attempt hook may veto an otherwise-valid credential
+	// (upstream runs it immediately before the session upgrade). It is only
+	// reached here on a locally-valid attempt, so `valid` is true; a reject
+	// surfaces as a 403 mfa_verification_rejected carrying the hook's message.
+	if ok, herr := a.runMFAVerificationHook(ctx, mc.user.ID, factor.ID, factor.FactorType, true); herr != nil {
+		return herr
+	} else if !ok {
+		return forbiddenError(ErrorCodeMFAVerificationRejected, "%s", DefaultMFAHookRejectionMessage)
 	}
 
 	var resp *AccessTokenResponse
@@ -443,6 +528,11 @@ func (a *api) verifyFactor(w http.ResponseWriter, r *http.Request) error {
 
 		if err := verifyChallenge(ctx, tx, challenge.ID, now); err != nil {
 			return internalServerError("Database error verifying challenge").withInternal(err)
+		}
+		if store != nil {
+			if err := store(ctx, tx, now); err != nil {
+				return err
+			}
 		}
 		if !factor.IsVerified() {
 			if err := updateFactorStatus(ctx, tx, factor.ID, FactorStateVerified, now); err != nil {

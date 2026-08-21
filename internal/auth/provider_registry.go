@@ -242,7 +242,15 @@ func (a *api) provider(ctx context.Context, name, scopes string) (externalProvid
 
 	f, ok := providerFactories[name]
 	if !ok {
-		return nil, cfg, fmt.Errorf("Provider %s could not be found", name)
+		// Not a built-in: try a runtime custom OAuth provider (admin-registered,
+		// auth.custom_oauth_providers), resolved by its identifier. It plugs into
+		// the same externalProvider interface, so /authorize and /callback treat
+		// it exactly like a built-in.
+		cp, cerr := a.resolveCustomProvider(ctx, name, scopes)
+		if cerr != nil {
+			return nil, cfg, fmt.Errorf("Provider %s could not be found", name)
+		}
+		return cp, cfg, nil
 	}
 	p, err := f(ctx, a, name, cfg, scopes)
 	if err != nil {
@@ -372,6 +380,10 @@ type oauthToken struct {
 	// Error members, so a 200-with-error body (GitHub) is still detected.
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+
+	// raw is the verbatim token-endpoint response body; some providers (workos)
+	// return the user profile inline there instead of at a userinfo endpoint.
+	raw []byte `json:"-"`
 }
 
 // authCodeURL builds the RFC 6749 §4.1.1 authorization request.
@@ -438,7 +450,7 @@ func (c *oauthConfig) exchangeCode(ctx context.Context, hc *http.Client, code st
 		return nil, fmt.Errorf("token endpoint returned %d", res.StatusCode)
 	}
 
-	tok := &oauthToken{}
+	tok := &oauthToken{raw: body}
 	mediaType, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
 	if strings.Contains(mediaType, "json") || strings.HasPrefix(strings.TrimSpace(string(body)), "{") {
 		if err := json.Unmarshal(body, tok); err != nil {
@@ -471,6 +483,35 @@ const maxProviderResponse = 1 << 20 // 1 MiB
 
 // getJSON is upstream's provider.makeRequest: a Bearer GET whose JSON body is
 // decoded into dst.
+// getJSONWithHeaders is getJSON with extra request headers (Twitch Client-Id,
+// Notion-Version, etc.).
+func getJSONWithHeaders(ctx context.Context, hc *http.Client, endpoint, accessToken string, headers map[string]string, dst any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	req.Header.Set("Accept", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxProviderResponse))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("GET %s returned %d", redactURL(endpoint), res.StatusCode)
+	}
+	return json.Unmarshal(body, dst)
+}
+
 func getJSON(ctx context.Context, hc *http.Client, endpoint, accessToken string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
