@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  push:            # 모든 브랜치의 push 마다
   pull_request:
 
 jobs:
@@ -57,3 +56,29 @@ jobs:
 
       - name: Lint
         run: npx oxlint
+
+  parity:
+    name: Parity vs upstream supabase/auth (differential + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Bring up parity stack (dilion + real gotrue + postgres)
+        run: make parity-up
+        env:
+          # docker compose plugin is present on ubuntu-latest runners
+          COMPOSE: docker compose
+
+      - name: Run differential + coverage suite
+        run: make parity-test
+
+      - name: Teardown
+        if: always()
+        run: make parity-down
+        env:
+          COMPOSE: docker compose
