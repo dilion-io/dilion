@@ -179,6 +179,50 @@ deviations:
     source: internal/auth/mfa_models.go:196
 
   # ---- OAuth 2.1 authorization server ---------------------------------------
+  # The /.well-known/oauth-authorization-server document has the SAME base-URL and
+  # advertised-alg deviations as /.well-known/openid-configuration (same handler,
+  # wellknown.go) — catalogued here against its own op so the flags-on run passes.
+  - id: oauth-as-endpoint-urls
+    op: authOAuthAuthorizationServerMetadata
+    endpoint: GET /auth/v1/.well-known/oauth-authorization-server
+    aspect: body-field
+    field: _endpoint
+    dilion: "advertises absolute endpoint URLs rooted at issuer (SiteURL + /auth/v1)"
+    upstream: "advertises host-root-relative paths (/oauth/authorize, /oauth/token, ...)"
+    reason: >
+      Same base-URL root cause as oidc-endpoint-urls: Dilion has no API_EXTERNAL_URL
+      and roots the document at issuer+/auth/v1. Covers authorization_endpoint /
+      token_endpoint / userinfo_endpoint / registration_endpoint (shared _endpoint
+      suffix). Twin the base URLs (shared JWT_ISSUER) to make these identical.
+    source: internal/auth/wellknown.go:76
+  - id: oauth-as-issuer
+    op: authOAuthAuthorizationServerMetadata
+    endpoint: GET /auth/v1/.well-known/oauth-authorization-server
+    aspect: body-field
+    field: issuer
+    dilion: "falls back to SiteURL + /auth/v1 when JWT_ISSUER unset (no API_EXTERNAL_URL)"
+    upstream: "derives issuer from API_EXTERNAL_URL"
+    reason: same base-URL deviation class as oidc-issuer-fallback; twin via a shared JWT_ISSUER.
+    source: internal/auth/wellknown.go:76
+  - id: oauth-as-jwks-uri
+    op: authOAuthAuthorizationServerMetadata
+    endpoint: GET /auth/v1/.well-known/oauth-authorization-server
+    aspect: body-field
+    field: jwks_uri
+    dilion: "absolute jwks_uri rooted at issuer + /auth/v1"
+    upstream: "host-root-relative /.well-known/jwks.json"
+    reason: same base-URL deviation class as oidc-jwks-uri (jwks_uri has no _endpoint suffix).
+    source: internal/auth/wellknown.go:76
+  - id: oauth-as-alg
+    op: authOAuthAuthorizationServerMetadata
+    endpoint: GET /auth/v1/.well-known/oauth-authorization-server
+    aspect: body-field
+    field: id_token_signing_alg_values_supported
+    dilion: 'reflects what the deployment can verify (["HS256"] symmetric-only here)'
+    upstream: 'hard-coded ["RS256","HS256","ES256"]'
+    reason: same as jwks-alg-reflects-keys — Dilion advertises only algorithms it can verify.
+    source: internal/auth/wellknown.go:76
+
   - id: oauth-authcode-ttl
     op: authOAuthAuthorizePost
     endpoint: POST /auth/v1/oauth/authorize
@@ -393,6 +437,34 @@ deviations:
     upstream: "includes weak_password: null"
     reason: upstream always carries the weak_password advisory slot; Dilion emits it only when populated.
     source: "empirical vs supabase/auth:v2.196.0"
+
+  - id: admin-create-confirmed-at
+    op: authAdminCreateUser
+    endpoint: POST /auth/v1/admin/users
+    aspect: body-field
+    field: confirmed_at
+    dilion: "the admin-created user object carries confirmed_at when email_confirm=true"
+    upstream: "omits confirmed_at from the create response (fills it on the next fetch)"
+    reason: >
+      Same root cause as signup-confirmed-at-present: with the address confirmed
+      at creation Dilion already stamps and returns confirmed_at; upstream fills it
+      lazily. The value is volatile (scrubbed); only its presence differs.
+    source: "empirical vs supabase/auth:v2.196.0 (internal/auth/admin.go)"
+
+  - id: admin-generate-link-action-link
+    op: authAdminGenerateLink
+    endpoint: POST /auth/v1/admin/generate_link
+    aspect: body-field
+    field: action_link
+    dilion: "action_link is rooted at SiteURL + /auth/v1/verify (no API_EXTERNAL_URL)"
+    upstream: "action_link is rooted at API_EXTERNAL_URL + /verify"
+    reason: >
+      Same base-URL root cause as mailer-verify-path-prefix / oidc-endpoint-urls:
+      Dilion has no API_EXTERNAL_URL and builds the emailed link on SiteURL+/auth/v1.
+      The embedded token is volatile per-database; the OTP (email_otp) and
+      hashed_token are scrubbed. Twin the base URLs (shared JWT_ISSUER + a reverse
+      proxy stripping /auth/v1) to make the host+path identical.
+    source: internal/auth/mailflow.go:109; internal/auth/generate_link.go:64
 
   - id: admin-link-header-prefix
     op: authAdminListUsers
