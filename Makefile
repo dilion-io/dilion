@@ -8,7 +8,8 @@ DEV_DSN ?= $(DSN_BASE)/dilion_dev
 MASTER_KEY_FILE := .dev/master.key
 
 .PHONY: help up down ps build vet test test-db openapi openapi-check \
-        web-install web-check dev dev-web e2e-token ci clean
+        web-install web-check dev dev-web e2e-token ci clean \
+        parity-up parity-test parity-down parity
 
 help: ## 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -78,6 +79,29 @@ e2e-token: ## dev service_role JWT 발급 (web/.env.local 갱신용)
 ## ---- CI 진입점 ----
 
 ci: test-db openapi-check web-check ## CI가 실행하는 전체 게이트
+
+PARITY := $(COMPOSE) -f test/parity/compose.parity.yml
+PARITY_DILION_URL ?= http://localhost:8787/auth/v1
+PARITY_GOTRUE_URL ?= http://localhost:9999
+PARITY_JWT_SECRET ?= parity-super-secret-shared-jwt-key-0123456789
+
+parity-up: ## parity 스택 기동 (postgres + upstream gotrue + dilion)
+	$(PARITY) up -d --build
+	@echo "waiting for gotrue…";  until curl -fs $(PARITY_GOTRUE_URL)/health >/dev/null; do sleep 1; done
+	@echo "waiting for dilion…";  until curl -fs $(PARITY_DILION_URL)/health >/dev/null; do sleep 1; done
+	@echo "parity stack up: dilion :8787  gotrue :9999"
+
+parity-test: ## upstream supabase/auth 대비 차등 + 커버리지 스위트
+	PARITY_DILION_URL=$(PARITY_DILION_URL) \
+	PARITY_GOTRUE_URL=$(PARITY_GOTRUE_URL) \
+	PARITY_JWT_SECRET=$(PARITY_JWT_SECRET) \
+	go test -tags parity ./test/parity/ -run TestParity -v
+
+parity-down: ## parity 스택 종료 + 볼륨 삭제
+	$(PARITY) down -v
+
+parity: parity-up ## 스택 기동 → 테스트 → 종료 (teardown 보장)
+	@set -e; trap '$(PARITY) down -v' EXIT; $(MAKE) parity-test
 
 clean: ## 빌드 산출물 정리
 	rm -rf web/dist
