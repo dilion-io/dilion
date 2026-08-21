@@ -592,6 +592,53 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		aud = AudienceAuthenticated
 	}
 
+	// custom_access_token (external hook). It runs AFTER the in-process
+	// ports.TokenClaims hook. Claim precedence, in order of application:
+	//
+	//  1. the base gotrue claims assembled into `extra` above
+	//     (phone, app_metadata, user_metadata, is_anonymous, and — for a session
+	//     token — session_id, aal, amr);
+	//  2. the in-process ports.TokenClaims hook, which may rewrite `extra`;
+	//  3. this external hook, which receives the FULL claim view (the reserved
+	//     JWT claims plus everything in `extra`) and whose returned `claims` map
+	//     REPLACES `extra` wholesale — upstream's semantics
+	//     (gotrueClaims = jwt.MapClaims(output.Claims));
+	//  4. TokenService.Sign, which writes the reserved claims
+	//     (sub/aud/exp/iat/iss/role/email) on top.
+	//
+	// DEVIATION: upstream lets custom_access_token overwrite ANY claim, including
+	// role. Dilion keeps its reservedClaims protection (token.go): the external
+	// hook can add and rewrite custom claims but cannot forge identity, role,
+	// audience or lifetime — Sign always re-asserts those. The hook is invoked in
+	// the token-issuance transaction (`q`) so a pg-functions hook sees the same
+	// uncommitted state the request is building.
+	if cfg := a.cfg.Hooks.CustomAccessToken; cfg.Enabled {
+		claims := map[string]any{
+			"sub":   u.ID,
+			"aud":   aud,
+			"role":  role,
+			"email": u.Email,
+			"iat":   now.Unix(),
+			"exp":   expiresAt.Unix(),
+		}
+		for k, v := range extra {
+			claims[k] = v
+		}
+		in := &CustomAccessTokenInput{
+			Metadata: newHookMetadata(nil, HookNameCustomAccessToken),
+			UserID:   u.ID,
+			Claims:   claims,
+			// authentication_method is not threaded into issueAccessToken;
+			// upstream fills it from the grant. Left empty (documented).
+			AuthenticationMethod: "",
+		}
+		out := &CustomAccessTokenOutput{}
+		if herr := a.runExtHook(ctx, cfg, q, in, out); herr != nil {
+			return "", time.Time{}, herr
+		}
+		extra = out.Claims
+	}
+
 	token, err := a.tokens.Sign(ctx, ports.Claims{
 		Subject:   u.ID,
 		Role:      role,
