@@ -126,10 +126,22 @@ func (e *Engine) UpdateProfile(ctx context.Context, projectID, userID string, se
 
 	now := e.now()
 	if len(fields) == 0 {
-		// Nothing left to protect: drop the row instead of storing an empty
-		// envelope (row DELETE + key shred is the erasure pair, §2.7).
-		if _, err := e.pool.Exec(ctx,
+		// Nothing left to protect: drop the row (and its search-index entries)
+		// instead of storing an empty envelope (row DELETE + key shred is the
+		// erasure pair, §2.7).
+		tx, err := e.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("privacy: delete profile: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx,
 			`delete from dilion_pii.user_profiles where user_id = $1::uuid`, uid); err != nil {
+			return nil, fmt.Errorf("privacy: delete profile: %w", err)
+		}
+		if err := e.syncSearchIndex(ctx, tx, uid, nil); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
 			return nil, fmt.Errorf("privacy: delete profile: %w", err)
 		}
 		return projectProfile(uid, nil, nil, false), nil
@@ -139,11 +151,24 @@ func (e *Engine) UpdateProfile(ctx context.Context, projectID, userID string, se
 	if err != nil {
 		return nil, err
 	}
+	// Document and blind index commit together: an index row must never point
+	// at values the sealed document does not hold (search.go).
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	const ins = `insert into dilion_pii.user_profiles (user_id, enc_profile, created_at, updated_at)
 		values ($1::uuid, $2, $3, $3)
 		on conflict (user_id) do update
 		set enc_profile = excluded.enc_profile, updated_at = excluded.updated_at`
-	if _, err := e.pool.Exec(ctx, ins, uid, enc, now); err != nil {
+	if _, err := tx.Exec(ctx, ins, uid, enc, now); err != nil {
+		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
+	}
+	if err := e.syncSearchIndex(ctx, tx, uid, fields); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
 	}
 	e.log.Info("pii profile updated", "project_id", pid, "user_id", uid,

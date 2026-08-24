@@ -63,7 +63,9 @@ type Event struct {
 type EventFilter struct {
 	ActorID   *string
 	Action    *string
-	SubjectID *string // reverse lookup against the subject manifest (§5.3)
+	SubjectID *string    // reverse lookup against the subject manifest (§5.3)
+	From      *time.Time // created_at >= (inclusive) — 정기 점검 리포트용 기간 창
+	To        *time.Time // created_at < (exclusive)
 }
 
 // Reader is the read side of the audit log. It issues SELECTs only.
@@ -128,10 +130,12 @@ func (r *Reader) ListEvents(ctx context.Context, projectID string, f EventFilter
 		  and ($4::text is null or exists (
 		        select 1 from dilion_audit.subjects s
 		        where s.event_id = e.event_id and s.subject_id = $4))
-		  and ($5::timestamptz is null or (e.created_at, e.event_id) < ($5, $6))
+		  and ($5::timestamptz is null or e.created_at >= $5)
+		  and ($6::timestamptz is null or e.created_at < $6)
+		  and ($7::timestamptz is null or (e.created_at, e.event_id) < ($7, $8))
 		order by e.created_at desc, e.event_id desc
-		limit $7`,
-		projectOr(projectID), f.ActorID, f.Action, f.SubjectID, at, id, p.Limit+1)
+		limit $9`,
+		projectOr(projectID), f.ActorID, f.Action, f.SubjectID, f.From, f.To, at, id, p.Limit+1)
 	if err != nil {
 		return page, fmt.Errorf("audit: list events: %w", err)
 	}

@@ -194,7 +194,7 @@ live instance); the app keeps its own header rather than swagger-ui's `Standalon
 
 | Spec | File | Surface | How it is maintained |
 | --- | --- | --- | --- |
-| **Platform API** (default) | `web/openapi.yaml` | `/privacy/v1`, `/iam/v1` — 30 operations | **Generated** by the server build (`cmd/openapi`) — never edit it here; re-run `npm run gen:api` after it changes |
+| **Platform API** (default) | `web/openapi.yaml` | `/privacy/v1`, `/iam/v1` — 38 operations | **Generated** by the server build (`cmd/openapi`) — never edit it here; re-run `npm run gen:api` after it changes |
 | **Auth API (Supabase compatible)** | `web/openapi-auth.yaml` | `/auth/v1` — 69 operations | **Hand-curated in this repo.** Nothing generates it: it is written from the `internal/auth` handlers, so **update it by hand whenever `internal/auth` changes** |
 
 `openapi-auth.yaml` is deliberately *not* upstream's gotrue spec — it documents **only what
@@ -363,14 +363,18 @@ from 422 validation responses. gotrue errors from `/auth/v1/admin/*` are not pro
 
 ## API coverage
 
-All 30 operations in `openapi.yaml` have a typed wrapper in `src/api/client.ts` and a trigger in
-the UI. No API payload is typed `any`; the wrappers derive everything from generated `paths` /
-`components["schemas"]`.
+30 of the 38 operations in `openapi.yaml` have a typed wrapper in `src/api/client.ts` and a
+trigger in the UI. No API payload is typed `any`; the wrappers derive everything from generated
+`paths` / `components["schemas"]`. The 8 operations added on 2026-08-24 (consent segment/audience:
+`listConsentStates`, `exportConsentAudience`; user search: `searchUsers`; self-service:
+`createMePrivacyRequest`, `listMePrivacyRequests`, `cancelMePrivacyRequest`, `listMeConsents`,
+`updateMeConsent`) are in the generated schema and exercisable from `#/docs`, but have no UI or
+wrapper yet.
 
 | # | Operation | Endpoint | Permission | UI location |
 | --- | --- | --- | --- | --- |
 | 1 | `listUserConsents` | `GET /privacy/v1/users/{id}/consents` | `users.read` | Privacy center → Consents; Admin → Users → user detail |
-| 2 | `updateUserConsent` | `PATCH /privacy/v1/users/{id}/consents` | `privacy.requests.manage` | Same — the consent toggles |
+| 2 | `updateUserConsent` | `PATCH /privacy/v1/users/{id}/consents` | `consents.write` | Same — the consent toggles |
 | 3 | `getUserProfile` | `GET /privacy/v1/users/{id}/profile` | `users.read` | Admin → Users → user detail → PII profile (masked view, and the `404` empty state) |
 | 4 | `revealUserProfile` | `POST /privacy/v1/users/{id}/profile/reveal` | `pii.reveal` | Admin → PII profile → **원본 보기** (reason modal) |
 | 5 | `updateUserProfile` | `PATCH /privacy/v1/users/{id}/profile` | `pii.write` | Admin → PII profile → Save staged changes (one call for every add/edit/remove) |

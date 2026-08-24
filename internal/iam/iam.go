@@ -53,7 +53,12 @@ const (
 	PermPIIExport = "pii.export"
 	// PermPIIWrite guards mutation of a subject's stored personal data
 	// (§5.2 "개인정보 수정"). Seeded by migration 0302.
-	PermPIIWrite              = "pii.write"
+	PermPIIWrite = "pii.write"
+	// PermConsentsWrite guards recording a consent change (ledger append). It
+	// is deliberately separate from privacy.requests.manage so a signup-flow
+	// API key can record consent without holding DSR authority. Seeded by
+	// migration 0304.
+	PermConsentsWrite         = "consents.write"
 	PermPrivacyRequestsManage = "privacy.requests.manage"
 	PermHoldsManage           = "holds.manage"
 	PermPoliciesManage        = "policies.manage"
@@ -67,10 +72,11 @@ const (
 )
 
 // BuiltinPermissions is the authoritative list seeded by migrations 0300
-// (all but pii.write), 0302 (pii.write) and 0303 (users.admin).
+// (all but pii.write), 0302 (pii.write), 0303 (users.admin) and 0304
+// (consents.write).
 var BuiltinPermissions = []string{
 	PermUsersRead, PermPIIRead, PermPIIReveal, PermPIIWrite, PermPIIExport,
-	PermPrivacyRequestsManage, PermHoldsManage, PermPoliciesManage,
+	PermConsentsWrite, PermPrivacyRequestsManage, PermHoldsManage, PermPoliciesManage,
 	PermDestinationsManage, PermKeysManage, PermAuditRead, PermUsersAdmin,
 }
 

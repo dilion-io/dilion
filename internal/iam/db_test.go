@@ -54,12 +54,14 @@ func testPool(t *testing.T) *pgxpool.Pool {
 
 // migrationFiles are the 03xx migrations this package's schema depends on:
 // 0300 (RBAC + audit tables), 0301 (audit reason column), 0302 (the pii.write
-// builtin permission and its role bundles), 0303 (users.admin).
+// builtin permission and its role bundles), 0303 (users.admin), 0304
+// (consents.write).
 var migrationFiles = []string{
 	"../../migrations/0300_iam_audit.sql",
 	"../../migrations/0301_audit_reason.sql",
 	"../../migrations/0302_pii_write_permission.sql",
 	"../../migrations/0303_users_admin_permission.sql",
+	"../../migrations/0304_consents_write_permission.sql",
 }
 
 // applyMigration runs them under an advisory lock: `create schema if not

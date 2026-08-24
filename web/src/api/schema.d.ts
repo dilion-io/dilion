@@ -208,6 +208,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/privacy/v1/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List consent state across subjects
+         * @description Requires permission `users.read`.
+         *
+         *     Cross-user segment projection of the consent ledger ("who currently grants marketing?"), ordered by (user_id, purpose). Returns subject ids and consent state only — contact identifiers require `exportConsentAudience`. With `reconfirm_due_before` a page may hold fewer than `limit` rows while the scan continues; keep following `next_cursor`.
+         */
+        get: operations["listConsentStates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/privacy/v1/consents/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export a consent audience
+         * @description Requires permission `pii.export`.
+         *
+         *     Privileged bulk export (§5.2): pages the subjects whose latest ledger entry for `purpose` is GRANT, joined with the requested auth.users contact identifiers. Erased/deleted accounts are excluded. `reason` is mandatory and every page is recorded as `CONSENT_AUDIENCE_EXPORT` with the subject manifest.
+         */
+        post: operations["exportConsentAudience"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/privacy/v1/destinations": {
         parameters: {
             query?: never;
@@ -304,6 +348,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/privacy/v1/me/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my consent state
+         * @description Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11).
+         */
+        get: operations["listMeConsents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Record my consent change
+         * @description Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11).
+         */
+        patch: operations["updateMeConsent"];
+        trace?: never;
+    };
+    "/privacy/v1/me/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my privacy requests
+         * @description Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11).
+         */
+        get: operations["listMePrivacyRequests"];
+        put?: never;
+        /**
+         * Create my privacy request
+         * @description Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11).
+         */
+        post: operations["createMePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/privacy/v1/me/requests/{requestId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel my privacy request
+         * @description Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11).
+         */
+        post: operations["cancelMePrivacyRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/privacy/v1/requests": {
         parameters: {
             query?: never;
@@ -368,6 +480,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/privacy/v1/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search users by identifier
+         * @description Requires permission `users.read`.
+         *
+         *     Exact-match lookup by **exactly one** criterion: `email`, `phone`, or `field`+`value` (a vault profile field, matched via a keyed blind index — equality only). Results carry subject ids, never field values. Recorded as `USER_SEARCH` with the matched subjects; the search value itself is never written to the audit log.
+         */
+        get: operations["searchUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/privacy/v1/users/{userId}/consents": {
         parameters: {
             query?: never;
@@ -387,7 +521,7 @@ export interface paths {
         head?: never;
         /**
          * Record a consent change
-         * @description Requires permission `privacy.requests.manage`.
+         * @description Requires permission `consents.write`.
          */
         patch: operations["updateUserConsent"];
         trace?: never;
@@ -485,6 +619,18 @@ export interface components {
              */
             token: string;
         };
+        AudienceMember: {
+            /** @description Auth email, empty string if the account has none, null when not requested. */
+            email: string | null;
+            /** @description Auth phone, empty string if the account has none, null when not requested. */
+            phone: string | null;
+            /** Format: uuid */
+            user_id: string;
+        };
+        AudiencePage: {
+            items: components["schemas"]["AudienceMember"][];
+            next_cursor: string | null;
+        };
         AuditEvent: {
             /** @description masked | full | n/a. */
             access_level: string | null;
@@ -571,6 +717,15 @@ export interface components {
             /** Format: uuid */
             user_id: string;
         };
+        CreateMeRequestBody: {
+            /** @description Skip the grace period (즉시 파기 요청, §2.9). */
+            immediate?: boolean;
+            /**
+             * @description Request type.
+             * @enum {string}
+             */
+            type: "DELETION" | "EXPORT" | "CONSENT_WITHDRAWAL";
+        };
         CreatePermissionBody: {
             /** @description Namespaced permission name, e.g. myapp.orders.refund. Builtin names are reserved. */
             name: string;
@@ -622,6 +777,21 @@ export interface components {
             message?: string;
             /** @description The value at the given location */
             value?: unknown;
+        };
+        ExportConsentAudienceBody: {
+            /** @description Opaque cursor from a previous response. */
+            cursor?: string;
+            /** @description Contact identifiers to include: email and/or phone. Defaults to [email]. */
+            fields?: ("email" | "phone")[] | null;
+            /**
+             * Format: int64
+             * @description Page size (default 100).
+             */
+            limit?: number;
+            /** @description Consent purpose whose granted subjects form the audience. */
+            purpose: string;
+            /** @description Why the audience is being exported. Required and recorded in the audit log. */
+            reason: string;
         };
         LegalHold: {
             /** @description Legal basis for the hold. */
@@ -811,6 +981,31 @@ export interface components {
             items: components["schemas"]["Role"][];
             next_cursor: string | null;
         };
+        SubjectConsent: {
+            /** @description Whether consent is currently granted. */
+            granted: boolean;
+            /** @description Policy version the consent was recorded against. */
+            policy_version: string;
+            /** @description Consent purpose key. */
+            purpose: string;
+            /**
+             * Format: date-time
+             * @description When re-confirmation notice is due, or null.
+             */
+            reconfirm_due: string | null;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: uuid
+             * @description Canonical user id of the data subject.
+             */
+            user_id: string;
+        };
+        SubjectConsentPage: {
+            items: components["schemas"]["SubjectConsent"][];
+            /** @description Opaque cursor for the next page, or null. Pages may be shorter than limit while a reconfirm filter scans. */
+            next_cursor: string | null;
+        };
         UpdateConsentBody: {
             /** @description true = grant, false = withdraw. */
             granted: boolean;
@@ -831,6 +1026,14 @@ export interface components {
             };
             enabled?: boolean;
         };
+        UpdateMeConsentBody: {
+            /** @description true = grant, false = withdraw. */
+            granted: boolean;
+            /** @description Policy version presented to the subject. */
+            policy_version: string;
+            /** @description Consent purpose key. */
+            purpose: string;
+        };
         UpdateUserProfileBody: {
             /** @description Field names to delete. */
             remove?: string[] | null;
@@ -838,6 +1041,25 @@ export interface components {
             set?: {
                 [key: string]: components["schemas"]["ProfileFieldWrite"];
             };
+        };
+        UserMatch: {
+            /** @description The vault field that matched, or null for auth identifiers. */
+            field_key: string | null;
+            /**
+             * @description Which identifier matched.
+             * @enum {string}
+             */
+            source: "AUTH_EMAIL" | "AUTH_PHONE" | "PROFILE_FIELD";
+            /**
+             * Format: uuid
+             * @description Canonical user id of the matched subject.
+             */
+            user_id: string;
+        };
+        UserMatchPage: {
+            items: components["schemas"]["UserMatch"][];
+            /** @description Opaque cursor for the next page, or null. */
+            next_cursor: string | null;
         };
     };
     responses: never;
@@ -1201,6 +1423,10 @@ export interface operations {
                 action?: string;
                 /** @description Reverse lookup: only events whose subject manifest contains this data subject (§5.3). */
                 subject_id?: string;
+                /** @description Only events at or after this time (RFC 3339). 정기 점검 리포트용 기간 창. */
+                from?: string;
+                /** @description Only events before this time (RFC 3339, exclusive). */
+                to?: string;
             };
             header?: never;
             path?: never;
@@ -1982,6 +2208,187 @@ export interface operations {
             };
         };
     };
+    listConsentStates: {
+        parameters: {
+            query?: {
+                /** @description Page size. */
+                limit?: number;
+                /** @description Opaque cursor from a previous response. */
+                cursor?: string;
+                /** @description Filter by purpose key, e.g. marketing. */
+                purpose?: string;
+                /** @description true = currently granted, false = withdrawn. Omit for both. */
+                granted?: "true" | "false";
+                /** @description Only rows whose re-confirmation notice is due before this time (재동의 고지 대상자 추출). */
+                reconfirm_due_before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectConsentPage"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    exportConsentAudience: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportConsentAudienceBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiencePage"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     listDestinations: {
         parameters: {
             query?: {
@@ -2420,6 +2827,8 @@ export interface operations {
                 cursor?: string;
                 /** @description Filter by data subject. */
                 user_id?: string;
+                /** @description true = un-released holds only, false = released only. Omit for both. */
+                active?: "true" | "false";
             };
             header?: never;
             path?: never;
@@ -2674,6 +3083,442 @@ export interface operations {
             };
         };
     };
+    listMeConsents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentStatePage"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    updateMeConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMeConsentBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentState"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listMePrivacyRequests: {
+        parameters: {
+            query?: {
+                /** @description Page size. */
+                limit?: number;
+                /** @description Opaque cursor from a previous response. */
+                cursor?: string;
+                /** @description Filter by status. */
+                status?: "REQUESTED" | "PROCESSING" | "DONE" | "MANUAL_REVIEW" | "CANCELED";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequestPage"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    createMePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Retry-safe key: replaying the same key returns the original response. */
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMeRequestBody"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cancelMePrivacyRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     listPrivacyRequests: {
         parameters: {
             query?: {
@@ -2685,6 +3530,14 @@ export interface operations {
                 sort?: "requested_at" | "-requested_at" | "scheduled_at" | "-scheduled_at";
                 /** @description Filter by status. */
                 status?: "REQUESTED" | "PROCESSING" | "DONE" | "MANUAL_REVIEW" | "CANCELED";
+                /** @description Filter by request type. */
+                type?: "DELETION" | "EXPORT" | "CONSENT_WITHDRAWAL";
+                /** @description Filter by data subject (DSR 이력 조회). */
+                user_id?: string;
+                /** @description Only requests accepted at or after this time (RFC 3339). */
+                requested_after?: string;
+                /** @description Only requests accepted before this time (RFC 3339, exclusive). */
+                requested_before?: string;
             };
             header?: never;
             path?: never;
@@ -2960,6 +3813,102 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    searchUsers: {
+        parameters: {
+            query?: {
+                /** @description Page size. */
+                limit?: number;
+                /** @description Opaque cursor from a previous response. */
+                cursor?: string;
+                /** @description Exact-match auth email (case-insensitive). */
+                email?: string;
+                /** @description Exact-match auth phone; spacing and punctuation are ignored. */
+                phone?: string;
+                /** @description Vault profile field key to match, e.g. name. Requires value. */
+                field?: string;
+                /** @description Exact value for the field search (trimmed, case-folded). Never recorded in the audit log. */
+                value?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserMatchPage"];
                 };
             };
             /** @description Bad Request */

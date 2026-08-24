@@ -46,6 +46,15 @@ const (
 
 	ActionConsentChanged = "CONSENT_CHANGED"
 	ActionConsentRead    = "CONSENT_READ"
+	// CONSENT_SEGMENT_READ is the cross-user consent projection (ids only);
+	// CONSENT_AUDIENCE_EXPORT joins it with contact identifiers and is a
+	// "매우 민감" export with a mandatory reason (use-cases.md P1).
+	ActionConsentSegmentRead    = "CONSENT_SEGMENT_READ"
+	ActionConsentAudienceExport = "CONSENT_AUDIENCE_EXPORT"
+
+	// USER_SEARCH is the exact-match lookup by email/phone/profile field. The
+	// search value itself is never recorded (§5.1) — only the matched subjects.
+	ActionUserSearch = "USER_SEARCH"
 
 	ActionHoldCreated        = "HOLD_CREATED"
 	ActionHoldReleased       = "HOLD_RELEASED"
