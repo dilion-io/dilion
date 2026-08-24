@@ -96,7 +96,7 @@ func (e *Engine) getHold(ctx context.Context, id string) (*LegalHold, error) {
 	return h, nil
 }
 
-func (e *Engine) ListHolds(ctx context.Context, userID *string, p httpapi.ListParams) (httpapi.Page[LegalHold], error) {
+func (e *Engine) ListHolds(ctx context.Context, f HoldFilter, p httpapi.ListParams) (httpapi.Page[LegalHold], error) {
 	p = p.Norm()
 	var zero httpapi.Page[LegalHold]
 	cur, err := decodeIDCursor(p.Cursor)
@@ -104,8 +104,8 @@ func (e *Engine) ListHolds(ctx context.Context, userID *string, p httpapi.ListPa
 		return zero, err
 	}
 	var uid *string
-	if userID != nil {
-		v, err := validUUID(*userID)
+	if f.UserID != nil {
+		v, err := validUUID(*f.UserID)
 		if err != nil {
 			return zero, err
 		}
@@ -113,9 +113,10 @@ func (e *Engine) ListHolds(ctx context.Context, userID *string, p httpapi.ListPa
 	}
 	const q = `select ` + holdCols + ` from dilion_privacy.legal_holds
 		where ($1::uuid is null or user_id = $1::uuid)
-		  and ($2 = '' or id > $2)
-		order by id limit $3`
-	rows, err := e.pool.Query(ctx, q, uid, cur, p.Limit+1)
+		  and ($2::bool is null or (released_at is null) = $2)
+		  and ($3 = '' or id > $3)
+		order by id limit $4`
+	rows, err := e.pool.Query(ctx, q, uid, f.Active, cur, p.Limit+1)
 	if err != nil {
 		return zero, fmt.Errorf("privacy: list holds: %w", err)
 	}

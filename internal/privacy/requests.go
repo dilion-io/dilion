@@ -214,8 +214,9 @@ func (e *Engine) GetRequest(ctx context.Context, id string) (*Request, error) {
 	return r, nil
 }
 
-// ListRequests pages requests newest-first, optionally filtered by status.
-func (e *Engine) ListRequests(ctx context.Context, status *RequestStatus, p httpapi.ListParams) (httpapi.Page[Request], error) {
+// ListRequests pages requests newest-first, narrowed by the filter (status,
+// type, subject, requested_at window — use-cases.md 제안 P3).
+func (e *Engine) ListRequests(ctx context.Context, f RequestFilter, p httpapi.ListParams) (httpapi.Page[Request], error) {
 	p = p.Norm()
 	var zero httpapi.Page[Request]
 	curTS, curID, err := decodeCursor(p.Cursor)
@@ -224,19 +225,36 @@ func (e *Engine) ListRequests(ctx context.Context, status *RequestStatus, p http
 	}
 	const q = `select ` + requestCols + ` from dilion_privacy.personal_data_requests
 		where ($1::text is null or status = $1)
-		  and ($2::timestamptz is null or (requested_at, id) < ($2, $3))
+		  and ($2::text is null or type = $2)
+		  and ($3::uuid is null or user_id = $3::uuid)
+		  and ($4::timestamptz is null or requested_at >= $4)
+		  and ($5::timestamptz is null or requested_at < $5)
+		  and ($6::timestamptz is null or (requested_at, id) < ($6, $7))
 		order by requested_at desc, id desc
-		limit $4`
-	var statusArg *string
-	if status != nil {
-		s := string(*status)
+		limit $8`
+	var statusArg, typeArg *string
+	if f.Status != nil {
+		s := string(*f.Status)
 		statusArg = &s
+	}
+	if f.Type != nil {
+		t := string(*f.Type)
+		typeArg = &t
+	}
+	var userArg *string
+	if f.UserID != nil {
+		u, err := validUUID(*f.UserID)
+		if err != nil {
+			return zero, err
+		}
+		userArg = &u
 	}
 	var tsArg any
 	if !curTS.IsZero() {
 		tsArg = curTS
 	}
-	rows, err := e.pool.Query(ctx, q, statusArg, tsArg, curID, p.Limit+1)
+	rows, err := e.pool.Query(ctx, q, statusArg, typeArg, userArg,
+		f.RequestedAfter, f.RequestedBefore, tsArg, curID, p.Limit+1)
 	if err != nil {
 		return zero, fmt.Errorf("privacy: list requests: %w", err)
 	}

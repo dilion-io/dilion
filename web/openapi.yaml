@@ -105,6 +105,42 @@ components:
         - revoked_at
         - last_used_at
       type: object
+    AudienceMember:
+      additionalProperties: false
+      properties:
+        email:
+          description: Auth email, empty string if the account has none, null when not requested.
+          type:
+            - string
+            - "null"
+        phone:
+          description: Auth phone, empty string if the account has none, null when not requested.
+          type:
+            - string
+            - "null"
+        user_id:
+          format: uuid
+          type: string
+      required:
+        - user_id
+        - email
+        - phone
+      type: object
+    AudiencePage:
+      additionalProperties: false
+      properties:
+        items:
+          items:
+            $ref: "#/components/schemas/AudienceMember"
+          type: array
+        next_cursor:
+          type:
+            - string
+            - "null"
+      required:
+        - items
+        - next_cursor
+      type: object
     AuditEvent:
       additionalProperties: false
       properties:
@@ -305,6 +341,22 @@ components:
         - reason
         - basis
       type: object
+    CreateMeRequestBody:
+      additionalProperties: false
+      properties:
+        immediate:
+          description: Skip the grace period (즉시 파기 요청, §2.9).
+          type: boolean
+        type:
+          description: Request type.
+          enum:
+            - DELETION
+            - EXPORT
+            - CONSENT_WITHDRAWAL
+          type: string
+      required:
+        - type
+      type: object
     CreatePermissionBody:
       additionalProperties: false
       properties:
@@ -416,6 +468,42 @@ components:
           type: string
         value:
           description: The value at the given location
+      type: object
+    ExportConsentAudienceBody:
+      additionalProperties: false
+      properties:
+        cursor:
+          description: Opaque cursor from a previous response.
+          type: string
+        fields:
+          description: "Contact identifiers to include: email and/or phone. Defaults to [email]."
+          items:
+            enum:
+              - email
+              - phone
+            type: string
+          type:
+            - array
+            - "null"
+          uniqueItems: true
+        limit:
+          description: Page size (default 100).
+          format: int64
+          maximum: 1000
+          minimum: 1
+          type: integer
+        purpose:
+          description: Consent purpose whose granted subjects form the audience.
+          minLength: 1
+          type: string
+        reason:
+          description: Why the audience is being exported. Required and recorded in the audit log.
+          maxLength: 500
+          minLength: 1
+          type: string
+      required:
+        - purpose
+        - reason
       type: object
     LegalHold:
       additionalProperties: false
@@ -823,6 +911,55 @@ components:
         - items
         - next_cursor
       type: object
+    SubjectConsent:
+      additionalProperties: false
+      properties:
+        granted:
+          description: Whether consent is currently granted.
+          type: boolean
+        policy_version:
+          description: Policy version the consent was recorded against.
+          type: string
+        purpose:
+          description: Consent purpose key.
+          type: string
+        reconfirm_due:
+          description: When re-confirmation notice is due, or null.
+          format: date-time
+          type:
+            - string
+            - "null"
+        updated_at:
+          format: date-time
+          type: string
+        user_id:
+          description: Canonical user id of the data subject.
+          format: uuid
+          type: string
+      required:
+        - user_id
+        - purpose
+        - granted
+        - policy_version
+        - updated_at
+        - reconfirm_due
+      type: object
+    SubjectConsentPage:
+      additionalProperties: false
+      properties:
+        items:
+          items:
+            $ref: "#/components/schemas/SubjectConsent"
+          type: array
+        next_cursor:
+          description: Opaque cursor for the next page, or null. Pages may be shorter than limit while a reconfirm filter scans.
+          type:
+            - string
+            - "null"
+      required:
+        - items
+        - next_cursor
+      type: object
     UpdateConsentBody:
       additionalProperties: false
       properties:
@@ -860,6 +997,25 @@ components:
         enabled:
           type: boolean
       type: object
+    UpdateMeConsentBody:
+      additionalProperties: false
+      properties:
+        granted:
+          description: true = grant, false = withdraw.
+          type: boolean
+        policy_version:
+          description: Policy version presented to the subject.
+          minLength: 1
+          type: string
+        purpose:
+          description: Consent purpose key.
+          minLength: 1
+          type: string
+      required:
+        - purpose
+        - granted
+        - policy_version
+      type: object
     UpdateUserProfileBody:
       additionalProperties: false
       properties:
@@ -875,6 +1031,46 @@ components:
             $ref: "#/components/schemas/ProfileFieldWrite"
           description: Fields to upsert, keyed by field name.
           type: object
+      type: object
+    UserMatch:
+      additionalProperties: false
+      properties:
+        field_key:
+          description: The vault field that matched, or null for auth identifiers.
+          type:
+            - string
+            - "null"
+        source:
+          description: Which identifier matched.
+          enum:
+            - AUTH_EMAIL
+            - AUTH_PHONE
+            - PROFILE_FIELD
+          type: string
+        user_id:
+          description: Canonical user id of the matched subject.
+          format: uuid
+          type: string
+      required:
+        - user_id
+        - source
+        - field_key
+      type: object
+    UserMatchPage:
+      additionalProperties: false
+      properties:
+        items:
+          items:
+            $ref: "#/components/schemas/UserMatch"
+          type: array
+        next_cursor:
+          description: Opaque cursor for the next page, or null.
+          type:
+            - string
+            - "null"
+      required:
+        - items
+        - next_cursor
       type: object
   securitySchemes:
     bearerAuth:
@@ -1198,6 +1394,22 @@ paths:
           name: subject_id
           schema:
             description: "Reverse lookup: only events whose subject manifest contains this data subject (§5.3)."
+            type: string
+        - description: Only events at or after this time (RFC 3339). 정기 점검 리포트용 기간 창.
+          explode: false
+          in: query
+          name: from
+          schema:
+            description: Only events at or after this time (RFC 3339). 정기 점검 리포트용 기간 창.
+            format: date-time
+            type: string
+        - description: Only events before this time (RFC 3339, exclusive).
+          explode: false
+          in: query
+          name: to
+          schema:
+            description: Only events before this time (RFC 3339, exclusive).
+            format: date-time
             type: string
       responses:
         "200":
@@ -1835,6 +2047,178 @@ paths:
       summary: Grant a role to an actor
       tags:
         - iam
+  /privacy/v1/consents:
+    get:
+      description: |-
+        Requires permission `users.read`.
+
+        Cross-user segment projection of the consent ledger ("who currently grants marketing?"), ordered by (user_id, purpose). Returns subject ids and consent state only — contact identifiers require `exportConsentAudience`. With `reconfirm_due_before` a page may hold fewer than `limit` rows while the scan continues; keep following `next_cursor`.
+      operationId: listConsentStates
+      parameters:
+        - description: Page size.
+          explode: false
+          in: query
+          name: limit
+          schema:
+            default: 20
+            description: Page size.
+            format: int64
+            maximum: 100
+            minimum: 1
+            type: integer
+        - description: Opaque cursor from a previous response.
+          explode: false
+          in: query
+          name: cursor
+          schema:
+            description: Opaque cursor from a previous response.
+            type: string
+        - description: Filter by purpose key, e.g. marketing.
+          explode: false
+          in: query
+          name: purpose
+          schema:
+            description: Filter by purpose key, e.g. marketing.
+            type: string
+        - description: true = currently granted, false = withdrawn. Omit for both.
+          explode: false
+          in: query
+          name: granted
+          schema:
+            description: true = currently granted, false = withdrawn. Omit for both.
+            enum:
+              - "true"
+              - "false"
+            type: string
+        - description: Only rows whose re-confirmation notice is due before this time (재동의 고지 대상자 추출).
+          explode: false
+          in: query
+          name: reconfirm_due_before
+          schema:
+            description: Only rows whose re-confirmation notice is due before this time (재동의 고지 대상자 추출).
+            format: date-time
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubjectConsentPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: List consent state across subjects
+      tags:
+        - privacy
+  /privacy/v1/consents/export:
+    post:
+      description: |-
+        Requires permission `pii.export`.
+
+        Privileged bulk export (§5.2): pages the subjects whose latest ledger entry for `purpose` is GRANT, joined with the requested auth.users contact identifiers. Erased/deleted accounts are excluded. `reason` is mandatory and every page is recorded as `CONSENT_AUDIENCE_EXPORT` with the subject manifest.
+      operationId: exportConsentAudience
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportConsentAudienceBody"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudiencePage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Export a consent audience
+      tags:
+        - privacy
   /privacy/v1/destinations:
     get:
       description: Requires permission `destinations.manage`.
@@ -2197,6 +2581,16 @@ paths:
             description: Filter by data subject.
             format: uuid
             type: string
+        - description: true = un-released holds only, false = released only. Omit for both.
+          explode: false
+          in: query
+          name: active
+          schema:
+            description: true = un-released holds only, false = released only. Omit for both.
+            enum:
+              - "true"
+              - "false"
+            type: string
       responses:
         "200":
           content:
@@ -2383,6 +2777,356 @@ paths:
       summary: Release a legal hold
       tags:
         - privacy
+  /privacy/v1/me/consents:
+    get:
+      description: "Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11)."
+      operationId: listMeConsents
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentStatePage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: List my consent state
+      tags:
+        - me
+    patch:
+      description: "Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11)."
+      operationId: updateMeConsent
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeConsentBody"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsentState"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Record my consent change
+      tags:
+        - me
+  /privacy/v1/me/requests:
+    get:
+      description: "Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11)."
+      operationId: listMePrivacyRequests
+      parameters:
+        - description: Page size.
+          explode: false
+          in: query
+          name: limit
+          schema:
+            default: 20
+            description: Page size.
+            format: int64
+            maximum: 100
+            minimum: 1
+            type: integer
+        - description: Opaque cursor from a previous response.
+          explode: false
+          in: query
+          name: cursor
+          schema:
+            description: Opaque cursor from a previous response.
+            type: string
+        - description: Filter by status.
+          explode: false
+          in: query
+          name: status
+          schema:
+            description: Filter by status.
+            enum:
+              - REQUESTED
+              - PROCESSING
+              - DONE
+              - MANUAL_REVIEW
+              - CANCELED
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyRequestPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: List my privacy requests
+      tags:
+        - me
+    post:
+      description: "Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11)."
+      operationId: createMePrivacyRequest
+      parameters:
+        - description: "Retry-safe key: replaying the same key returns the original response."
+          in: header
+          name: Idempotency-Key
+          schema:
+            description: "Retry-safe key: replaying the same key returns the original response."
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMeRequestBody"
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyRequest"
+          description: Accepted
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Create my privacy request
+      tags:
+        - me
+  /privacy/v1/me/requests/{requestId}/cancel:
+    post:
+      description: "Self-service: requires a `role=authenticated` end-user access token and acts only on that token's subject. No RBAC role is required (ownership is the authority, §2.11)."
+      operationId: cancelMePrivacyRequest
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            pattern: ^pr_[0-9a-f]{32}$
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyRequest"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Cancel my privacy request
+      tags:
+        - me
   /privacy/v1/requests:
     get:
       description: Requires permission `privacy.requests.manage`.
@@ -2430,6 +3174,41 @@ paths:
               - DONE
               - MANUAL_REVIEW
               - CANCELED
+            type: string
+        - description: Filter by request type.
+          explode: false
+          in: query
+          name: type
+          schema:
+            description: Filter by request type.
+            enum:
+              - DELETION
+              - EXPORT
+              - CONSENT_WITHDRAWAL
+            type: string
+        - description: Filter by data subject (DSR 이력 조회).
+          explode: false
+          in: query
+          name: user_id
+          schema:
+            description: Filter by data subject (DSR 이력 조회).
+            format: uuid
+            type: string
+        - description: Only requests accepted at or after this time (RFC 3339).
+          explode: false
+          in: query
+          name: requested_after
+          schema:
+            description: Only requests accepted at or after this time (RFC 3339).
+            format: date-time
+            type: string
+        - description: Only requests accepted before this time (RFC 3339, exclusive).
+          explode: false
+          in: query
+          name: requested_before
+          schema:
+            description: Only requests accepted before this time (RFC 3339, exclusive).
+            format: date-time
             type: string
       responses:
         "200":
@@ -2689,6 +3468,114 @@ paths:
       summary: Cancel a privacy request
       tags:
         - privacy
+  /privacy/v1/users:
+    get:
+      description: |-
+        Requires permission `users.read`.
+
+        Exact-match lookup by **exactly one** criterion: `email`, `phone`, or `field`+`value` (a vault profile field, matched via a keyed blind index — equality only). Results carry subject ids, never field values. Recorded as `USER_SEARCH` with the matched subjects; the search value itself is never written to the audit log.
+      operationId: searchUsers
+      parameters:
+        - description: Page size.
+          explode: false
+          in: query
+          name: limit
+          schema:
+            default: 20
+            description: Page size.
+            format: int64
+            maximum: 100
+            minimum: 1
+            type: integer
+        - description: Opaque cursor from a previous response.
+          explode: false
+          in: query
+          name: cursor
+          schema:
+            description: Opaque cursor from a previous response.
+            type: string
+        - description: Exact-match auth email (case-insensitive).
+          explode: false
+          in: query
+          name: email
+          schema:
+            description: Exact-match auth email (case-insensitive).
+            type: string
+        - description: Exact-match auth phone; spacing and punctuation are ignored.
+          explode: false
+          in: query
+          name: phone
+          schema:
+            description: Exact-match auth phone; spacing and punctuation are ignored.
+            type: string
+        - description: Vault profile field key to match, e.g. name. Requires value.
+          explode: false
+          in: query
+          name: field
+          schema:
+            description: Vault profile field key to match, e.g. name. Requires value.
+            type: string
+        - description: Exact value for the field search (trimmed, case-folded). Never recorded in the audit log.
+          explode: false
+          in: query
+          name: value
+          schema:
+            description: Exact value for the field search (trimmed, case-folded). Never recorded in the audit log.
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserMatchPage"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Search users by identifier
+      tags:
+        - privacy
   /privacy/v1/users/{userId}/consents:
     get:
       description: Requires permission `users.read`.
@@ -2755,7 +3642,7 @@ paths:
       tags:
         - privacy
     patch:
-      description: Requires permission `privacy.requests.manage`.
+      description: Requires permission `consents.write`.
       operationId: updateUserConsent
       parameters:
         - in: path

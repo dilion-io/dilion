@@ -121,6 +121,33 @@ func TestListEventsNewestFirstAndFiltered(t *testing.T) {
 	}
 }
 
+// from/to bound the created_at window ([from, to) — 정기 점검 리포트용).
+func TestListEventsTimeWindow(t *testing.T) {
+	pool := testPool(t)
+	r := seedEvents(t, pool)
+	ctx := context.Background()
+
+	from := seedBase.Add(30 * time.Second)
+	to := seedBase.Add(90 * time.Second)
+	page, err := r.ListEvents(ctx, EventFilter{From: &from, To: &to}, httpapi.ListParams{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := actionsOf(page.Items); len(got) != 1 || got[0] != ActionUserListRead {
+		t.Fatalf("window actions = %v, want only the +1m event", got)
+	}
+
+	// Inclusive from, exclusive to.
+	exact := seedBase.Add(time.Minute)
+	page, err = r.ListEvents(ctx, EventFilter{From: &exact, To: &exact}, httpapi.ListParams{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("empty window returned %d events", len(page.Items))
+	}
+}
+
 // The reverse lookup of §5.3: "who accessed subject X".
 func TestListEventsBySubjectReverseLookup(t *testing.T) {
 	pool := testPool(t)

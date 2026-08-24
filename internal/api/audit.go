@@ -61,11 +61,13 @@ func toAuditEvent(in audit.Event) AuditEvent {
 // ---- inputs / outputs ----
 
 type listAuditEventsInput struct {
-	Limit     int    `query:"limit" default:"20" minimum:"1" maximum:"100" doc:"Page size."`
-	Cursor    string `query:"cursor" doc:"Opaque cursor from a previous response."`
-	ActorID   string `query:"actor_id" doc:"Filter by the actor that performed the action."`
-	Action    string `query:"action" doc:"Filter by action, e.g. PII_FULL_READ."`
-	SubjectID string `query:"subject_id" doc:"Reverse lookup: only events whose subject manifest contains this data subject (§5.3)."`
+	Limit     int       `query:"limit" default:"20" minimum:"1" maximum:"100" doc:"Page size."`
+	Cursor    string    `query:"cursor" doc:"Opaque cursor from a previous response."`
+	ActorID   string    `query:"actor_id" doc:"Filter by the actor that performed the action."`
+	Action    string    `query:"action" doc:"Filter by action, e.g. PII_FULL_READ."`
+	SubjectID string    `query:"subject_id" doc:"Reverse lookup: only events whose subject manifest contains this data subject (§5.3)."`
+	From      time.Time `query:"from" required:"false" doc:"Only events at or after this time (RFC 3339). 정기 점검 리포트용 기간 창."`
+	To        time.Time `query:"to" required:"false" doc:"Only events before this time (RFC 3339, exclusive)."`
 }
 
 type auditEventPageOutput struct {
@@ -102,6 +104,8 @@ func (r *registrar) registerAudit() {
 				ActorID:   optional(in.ActorID),
 				Action:    optional(in.Action),
 				SubjectID: optional(in.SubjectID),
+				From:      optionalTime(in.From),
+				To:        optionalTime(in.To),
 			}, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
 				return nil, mapAuditError(ctx, err)
@@ -131,4 +135,12 @@ func optional(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+// optionalTime turns an absent (zero) time parameter into a nil filter.
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
