@@ -29,4 +29,4 @@ CI는 [.github/workflows/ci.yml](.github/workflows/ci.yml) — backend(compose�
 - `/auth/v1/*` — Supabase Auth 호환 (chi 직접 구현, upstream 계약 준수)
 - `/privacy/v1/*`, `/iam/v1/*` — 자체 API (huma v2 → OpenAPI 자동 생성 → `web/openapi.yaml` → 프론트 codegen)
 - `make openapi` — 스펙 재생성. 핸들러 변경 후 필수 (CI가 drift를 잡음)
-- 샘플 프론트: [web/README.md](web/README.md) (전체 30 operation UI 커버리지 표 포함)
+- 샘플 프론트: [web/README.md](web/README.md) (operation UI 커버리지 표 포함)

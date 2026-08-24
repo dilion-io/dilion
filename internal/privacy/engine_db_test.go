@@ -78,12 +78,14 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, authDDL); err != nil {
 		t.Fatalf("auth ddl: %v", err)
 	}
-	body, err := os.ReadFile("../../migrations/0200_privacy.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(body)); err != nil {
-		t.Fatalf("apply 0200_privacy.sql: %v", err)
+	for _, m := range []string{"0200_privacy.sql", "0201_pii_search_index.sql"} {
+		body, err := os.ReadFile("../../migrations/" + m)
+		if err != nil {
+			t.Fatalf("read migration: %v", err)
+		}
+		if _, err := pool.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", m, err)
+		}
 	}
 	resetDB(t, pool)
 	t.Cleanup(pool.Close)
@@ -107,6 +109,7 @@ func resetDB(t *testing.T, pool *pgxpool.Pool) {
 		`delete from dilion_privacy.subject_policies`,
 		`delete from dilion_pii.subject_keys`,
 		`delete from dilion_pii.user_profiles`,
+		`delete from dilion_pii.profile_search_index`,
 		`delete from auth.identities`,
 		`delete from auth.sessions`,
 		`delete from auth.refresh_tokens`,
@@ -639,7 +642,7 @@ func TestLegalHoldGatesPipelineAndResumes(t *testing.T) {
 		t.Fatalf("held request must not run steps: %+v", logs)
 	}
 
-	page, err := env.e.ListHolds(env.ctx, "default", &user, httpapi.ListParams{})
+	page, err := env.e.ListHolds(env.ctx, "default", HoldFilter{UserID: &user}, httpapi.ListParams{})
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != hold.ID {
 		t.Fatalf("list holds = %+v (%v)", page, err)
 	}
@@ -1165,7 +1168,7 @@ func TestListRequestsPagingAndFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p1, err := env.e.ListRequests(env.ctx, "default", nil, httpapi.ListParams{Limit: 2})
+	p1, err := env.e.ListRequests(env.ctx, "default", RequestFilter{}, httpapi.ListParams{Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1175,7 +1178,7 @@ func TestListRequestsPagingAndFilter(t *testing.T) {
 	if p1.Items[0].RequestedAt.Before(p1.Items[1].RequestedAt) {
 		t.Error("requests must be newest first")
 	}
-	p2, err := env.e.ListRequests(env.ctx, "default", nil, httpapi.ListParams{Limit: 2, Cursor: *p1.NextCursor})
+	p2, err := env.e.ListRequests(env.ctx, "default", RequestFilter{}, httpapi.ListParams{Limit: 2, Cursor: *p1.NextCursor})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1184,7 +1187,7 @@ func TestListRequestsPagingAndFilter(t *testing.T) {
 	}
 
 	canceled := StatusCanceled
-	filtered, err := env.e.ListRequests(env.ctx, "default", &canceled, httpapi.ListParams{})
+	filtered, err := env.e.ListRequests(env.ctx, "default", RequestFilter{Status: &canceled}, httpapi.ListParams{})
 	if err != nil {
 		t.Fatal(err)
 	}

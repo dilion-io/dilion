@@ -83,6 +83,73 @@ type ConsentChange struct {
 	Source        string `json:"source"` // ui | api | import
 }
 
+// RequestFilter narrows ListRequests. Nil fields mean "no filter".
+type RequestFilter struct {
+	Status          *RequestStatus
+	Type            *RequestType
+	UserID          *string
+	RequestedAfter  *time.Time // requested_at >= (inclusive)
+	RequestedBefore *time.Time // requested_at < (exclusive)
+}
+
+// HoldFilter narrows ListHolds. Active=true keeps un-released holds only,
+// Active=false released ones only; nil returns both.
+type HoldFilter struct {
+	UserID *string
+	Active *bool
+}
+
+// SubjectConsent is one row of the cross-user consent segment projection
+// (use-cases.md 제안 P1): the current state of one purpose for one subject.
+type SubjectConsent struct {
+	UserID string `json:"user_id"`
+	ConsentState
+}
+
+// ConsentSegmentFilter narrows ListConsentStates. Purpose "" means every
+// purpose. ReconfirmDueBefore keeps only rows whose reconfirm notice is due
+// before the given time (rows with no reconfirm schedule never match).
+type ConsentSegmentFilter struct {
+	Purpose            string
+	Granted            *bool
+	ReconfirmDueBefore *time.Time
+}
+
+// AudienceMember is one recipient of a consent-based audience export: a
+// subject whose latest ledger entry for the purpose is GRANT, joined with the
+// contact identifiers from auth.users. Erased/deleted accounts are excluded.
+type AudienceMember struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"` // "" when the account has none
+	Phone  string `json:"phone"` // "" when the account has none
+}
+
+// UserSearchQuery is an exact-match user lookup (use-cases.md 제안 P4).
+// Exactly one criterion must be set: Email, Phone, or FieldKey+FieldValue
+// (a vault profile field, matched via the blind search index).
+type UserSearchQuery struct {
+	Email      string
+	Phone      string
+	FieldKey   string
+	FieldValue string
+}
+
+// UserMatch sources.
+const (
+	MatchAuthEmail    = "AUTH_EMAIL"
+	MatchAuthPhone    = "AUTH_PHONE"
+	MatchProfileField = "PROFILE_FIELD"
+)
+
+// UserMatch is one search hit. It carries no field values — the caller follows
+// up with the masked profile (or a privileged reveal) as a separate, audited
+// read.
+type UserMatch struct {
+	UserID   string `json:"user_id"`
+	Source   string `json:"source"`    // AUTH_EMAIL | AUTH_PHONE | PROFILE_FIELD
+	FieldKey string `json:"field_key"` // set for PROFILE_FIELD matches
+}
+
 type Destination struct {
 	ID      string          `json:"id"`
 	Type    DestinationType `json:"type"`
@@ -171,12 +238,23 @@ type Service interface {
 	// Requests
 	CreateRequest(ctx context.Context, in CreateRequestInput) (*Request, error)
 	GetRequest(ctx context.Context, projectID, id string) (*Request, error)
-	ListRequests(ctx context.Context, projectID string, status *RequestStatus, p httpapi.ListParams) (httpapi.Page[Request], error)
+	ListRequests(ctx context.Context, projectID string, f RequestFilter, p httpapi.ListParams) (httpapi.Page[Request], error)
 	CancelRequest(ctx context.Context, projectID, id string) (*Request, error) // REQUESTED(유예 중)만 가능
 
 	// Consents (user 단위 현재 상태 projection + append-only ledger 기록)
 	GetConsents(ctx context.Context, projectID, userID string) ([]ConsentState, error)
 	UpdateConsent(ctx context.Context, projectID, userID string, ch ConsentChange) (*ConsentState, error)
+	// ListConsentStates is the cross-user segment projection ("who currently
+	// grants marketing?", use-cases.md P1). Pages by (user_id, purpose).
+	ListConsentStates(ctx context.Context, projectID string, f ConsentSegmentFilter, p httpapi.ListParams) (httpapi.Page[SubjectConsent], error)
+	// ExportConsentAudience joins the granted segment of one purpose with
+	// auth.users contact identifiers. The caller is responsible for the
+	// pii.export permission, the mandatory reason and the audit event.
+	ExportConsentAudience(ctx context.Context, projectID, purpose string, p httpapi.ListParams) (httpapi.Page[AudienceMember], error)
+
+	// SearchUsers is an exact-match lookup by auth email/phone or by a vault
+	// profile field (blind index). Results carry ids only, never field values.
+	SearchUsers(ctx context.Context, projectID string, q UserSearchQuery, p httpapi.ListParams) (httpapi.Page[UserMatch], error)
 
 	// Destinations
 	CreateDestination(ctx context.Context, in CreateDestinationInput) (*Destination, error)
@@ -194,5 +272,5 @@ type Service interface {
 	// Legal holds (§2.9)
 	CreateHold(ctx context.Context, in CreateHoldInput) (*LegalHold, error)
 	ReleaseHold(ctx context.Context, projectID, id, releasedBy string) (*LegalHold, error)
-	ListHolds(ctx context.Context, projectID string, userID *string, p httpapi.ListParams) (httpapi.Page[LegalHold], error)
+	ListHolds(ctx context.Context, projectID string, f HoldFilter, p httpapi.ListParams) (httpapi.Page[LegalHold], error)
 }

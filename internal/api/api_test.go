@@ -24,18 +24,21 @@ import (
 // fakePrivacy is a privacy.Service whose behaviour each test overrides via the
 // function fields it cares about.
 type fakePrivacy struct {
-	createRequest func(context.Context, privacy.CreateRequestInput) (*privacy.Request, error)
-	getRequest    func(context.Context, string, string) (*privacy.Request, error)
-	listRequests  func(context.Context, string, *privacy.RequestStatus, httpapi.ListParams) (httpapi.Page[privacy.Request], error)
-	cancelRequest func(context.Context, string, string) (*privacy.Request, error)
-	getConsents   func(context.Context, string, string) ([]privacy.ConsentState, error)
-	updateConsent func(context.Context, string, string, privacy.ConsentChange) (*privacy.ConsentState, error)
-	getProfile    func(context.Context, string, string, bool) (*privacy.Profile, error)
-	updateProfile func(context.Context, string, string, map[string]privacy.ProfileField, []string) (*privacy.Profile, error)
-	getDest       func(context.Context, string, string) (*privacy.Destination, error)
-	listDests     func(context.Context, string, httpapi.ListParams) (httpapi.Page[privacy.Destination], error)
-	deleteDest    func(context.Context, string, string) error
-	createHold    func(context.Context, privacy.CreateHoldInput) (*privacy.LegalHold, error)
+	createRequest     func(context.Context, privacy.CreateRequestInput) (*privacy.Request, error)
+	getRequest        func(context.Context, string, string) (*privacy.Request, error)
+	listRequests      func(context.Context, string, privacy.RequestFilter, httpapi.ListParams) (httpapi.Page[privacy.Request], error)
+	cancelRequest     func(context.Context, string, string) (*privacy.Request, error)
+	getConsents       func(context.Context, string, string) ([]privacy.ConsentState, error)
+	updateConsent     func(context.Context, string, string, privacy.ConsentChange) (*privacy.ConsentState, error)
+	listConsentStates func(context.Context, string, privacy.ConsentSegmentFilter, httpapi.ListParams) (httpapi.Page[privacy.SubjectConsent], error)
+	exportAudience    func(context.Context, string, string, httpapi.ListParams) (httpapi.Page[privacy.AudienceMember], error)
+	searchUsers       func(context.Context, string, privacy.UserSearchQuery, httpapi.ListParams) (httpapi.Page[privacy.UserMatch], error)
+	getProfile        func(context.Context, string, string, bool) (*privacy.Profile, error)
+	updateProfile     func(context.Context, string, string, map[string]privacy.ProfileField, []string) (*privacy.Profile, error)
+	getDest           func(context.Context, string, string) (*privacy.Destination, error)
+	listDests         func(context.Context, string, httpapi.ListParams) (httpapi.Page[privacy.Destination], error)
+	deleteDest        func(context.Context, string, string) error
+	createHold        func(context.Context, privacy.CreateHoldInput) (*privacy.LegalHold, error)
 }
 
 func (f *fakePrivacy) CreateRequest(ctx context.Context, in privacy.CreateRequestInput) (*privacy.Request, error) {
@@ -46,8 +49,29 @@ func (f *fakePrivacy) GetRequest(ctx context.Context, p, id string) (*privacy.Re
 	return f.getRequest(ctx, p, id)
 }
 
-func (f *fakePrivacy) ListRequests(ctx context.Context, p string, s *privacy.RequestStatus, lp httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
-	return f.listRequests(ctx, p, s, lp)
+func (f *fakePrivacy) ListRequests(ctx context.Context, p string, fl privacy.RequestFilter, lp httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
+	return f.listRequests(ctx, p, fl, lp)
+}
+
+func (f *fakePrivacy) ListConsentStates(ctx context.Context, p string, fl privacy.ConsentSegmentFilter, lp httpapi.ListParams) (httpapi.Page[privacy.SubjectConsent], error) {
+	if f.listConsentStates == nil {
+		return httpapi.Page[privacy.SubjectConsent]{Items: []privacy.SubjectConsent{}}, nil
+	}
+	return f.listConsentStates(ctx, p, fl, lp)
+}
+
+func (f *fakePrivacy) ExportConsentAudience(ctx context.Context, p, purpose string, lp httpapi.ListParams) (httpapi.Page[privacy.AudienceMember], error) {
+	if f.exportAudience == nil {
+		return httpapi.Page[privacy.AudienceMember]{Items: []privacy.AudienceMember{}}, nil
+	}
+	return f.exportAudience(ctx, p, purpose, lp)
+}
+
+func (f *fakePrivacy) SearchUsers(ctx context.Context, p string, q privacy.UserSearchQuery, lp httpapi.ListParams) (httpapi.Page[privacy.UserMatch], error) {
+	if f.searchUsers == nil {
+		return httpapi.Page[privacy.UserMatch]{Items: []privacy.UserMatch{}}, nil
+	}
+	return f.searchUsers(ctx, p, q, lp)
 }
 
 func (f *fakePrivacy) CancelRequest(ctx context.Context, p, id string) (*privacy.Request, error) {
@@ -113,7 +137,7 @@ func (f *fakePrivacy) ReleaseHold(context.Context, string, string, string) (*pri
 	return nil, privacy.ErrNotFound
 }
 
-func (f *fakePrivacy) ListHolds(context.Context, string, *string, httpapi.ListParams) (httpapi.Page[privacy.LegalHold], error) {
+func (f *fakePrivacy) ListHolds(context.Context, string, privacy.HoldFilter, httpapi.ListParams) (httpapi.Page[privacy.LegalHold], error) {
 	return httpapi.Page[privacy.LegalHold]{Items: []privacy.LegalHold{}}, nil
 }
 
@@ -247,7 +271,7 @@ func TestMissingCredentialsReturns401Problem(t *testing.T) {
 func TestAuthenticatedUserWithGrantedPermissionIsAllowed(t *testing.T) {
 	sink := &recordingSink{}
 	svc := &fakePrivacy{
-		listRequests: func(context.Context, string, *privacy.RequestStatus, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
+		listRequests: func(context.Context, string, privacy.RequestFilter, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
 			return httpapi.Page[privacy.Request]{Items: []privacy.Request{}}, nil
 		},
 	}
@@ -357,7 +381,7 @@ func TestPermissionDeniedEmitsAudit(t *testing.T) {
 func TestServiceRoleUseIsAuditedOncePerRequest(t *testing.T) {
 	sink := &recordingSink{}
 	svc := &fakePrivacy{
-		listRequests: func(context.Context, string, *privacy.RequestStatus, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
+		listRequests: func(context.Context, string, privacy.RequestFilter, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
 			return httpapi.Page[privacy.Request]{Items: []privacy.Request{}}, nil
 		},
 	}
@@ -451,10 +475,10 @@ func TestListPrivacyRequestsPaginationEnvelope(t *testing.T) {
 	cursor := "Y3Vyc29y"
 	var gotParams httpapi.ListParams
 	svc := &fakePrivacy{
-		listRequests: func(_ context.Context, _ string, status *privacy.RequestStatus, lp httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
+		listRequests: func(_ context.Context, _ string, f privacy.RequestFilter, lp httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
 			gotParams = lp
-			if status == nil || *status != privacy.StatusProcessing {
-				t.Errorf("status filter = %v, want PROCESSING", status)
+			if f.Status == nil || *f.Status != privacy.StatusProcessing {
+				t.Errorf("status filter = %v, want PROCESSING", f.Status)
 			}
 			return httpapi.Page[privacy.Request]{
 				Items:      []privacy.Request{*sampleRequest()},
@@ -498,7 +522,7 @@ func TestListPrivacyRequestsPaginationEnvelope(t *testing.T) {
 
 func TestListPrivacyRequestsEmptyEnvelopeHasNullCursor(t *testing.T) {
 	svc := &fakePrivacy{
-		listRequests: func(context.Context, string, *privacy.RequestStatus, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
+		listRequests: func(context.Context, string, privacy.RequestFilter, httpapi.ListParams) (httpapi.Page[privacy.Request], error) {
 			return httpapi.Page[privacy.Request]{}, nil
 		},
 	}

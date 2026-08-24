@@ -246,10 +246,34 @@ type privacyRequestBodyOutput struct {
 }
 
 type listPrivacyRequestsInput struct {
-	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100" doc:"Page size."`
-	Cursor string `query:"cursor" doc:"Opaque cursor from a previous response."`
-	Sort   string `query:"sort" enum:"requested_at,-requested_at,scheduled_at,-scheduled_at" doc:"Sort field; prefix with - for descending."`
-	Status string `query:"status" enum:"REQUESTED,PROCESSING,DONE,MANUAL_REVIEW,CANCELED" doc:"Filter by status."`
+	Limit           int       `query:"limit" default:"20" minimum:"1" maximum:"100" doc:"Page size."`
+	Cursor          string    `query:"cursor" doc:"Opaque cursor from a previous response."`
+	Sort            string    `query:"sort" enum:"requested_at,-requested_at,scheduled_at,-scheduled_at" doc:"Sort field; prefix with - for descending."`
+	Status          string    `query:"status" enum:"REQUESTED,PROCESSING,DONE,MANUAL_REVIEW,CANCELED" doc:"Filter by status."`
+	Type            string    `query:"type" enum:"DELETION,EXPORT,CONSENT_WITHDRAWAL" doc:"Filter by request type."`
+	UserID          string    `query:"user_id" format:"uuid" required:"false" doc:"Filter by data subject (DSR 이력 조회)."`
+	RequestedAfter  time.Time `query:"requested_after" required:"false" doc:"Only requests accepted at or after this time (RFC 3339)."`
+	RequestedBefore time.Time `query:"requested_before" required:"false" doc:"Only requests accepted before this time (RFC 3339, exclusive)."`
+}
+
+// requestFilterOf maps the query parameters onto the engine filter.
+func (in *listPrivacyRequestsInput) filter() privacy.RequestFilter {
+	var f privacy.RequestFilter
+	if in.Status != "" {
+		s := privacy.RequestStatus(in.Status)
+		f.Status = &s
+	}
+	if in.Type != "" {
+		t := privacy.RequestType(in.Type)
+		f.Type = &t
+	}
+	if in.UserID != "" {
+		u := in.UserID
+		f.UserID = &u
+	}
+	f.RequestedAfter = optionalTime(in.RequestedAfter)
+	f.RequestedBefore = optionalTime(in.RequestedBefore)
+	return f
 }
 
 type privacyRequestPageOutput struct {
@@ -324,7 +348,8 @@ type legalHoldBodyOutput struct {
 type listLegalHoldsInput struct {
 	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	Cursor string `query:"cursor"`
-	UserID string `query:"user_id" format:"uuid" doc:"Filter by data subject."`
+	UserID string `query:"user_id" format:"uuid" required:"false" doc:"Filter by data subject."`
+	Active string `query:"active" enum:"true,false" doc:"true = un-released holds only, false = released only. Omit for both."`
 }
 
 type legalHoldPageOutput struct {
@@ -347,9 +372,12 @@ func RegisterPrivacyAPI(api huma.API, svcs ServiceProvider, d Deps) {
 	r := newRegistrar(api, d, svcs)
 	r.registerRequests()
 	r.registerConsents()
+	r.registerConsentSegments()
 	r.registerProfiles()
+	r.registerUserSearch()
 	r.registerDestinations()
 	r.registerHolds()
+	r.registerMe()
 }
 
 func (r *registrar) op(id, method, path, summary, perm string, tag string, status int) huma.Operation {
@@ -408,12 +436,7 @@ func (r *registrar) registerRequests() {
 			if err != nil {
 				return nil, err
 			}
-			var status *privacy.RequestStatus
-			if in.Status != "" {
-				s := privacy.RequestStatus(in.Status)
-				status = &s
-			}
-			page, err := svc.ListRequests(ctx, projectOf(ctx), status, listParams(in.Limit, in.Cursor, in.Sort))
+			page, err := svc.ListRequests(ctx, projectOf(ctx), in.filter(), listParams(in.Limit, in.Cursor, in.Sort))
 			if err != nil {
 				return nil, mapPrivacyError(ctx, err)
 			}
@@ -496,8 +519,11 @@ func (r *registrar) registerConsents() {
 			return &consentStatePageOutput{Body: ConsentStatePage{Items: items}}, nil
 		})
 
+	// consents.write, not privacy.requests.manage: recording consent is a
+	// routine app-server operation and must not require DSR authority
+	// (use-cases.md 부수 개선, migration 0304).
 	huma.Register(r.api, r.op("updateUserConsent", http.MethodPatch, "/privacy/v1/users/{userId}/consents",
-		"Record a consent change", iam.PermPrivacyRequestsManage, "privacy", http.StatusOK),
+		"Record a consent change", iam.PermConsentsWrite, "privacy", http.StatusOK),
 		func(ctx context.Context, in *updateUserConsentInput) (*consentStateOutput, error) {
 			svc, err := r.privacy(ctx)
 			if err != nil {
@@ -690,11 +716,15 @@ func (r *registrar) registerHolds() {
 			if err != nil {
 				return nil, err
 			}
-			var userID *string
+			var f privacy.HoldFilter
 			if in.UserID != "" {
-				userID = &in.UserID
+				f.UserID = &in.UserID
 			}
-			page, err := svc.ListHolds(ctx, projectOf(ctx), userID, listParams(in.Limit, in.Cursor, ""))
+			if in.Active != "" {
+				active := in.Active == "true"
+				f.Active = &active
+			}
+			page, err := svc.ListHolds(ctx, projectOf(ctx), f, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
 				return nil, mapPrivacyError(ctx, err)
 			}

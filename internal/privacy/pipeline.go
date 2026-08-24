@@ -508,6 +508,12 @@ func (e *Engine) stepAccount(ctx context.Context, rc *runCtx, _ ErasureAction) (
 		`delete from dilion_pii.user_profiles where user_id = $1::uuid`, rc.UserID); err != nil {
 		return "", false, err
 	}
+	// The blind search index (search.go) must not outlive the document — its
+	// tokens are keyed hashes of the erased values.
+	if _, err := e.pool.Exec(ctx,
+		`delete from dilion_pii.profile_search_index where user_id = $1::uuid`, rc.UserID); err != nil {
+		return "", false, err
+	}
 	tombstone := e.tombstoneID(rc.UserID)
 	if _, err := e.pool.Exec(ctx, `insert into dilion_privacy.erasure_registry
 		(tombstone_id, erased_at, request_id, reason) values ($1,$2,$3,$4)

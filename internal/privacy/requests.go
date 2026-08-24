@@ -215,8 +215,9 @@ func (e *Engine) GetRequest(ctx context.Context, projectID, id string) (*Request
 	return r, nil
 }
 
-// ListRequests pages requests newest-first, optionally filtered by status.
-func (e *Engine) ListRequests(ctx context.Context, projectID string, status *RequestStatus, p httpapi.ListParams) (httpapi.Page[Request], error) {
+// ListRequests pages requests newest-first, narrowed by the filter (status,
+// type, subject, requested_at window — use-cases.md 제안 P3).
+func (e *Engine) ListRequests(ctx context.Context, projectID string, f RequestFilter, p httpapi.ListParams) (httpapi.Page[Request], error) {
 	p = p.Norm()
 	var zero httpapi.Page[Request]
 	curTS, curID, err := decodeCursor(p.Cursor)
@@ -226,19 +227,36 @@ func (e *Engine) ListRequests(ctx context.Context, projectID string, status *Req
 	const q = `select ` + requestCols + ` from dilion_privacy.personal_data_requests
 		where project_id = $1
 		  and ($2::text is null or status = $2)
-		  and ($3::timestamptz is null or (requested_at, id) < ($3, $4))
+		  and ($3::text is null or type = $3)
+		  and ($4::uuid is null or user_id = $4::uuid)
+		  and ($5::timestamptz is null or requested_at >= $5)
+		  and ($6::timestamptz is null or requested_at < $6)
+		  and ($7::timestamptz is null or (requested_at, id) < ($7, $8))
 		order by requested_at desc, id desc
-		limit $5`
-	var statusArg *string
-	if status != nil {
-		s := string(*status)
+		limit $9`
+	var statusArg, typeArg *string
+	if f.Status != nil {
+		s := string(*f.Status)
 		statusArg = &s
+	}
+	if f.Type != nil {
+		t := string(*f.Type)
+		typeArg = &t
+	}
+	var userArg *string
+	if f.UserID != nil {
+		u, err := validUUID(*f.UserID)
+		if err != nil {
+			return zero, err
+		}
+		userArg = &u
 	}
 	var tsArg any
 	if !curTS.IsZero() {
 		tsArg = curTS
 	}
-	rows, err := e.pool.Query(ctx, q, normProject(projectID), statusArg, tsArg, curID, p.Limit+1)
+	rows, err := e.pool.Query(ctx, q, normProject(projectID), statusArg, typeArg, userArg,
+		f.RequestedAfter, f.RequestedBefore, tsArg, curID, p.Limit+1)
 	if err != nil {
 		return zero, fmt.Errorf("privacy: list requests: %w", err)
 	}
