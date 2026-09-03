@@ -108,6 +108,28 @@ type AccessTokenResponse struct {
 	// body. Dilion types it concretely, so a strong password simply omits the
 	// key. Populated, the two are identical: {"message":…,"reasons":[…]}.
 	WeakPassword *WeakPasswordError `json:"weak_password,omitempty"`
+
+	// IDToken mirrors upstream tokens.AccessTokenResponse.IDToken
+	// (`json:"id_token,omitempty"`, internal/tokens/service.go).
+	//
+	// It is ALWAYS EMPTY on this envelope, and that is upstream parity, not an
+	// omission. Upstream declares one AccessTokenResponse type and shares it
+	// between the session envelope and the OAuth-server token endpoint, but the
+	// only assignment to the field in the whole tree is
+	// internal/api/oauthserver/handlers.go:461, in handleAuthorizationCodeGrant
+	// when the `openid` scope was granted — and that handler does not even
+	// serialize the struct: it re-projects the four OAuth fields plus id_token
+	// into a map before sending (handlers.go:470-482). No session-issuing path
+	// — password, refresh_token, pkce, id_token, web3, external callback, MFA
+	// verify, signup, verify — ever sets it, so `omitempty` keeps the key out
+	// of every session body upstream serves.
+	//
+	// Dilion's OAuth-server token endpoint carries its own id_token on its own
+	// response type (oauthserver_token.go OAuthTokenResponse.IDToken), which is
+	// the structural equivalent of upstream's map. The field is mirrored here
+	// so the two AccessTokenResponse shapes match field-for-field; populating
+	// it from a session grant would be a divergence, not a fix.
+	IDToken string `json:"id_token,omitempty"`
 }
 
 // AdminListUsersResponse is the GET /admin/users body. `aud` is deprecated

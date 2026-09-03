@@ -340,12 +340,19 @@ type SessionsConfig struct {
 	// InactivityTimeout mirrors GOTRUE_SESSIONS_INACTIVITY_TIMEOUT: maximum age of
 	// sessions.refreshed_at. Zero disables the check.
 	InactivityTimeout time.Duration `json:"inactivity_timeout"`
-	// SinglePerUser mirrors GOTRUE_SESSIONS_SINGLE_PER_USER. FIELD ONLY — the
-	// "newest session wins" enforcement is the sessions feature work.
+	// SinglePerUser mirrors GOTRUE_SESSIONS_SINGLE_PER_USER (default false).
+	// Enforced by grant.go checkSinglePerUser, on the refresh_token grant —
+	// which is where upstream enforces it too (internal/tokens/service.go, the
+	// only reader of the flag in supabase/auth). It does NOT restrict session
+	// CREATION: a second sign-in still mints a second session, and the older
+	// one is rejected the next time it tries to refresh, once the newer one has
+	// refreshed at least once. Nothing is deleted or revoked.
 	SinglePerUser bool `json:"single_per_user"`
 }
 
-// CaptchaConfig mirrors upstream conf.CaptchaConfiguration. FIELDS ONLY.
+// CaptchaConfig mirrors upstream conf.CaptchaConfiguration. Enforced by
+// captcha.go: Enabled gates the check, Provider selects the siteverify endpoint
+// and Secret/Timeout/VerifyURL parameterise the call.
 type CaptchaConfig struct {
 	// Enabled mirrors GOTRUE_SECURITY_CAPTCHA_ENABLED.
 	Enabled bool `json:"enabled"`
@@ -377,11 +384,13 @@ type SecurityConfig struct {
 	// instead of being treated as abuse.
 	RefreshTokenReuseInterval int `json:"refresh_token_reuse_interval"`
 	// UpdatePasswordRequireReauth mirrors
-	// GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION. FIELD ONLY —
-	// enforced by the reauthentication feature work.
+	// GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION. Enforced by
+	// user.go requireReauthentication: PUT /user changing the password needs a
+	// nonce from POST /reauthenticate, else 400 reauthentication_needed.
 	UpdatePasswordRequireReauth bool `json:"update_password_require_reauthentication"`
-	// ManualLinkingEnabled mirrors GOTRUE_SECURITY_MANUAL_LINKING_ENABLED.
-	// FIELD ONLY — gates /user/identities in the identity-linking work.
+	// ManualLinkingEnabled mirrors GOTRUE_SECURITY_MANUAL_LINKING_ENABLED
+	// (default false). Enforced by identity.go: while off, GET
+	// /user/identities/authorize answers 404 manual_linking_disabled.
 	ManualLinkingEnabled bool `json:"manual_linking_enabled"`
 	// Captcha mirrors GOTRUE_SECURITY_CAPTCHA_*.
 	Captcha CaptchaConfig `json:"captcha"`
@@ -438,13 +447,20 @@ type RateLimitConfig struct {
 	// OTP mirrors GOTRUE_RATE_LIMIT_OTP (default 30 / 5m). Upstream applies it
 	// to /otp, /magiclink, /recover, /resend, /signup and PUT /user.
 	OTP float64 `json:"otp"`
-	// Web3 mirrors GOTRUE_RATE_LIMIT_WEB3 (default 30 / 5m). FIELD ONLY.
+	// Web3 mirrors GOTRUE_RATE_LIMIT_WEB3 (default 30 / 5m). FIELD ONLY, and
+	// the only one left in this file: middleware.go does build the LimiterWeb3
+	// bucket from it, but no route applies that limiter, because Dilion
+	// implements no `web3` grant yet. It starts limiting the moment
+	// registerGrant("web3", LimiterWeb3, ...) exists.
 	Web3 float64 `json:"web3"`
-	// Passkey mirrors GOTRUE_RATE_LIMIT_PASSKEY (default 30 / 5m). FIELD ONLY.
+	// Passkey mirrors GOTRUE_RATE_LIMIT_PASSKEY (default 30 / 5m). Enforced:
+	// middleware.go builds the LimiterPasskey bucket and passkeys.go applies it
+	// to the passkey registration/authentication routes.
 	Passkey float64 `json:"passkey"`
 }
 
-// MFATOTPConfig mirrors upstream conf.TOTPFactorTypeConfiguration. FIELDS ONLY.
+// MFATOTPConfig mirrors upstream conf.TOTPFactorTypeConfiguration. Enforced by
+// factors.go (enroll and verify gates for the TOTP factor).
 type MFATOTPConfig struct {
 	// EnrollEnabled mirrors GOTRUE_MFA_TOTP_ENROLL_ENABLED (default true).
 	EnrollEnabled bool `json:"enroll_enabled"`
@@ -461,7 +477,9 @@ type MFAFactorTypeConfig struct {
 	VerifyEnabled bool `json:"verify_enabled"`
 }
 
-// MFAConfig mirrors upstream conf.MFAConfiguration. FIELDS ONLY.
+// MFAConfig mirrors upstream conf.MFAConfiguration. Every field is enforced:
+// the per-type gates and MaxEnrolledFactors in factors.go, the OTP shape in
+// factors_phone.go.
 type MFAConfig struct {
 	// TOTP mirrors GOTRUE_MFA_TOTP_*.
 	TOTP MFATOTPConfig `json:"totp"`
@@ -482,7 +500,8 @@ type MFAConfig struct {
 // external extension point invoked at a fixed lifecycle moment; the URI scheme
 // selects the driver: https?:// -> HTTP webhook (HMAC-signed with Secrets),
 // pg-functions://<db>/<schema>.<func> -> a Postgres function called in-tx.
-// FIELDS ONLY (drivers implemented elsewhere).
+// Both drivers are implemented (hooks_http.go, hooks_pg.go) and dispatched from
+// hooks_ext.go; Enabled/URI/Secrets are all consumed there.
 type HookEndpointConfig struct {
 	// Enabled mirrors GOTRUE_HOOK_<NAME>_ENABLED (default false).
 	Enabled bool `json:"enabled"`
@@ -494,7 +513,8 @@ type HookEndpointConfig struct {
 }
 
 // HooksConfig mirrors upstream conf.HookConfiguration. Each field is one hook
-// point Supabase exposes to external code. FIELDS ONLY.
+// point Supabase exposes to external code, and all seven are enforced:
+// CustomAccessToken in auth.go, the other six in hooks_ext.go.
 type HooksConfig struct {
 	// CustomAccessToken mirrors GOTRUE_HOOK_CUSTOM_ACCESS_TOKEN_* — rewrites the
 	// access-token claims before signing (in addition to the in-process
@@ -520,7 +540,9 @@ type HooksConfig struct {
 }
 
 // PasskeyConfig mirrors upstream conf.PasskeyConfiguration +
-// conf.WebAuthnConfiguration. FIELDS ONLY.
+// conf.WebAuthnConfiguration. Enforced by passkeys.go: Enabled gates the
+// /passkeys routes (and is reported by GET /settings), RPID/RPOrigins configure
+// the relying party for both passkeys and the WebAuthn MFA factor.
 type PasskeyConfig struct {
 	// Enabled mirrors GOTRUE_PASSKEY_ENABLED; reported by GET /settings.
 	Enabled bool `json:"enabled"`
@@ -530,7 +552,9 @@ type PasskeyConfig struct {
 	RPOrigins []string `json:"rp_origins"`
 }
 
-// SAMLConfig mirrors upstream conf.SAMLConfiguration. FIELDS ONLY.
+// SAMLConfig mirrors upstream conf.SAMLConfiguration. Enforced: Enabled gates
+// the /sso routes (sso.go) and is reported by GET /settings; PrivateKey is the
+// SP key material parsed in saml_sp.go.
 type SAMLConfig struct {
 	// Enabled mirrors GOTRUE_SAML_ENABLED; reported by GET /settings.
 	Enabled bool `json:"enabled"`
@@ -538,7 +562,8 @@ type SAMLConfig struct {
 	PrivateKey string `json:"-"`
 }
 
-// OAuthServerConfig mirrors upstream conf.OAuthServerConfiguration. FIELDS ONLY.
+// OAuthServerConfig mirrors upstream conf.OAuthServerConfiguration. Enforced by
+// oauthserver.go, which 404s every /oauth route while Enabled is false.
 type OAuthServerConfig struct {
 	// Enabled mirrors GOTRUE_OAUTH_SERVER_ENABLED.
 	Enabled bool `json:"enabled"`
@@ -580,7 +605,9 @@ type Config struct {
 	// ExternalProviders. Every key of ExternalProviders is always present.
 	External map[string]ProviderConfig `json:"external"`
 	// FlowStateExpiry mirrors GOTRUE_EXTERNAL_FLOW_STATE_EXPIRY_DURATION
-	// (default 5m). FIELD ONLY — consumed by the PKCE/OAuth work.
+	// (default 5m). Enforced: pkce.go and external_callback.go reject an
+	// auth code older than this with 422 flow_state_expired, and cleanup.go
+	// sweeps the expired rows.
 	FlowStateExpiry time.Duration `json:"flow_state_expiry"`
 
 	MFA         MFAConfig         `json:"mfa"`

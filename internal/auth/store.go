@@ -357,6 +357,41 @@ func findSessionByID(ctx context.Context, q querier, id string) (*session, error
 	return &s, nil
 }
 
+// findAllSessionsForUser is upstream models.FindAllSessionsForUser: every
+// session row belonging to one user. Only the SESSIONS_SINGLE_PER_USER check
+// uses it (grant.go).
+//
+// Upstream's forUpdate variant takes a `SELECT ... FOR UPDATE SKIP LOCKED` on
+// the USER row first, purely to serialise concurrent refreshes; Dilion's
+// refresh already runs with the presented refresh-token row locked
+// (findRefreshTokenForUpdate), which serialises the same contention on the only
+// path that calls this.
+func findAllSessionsForUser(ctx context.Context, q querier, userID string) ([]*session, error) {
+	rows, err := q.Query(ctx,
+		`select id::text, user_id::text, not_after, created_at, refreshed_at
+		 from auth.sessions where user_id = $1::uuid`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*session{}
+	for rows.Next() {
+		var s session
+		var createdAt *time.Time
+		if err := rows.Scan(&s.ID, &s.UserID, &s.NotAfter, &createdAt, &s.RefreshedAt); err != nil {
+			return nil, err
+		}
+		if createdAt != nil {
+			s.CreatedAt = createdAt.UTC()
+		}
+		s.NotAfter = utc(s.NotAfter)
+		s.RefreshedAt = utc(s.RefreshedAt)
+		out = append(out, &s)
+	}
+	return out, rows.Err()
+}
+
 func touchSession(ctx context.Context, q querier, id string, now time.Time) error {
 	_, err := q.Exec(ctx,
 		`update auth.sessions set updated_at = $2, refreshed_at = $3 where id = $1::uuid`,
