@@ -19,20 +19,129 @@ jobs:
       - name: Start test environment (docker compose)
         run: make up
 
-      - name: Build, vet, full test suite (DB integration, -race)
-        run: make test-db
+      # build / vet 은 `make test-db` 의 선행 타깃이기도 하지만, 여기서 별도 스텝으로
+      # 한 번 더 돌린다: 어떤 게이트가 깨졌는지 run 화면과 아래 요약 표에서 바로
+      # 구분되게 하려는 것. (빌드 캐시 덕에 test-db 쪽 재실행은 사실상 무비용)
+      - name: go build ./...
+        id: build
+        run: make build
+
+      - name: go vet ./...
+        id: vet
+        run: make vet
+
+      # test2json 스트림을 파일로 받아 아래 robherley/go-test-action 이 렌더한다.
+      # 게이트 자체는 기존과 동일한 `make test-db` (build+vet 선행 + -race DB 스위트).
+      # 액션에 `go test` 실행을 맡기지 않는 이유: 4개 스위트가 서로 다른
+      # DILION_TEST_DB* 환경변수로 돌아가야 해서 한 번의 호출로 표현할 수 없다.
+      - name: Full test suite (DB integration, -race)
+        id: tests
+        run: make test-db GOTEST_JSON="$RUNNER_TEMP/go-test.json"
+
+      - name: Detect test2json stream
+        id: gotest_json
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -s "$RUNNER_TEMP/go-test.json" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Go 테스트 결과를 run summary 에 접이식 표/차트로 렌더한다.
+      #
+      # 선택 근거 — 후보는 둘이었다:
+      #   (a) robherley/go-test-action: go 의 test2json 을 그대로 먹는다. 중간 포맷이
+      #       없어서 변환 단계(gotestsum→JUnit)가 사라지고, 이미 파일로 뽑아 둔
+      #       스트림을 fromJSONFile 로 넘기기만 하면 된다. 즉 `go test` 호출 방식을
+      #       액션에 맞춰 바꿀 필요가 없다 — 우리처럼 스위트마다 env 가 다른 경우 결정적.
+      #   (b) gotestsum → JUnit XML → mikepenz/action-junit-report(또는 dorny/test-reporter):
+      #       도구 두 개 + 손실 있는 중간 포맷(JUnit 은 Go 의 패키지/서브테스트 구조를
+      #       완전히 표현하지 못한다)이 늘고, dorny/test-reporter 는 check-run 생성을
+      #       위해 checks: write 권한까지 요구한다. 얻는 건 인라인 어노테이션 정도인데
+      #       실패 위치는 어차피 go 로그와 요약에 다 있다. → 채택하지 않음.
+      #
+      # 요약 렌더가 잡을 깨뜨리는 일이 없도록 continue-on-error (게이트는 위 tests 스텝).
+      - name: Publish Go test results to run summary
+        if: always() && steps.gotest_json.outputs.present == 'true'
+        continue-on-error: true
+        uses: robherley/go-test-action@v1.1.0
+        with:
+          fromJSONFile: ${{ runner.temp }}/go-test.json
+          # 테스트가 없는 패키지만 접는다 — 실패 출력은 요약에 온전히 남긴다.
+          omit: untested
 
       - name: OpenAPI spec drift check
+        id: openapi
         run: make openapi-check
 
       # 생성 산출물(types.gen.go)이 벤더링된 openapi.yaml 과 어긋나지 않는지.
       # 이건 로컬에서 재현 가능한 결정적 검사라 blocking 이 맞다.
       # (upstream 스펙 자체의 변화 감지는 아래 upstream-spec-drift 잡에서 비차단으로 수행)
       - name: upstreamspec codegen drift check
+        id: codegen_drift
         run: |
           go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
           PATH="$PATH:$(go env GOPATH)/bin" go generate ./internal/auth/upstreamspec/
           git diff --exit-code internal/auth/upstreamspec/types.gen.go
+
+      # blocking 게이트는 그대로 두고(실패 = 잡 실패), 무엇을 하면 되는지만 요약에 남긴다.
+      - name: Codegen drift remediation (summary)
+        if: always() && steps.codegen_drift.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          {
+            echo "### ❌ upstreamspec codegen drift"
+            echo
+            echo 'Generated `internal/auth/upstreamspec/types.gen.go` no longer matches the vendored'
+            echo '`internal/auth/upstreamspec/openapi.yaml`. This gate is **blocking** — it is fully'
+            echo 'reproducible locally.'
+            echo
+            echo '**Fix:**'
+            echo
+            echo '```sh'
+            echo 'go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0'
+            echo 'go generate ./internal/auth/upstreamspec/'
+            echo 'git add internal/auth/upstreamspec/types.gen.go   # 재생성 결과를 커밋'
+            echo 'go test ./internal/auth/ -run TestUpstreamSpecConformance'
+            echo '```'
+            echo
+            echo '<details><summary>diffstat</summary>'
+            echo
+            echo '```text'
+            git --no-pager diff --stat -- internal/auth/upstreamspec/types.gen.go || true
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Backend gate summary
+        if: always()
+        continue-on-error: true
+        run: |
+          row() {
+            case "$2" in
+              success)  icon="✅ pass" ;;
+              failure)  icon="❌ fail" ;;
+              skipped)  icon="⏭️ skipped" ;;
+              *)        icon="– $2" ;;
+            esac
+            printf '| %s | %s |\n' "$1" "$icon" >> "$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "### Backend gates"
+            echo
+            echo "| Gate | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          row 'go build ./...'                       '${{ steps.build.outcome }}'
+          row 'go vet ./...'                         '${{ steps.vet.outcome }}'
+          row 'DB suite (-race)'                     '${{ steps.tests.outcome }}'
+          row 'OpenAPI spec drift (make openapi-check)' '${{ steps.openapi.outcome }}'
+          row 'upstreamspec codegen drift'           '${{ steps.codegen_drift.outcome }}'
+          echo >> "$GITHUB_STEP_SUMMARY"
 
       - name: Teardown
         if: always()
@@ -56,15 +165,50 @@ jobs:
       - run: npm ci
 
       - name: Codegen drift check (openapi.yaml → schema.d.ts)
+        id: codegen
         run: |
           npm run gen:api
           git diff --exit-code src/api/schema.d.ts
 
       - name: Typecheck + build
+        id: build
         run: npm run build
 
       - name: Lint
+        id: lint
         run: npx oxlint
+
+      # 프론트는 무거운 리포터 액션 없이 게이트별 pass/fail 한 줄씩만 요약에 남긴다.
+      - name: Frontend gate summary
+        if: always()
+        continue-on-error: true
+        run: |
+          row() {
+            case "$2" in
+              success)  icon="✅ pass" ;;
+              failure)  icon="❌ fail" ;;
+              skipped)  icon="⏭️ skipped" ;;
+              *)        icon="– $2" ;;
+            esac
+            printf '| %s | %s |\n' "$1" "$icon" >> "$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "### Frontend gates"
+            echo
+            echo "| Gate | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          row 'Codegen drift (openapi.yaml → schema.d.ts)' '${{ steps.codegen.outcome }}'
+          row 'Typecheck + build (npm run build)'          '${{ steps.build.outcome }}'
+          row 'Lint (oxlint)'                              '${{ steps.lint.outcome }}'
+          echo >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.codegen.outcome }}' = 'failure' ]; then
+            {
+              echo
+              echo '`web/src/api/schema.d.ts` is stale. Fix: `cd web && npm run gen:api` 후 커밋.'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   parity:
     name: Parity vs upstream supabase/auth (differential + coverage)
@@ -83,8 +227,28 @@ jobs:
           # docker compose plugin is present on ubuntu-latest runners
           COMPOSE: docker compose
 
+      # 하네스가 커버리지/KNOWN/FAIL 을 마크다운으로도 뱉게 한다 (t.Logf 출력은 그대로).
       - name: Run differential + coverage suite
-        run: make parity-test
+        run: make parity-test PARITY_SUMMARY_FILE="$RUNNER_TEMP/parity-summary.md"
+
+      # 실패한 run 일수록 커버리지가 궁금하므로 always(). 요약 append 가 잡을
+      # 깨뜨리지 않도록 파일 존재를 확인하고 continue-on-error 를 건다.
+      - name: Publish parity coverage to run summary
+        if: always()
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/parity-summary.md"
+          if [ -s "$f" ]; then
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Parity vs upstream supabase/auth"
+              echo
+              echo "> No summary file was produced — the harness died before it could write one"
+              echo "> (stack never came up, or the suite was skipped). See the step log."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Teardown
         if: always()
@@ -112,5 +276,78 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # make 타깃은 CI 를 모른다(평범한 stdout + exit code). 여기서 출력만 받아
+      # 요약/어노테이션으로 포맷한다.
       - name: Compare vendored openapi.yaml against supabase/auth@master
-        run: make upstream-spec-check
+        id: check
+        run: |
+          set +e
+          make upstream-spec-check 2>&1 | tee "$RUNNER_TEMP/upstream-spec-check.log"
+          rc="${PIPESTATUS[0]}"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Report drift to run summary + annotation
+        if: always()
+        continue-on-error: true
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          log="$RUNNER_TEMP/upstream-spec-check.log"
+          [ -f "$log" ] || : > "$log"
+
+          if [ "${RC:-1}" = "0" ]; then
+            {
+              echo "### ✅ Upstream spec: no drift"
+              echo
+              echo 'Vendored `internal/auth/upstreamspec/openapi.yaml` is identical to `supabase/auth@master`.'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if grep -q 'DRIFT' "$log"; then
+            title="Upstream spec drift"
+            headline='`supabase/auth@master` `openapi.yaml` moved — the vendored copy is stale.'
+            note='This job is **non-blocking**: it only tells you the input to the conformance/parity gates is aging. No PR is blocked by it.'
+          else
+            title="Upstream spec check could not run"
+            headline='`make upstream-spec-check` failed without reporting drift (network / GitHub rate limit / curl error).'
+            note='This job is **non-blocking** and the failure is very likely not caused by this PR. Re-run if you want a real answer.'
+          fi
+
+          {
+            echo "### ⚠️ ${title}"
+            echo
+            echo "${headline}"
+            echo
+            echo "${note}"
+            echo
+            echo "**Remediation**"
+            echo
+            echo '```sh'
+            echo 'make upstream-spec-sync                       # upstream openapi.yaml 재수집 + 타입 재생성'
+            echo '# → internal/auth/upstreamspec/SOURCE.md 갱신 (commit sha / sha256 / fetched date)'
+            echo 'go test ./internal/auth/ -run TestUpstreamSpecConformance'
+            echo 'make parity                                   # 차등 스위트로 실제 회귀 확인'
+            echo '```'
+            echo
+            echo '<details><summary><code>make upstream-spec-check</code> output (first 200 lines)</summary>'
+            echo
+            echo '```text'
+            # 로그에 백틱 3개가 섞여도 코드펜스가 깨지지 않도록 치환
+            head -n 200 "$log" | sed 's/```/~~~/g'
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # run 페이지 상단에 뜨는 어노테이션 (한 줄, 개행 불가 → %0A 로 이스케이프)
+          echo "::warning title=${title}::vendored openapi.yaml vs supabase/auth@master — see the run summary.%0A대응: make upstream-spec-sync → SOURCE.md 갱신 → go test ./internal/auth/ -run TestUpstreamSpecConformance"
+
+      # 오늘과 동일한 성패 의미를 유지한다: 드리프트면 잡은 빨갛게 두되,
+      # 잡 레벨 continue-on-error 로 workflow run 자체는 막지 않는다.
+      - name: Keep the job red on drift (workflow stays green)
+        if: always() && steps.check.outputs.rc != '0'
+        run: exit 1
