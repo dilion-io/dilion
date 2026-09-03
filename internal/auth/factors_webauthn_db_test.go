@@ -10,6 +10,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -205,4 +206,228 @@ func TestAdminListsMixedFactorTypes(t *testing.T) {
 			t.Fatalf("admin list is missing factor type %q; got %v", want, seen)
 		}
 	}
+}
+
+// ---- web_authn_aaguid / last_webauthn_challenge_data -----------------------
+
+// appleAAGUID is a real, published authenticator model id (Apple Passwords),
+// used here only because it is a well-formed non-zero AAGUID.
+const appleAAGUIDString = "fbfc3007-154e-4ecc-8c0b-6e020557d7bd"
+
+// factorJSON re-reads one factor through the admin factor list as RAW JSON, so
+// the assertions below are about the wire body and not about a Go struct that
+// might round-trip a key it never emitted.
+func (e *mfaEnv) factorJSON(t *testing.T, admin, userID, factorID string) map[string]any {
+	t.Helper()
+	list := decodeInto[[]map[string]any](t,
+		e.do(t, http.MethodGet, "/admin/users/"+userID+"/factors", nil, admin), http.StatusOK)
+	for _, f := range list {
+		if f["id"] == factorID {
+			return f
+		}
+	}
+	t.Fatalf("factor %s not in admin list %v", factorID, list)
+	return nil
+}
+
+// TestMFAWebAuthnFactorSerializesAAGUIDAndChallengeData covers items C1 and C2
+// together, because upstream writes both columns from the same place
+// (internal/api/mfa.go verifyWebAuthnFactor -> models.Factor
+// .SaveWebAuthnCredential + .UpdateLastWebAuthnChallenge) and exposes both the
+// same way (plain json tags on models.Factor, so every factor read carries
+// them).
+func TestMFAWebAuthnFactorSerializesAAGUIDAndChallengeData(t *testing.T) {
+	env := newMFAEnv(t, webAuthnConfig())
+	admin := env.serviceRoleToken(t)
+	session := env.signupUser(t, "mfa-webauthn-aaguid@dilion.test")
+	userID := env.claims(t, session.Token).Subject
+
+	factor := env.enrollWebAuthn(t, session.Token, "Security key")
+
+	// An unverified factor has completed no ceremony: both keys must be absent,
+	// which is what upstream's `omitempty` on two nil pointers produces.
+	before := env.factorJSON(t, admin, userID, factor.ID)
+	if _, ok := before["web_authn_aaguid"]; ok {
+		t.Errorf("web_authn_aaguid must be absent before any ceremony; got %v", before)
+	}
+	if _, ok := before["last_webauthn_challenge_data"]; ok {
+		t.Errorf("last_webauthn_challenge_data must be absent before any ceremony; got %v", before)
+	}
+
+	va := newVirtualAuthenticator(testWebAuthnRPID, testWebAuthnOrigin).
+		withAAGUID(t, appleAAGUIDString)
+
+	// ---- registration ceremony ------------------------------------------
+	ch := env.challengeWebAuthn(t, session.Token, factor.ID)
+	credential := va.createCredential(t, creationOptionsOf(t, ch))
+	env.clock.advance(2 * time.Second)
+	rec := env.do(t, http.MethodPost, "/factors/"+factor.ID+"/verify",
+		webAuthnVerifyBody(ch.ID, webAuthnFactorTypeCreate, credential), session.Token)
+	upgraded := decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+
+	after := env.factorJSON(t, admin, userID, factor.ID)
+	if got := after["web_authn_aaguid"]; got != appleAAGUIDString {
+		t.Errorf("web_authn_aaguid = %v, want %q", got, appleAAGUIDString)
+	}
+	assertLastChallengeData(t, after, webAuthnFactorTypeCreate, ch.ID)
+
+	// The verify response's own `user.factors` is built from the same read, so
+	// it carries the fields too — upstream's verify likewise answers with a
+	// session whose user was re-loaded after the two writes.
+	assertSessionUserFactor(t, rec, factor.ID, appleAAGUIDString, webAuthnFactorTypeCreate)
+	if upgraded.User == nil {
+		t.Fatal("verify response must carry a user")
+	}
+
+	// ---- assertion ceremony ---------------------------------------------
+	// Upstream calls UpdateLastWebAuthnChallenge on EVERY verify, not only the
+	// one that promotes the factor, so a login ceremony must overwrite it.
+	env.clock.advance(2 * time.Second)
+	ch2 := env.challengeWebAuthn(t, session.Token, factor.ID)
+	assertion := va.getAssertion(t, requestOptionsOf(t, ch2), 1)
+	env.clock.advance(2 * time.Second)
+	rec = env.do(t, http.MethodPost, "/factors/"+factor.ID+"/verify",
+		webAuthnVerifyBody(ch2.ID, webAuthnFactorTypeRequest, assertion), session.Token)
+	loggedIn := decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+
+	relogin := env.factorJSON(t, admin, userID, factor.ID)
+	if got := relogin["web_authn_aaguid"]; got != appleAAGUIDString {
+		t.Errorf("web_authn_aaguid changed across a login ceremony: %v", got)
+	}
+	assertLastChallengeData(t, relogin, webAuthnFactorTypeRequest, ch2.ID)
+
+	// GET /user serves the same factor objects (user.go loadFactors).
+	userRec := env.do(t, http.MethodGet, "/user", nil, loggedIn.Token)
+	if userRec.Code != http.StatusOK {
+		t.Fatalf("GET /user status = %d: %s", userRec.Code, userRec.Body.String())
+	}
+	var got struct {
+		Factors []map[string]any `json:"factors"`
+	}
+	if err := json.Unmarshal(userRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal /user: %v", err)
+	}
+	if len(got.Factors) != 1 {
+		t.Fatalf("GET /user factors = %d, want 1", len(got.Factors))
+	}
+	if v := got.Factors[0]["web_authn_aaguid"]; v != appleAAGUIDString {
+		t.Errorf("GET /user factor web_authn_aaguid = %v, want %q", v, appleAAGUIDString)
+	}
+	assertLastChallengeData(t, got.Factors[0], webAuthnFactorTypeRequest, ch2.ID)
+}
+
+// assertLastChallengeData pins the stored document to upstream's
+// models.LastWebAuthnChallengeData shape: {challenge, type, credential_response},
+// with `challenge` carrying models.Challenge's json tags (challenge_id, not id).
+// wantChallengeID "" skips the challenge-id comparison.
+func assertLastChallengeData(t *testing.T, factor map[string]any, wantType, wantChallengeID string) {
+	t.Helper()
+	raw, ok := factor["last_webauthn_challenge_data"].(map[string]any)
+	if !ok {
+		t.Fatalf("last_webauthn_challenge_data missing or not an object: %v", factor["last_webauthn_challenge_data"])
+	}
+	if got := raw["type"]; got != wantType {
+		t.Errorf("last_webauthn_challenge_data.type = %v, want %q", got, wantType)
+	}
+	challenge, ok := raw["challenge"].(map[string]any)
+	if !ok {
+		t.Fatalf("last_webauthn_challenge_data.challenge is not an object: %v", raw["challenge"])
+	}
+	if wantChallengeID != "" && challenge["challenge_id"] != wantChallengeID {
+		t.Errorf("challenge.challenge_id = %v, want %q", challenge["challenge_id"], wantChallengeID)
+	}
+	// Upstream snapshots the challenge BEFORE consuming it, so verified_at is
+	// never in the document (`omitempty` over a nil pointer).
+	if _, ok := challenge["verified_at"]; ok {
+		t.Errorf("challenge.verified_at must be absent (upstream snapshots the unconsumed challenge): %v", challenge)
+	}
+	if _, ok := challenge["ip_address"]; !ok {
+		t.Errorf("challenge.ip_address missing: %v", challenge)
+	}
+	// The stored response is the PARSED authenticator response — go-webauthn's
+	// ParsedCredentialCreationData / ParsedCredentialAssertionData — exactly as
+	// upstream stores it (internal/models/factor.go marshals the same library
+	// types). Those types carry NO json tags, so they marshal under their Go
+	// field names: "ID" and "Type" from the embedded ParsedCredential, "Raw"
+	// for the client's original body, "Response" for the decoded ceremony data.
+	// Asserting the capitalised keys is what pins us to upstream's encoding;
+	// lowercase "id" would mean we had invented our own.
+	cr, ok := raw["credential_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("credential_response is not an object: %v", raw["credential_response"])
+	}
+	if id, _ := cr["ID"].(string); id == "" {
+		t.Errorf("credential_response.ID (go-webauthn ParsedCredential.ID) is missing: %v", cr)
+	}
+	if got := cr["Type"]; got != "public-key" {
+		t.Errorf("credential_response.Type = %v, want public-key", got)
+	}
+	if _, ok := cr["Response"].(map[string]any); !ok {
+		t.Errorf("credential_response.Response (the decoded ceremony data) is missing: %v", cr)
+	}
+	if _, ok := cr["Raw"].(map[string]any); !ok {
+		t.Errorf("credential_response.Raw (the client's original body) is missing: %v", cr)
+	}
+}
+
+// assertSessionUserFactor checks the factor embedded in a session envelope's
+// `user.factors`.
+func assertSessionUserFactor(t *testing.T, rec *httptest.ResponseRecorder, factorID, wantAAGUID, wantType string) {
+	t.Helper()
+	var body struct {
+		User struct {
+			Factors []map[string]any `json:"factors"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal session envelope: %v", err)
+	}
+	for _, f := range body.User.Factors {
+		if f["id"] != factorID {
+			continue
+		}
+		if f["web_authn_aaguid"] != wantAAGUID {
+			t.Errorf("session user.factors web_authn_aaguid = %v, want %q", f["web_authn_aaguid"], wantAAGUID)
+		}
+		assertLastChallengeData(t, f, wantType, "")
+		return
+	}
+	t.Fatalf("factor %s not in session envelope user.factors: %s", factorID, rec.Body.String())
+}
+
+// TestMFAFactorsWithoutWebAuthnOmitTheWebAuthnFields: a TOTP factor, and a
+// webauthn factor whose authenticator declined to identify its model (the
+// all-zero AAGUID, stored as NULL), leave both keys out entirely — upstream's
+// `omitempty` over nil pointers.
+func TestMFAFactorsWithoutWebAuthnOmitTheWebAuthnFields(t *testing.T) {
+	env := newMFAEnv(t, webAuthnConfig())
+	admin := env.serviceRoleToken(t)
+	session := env.signupUser(t, "mfa-no-aaguid@dilion.test")
+	userID := env.claims(t, session.Token).Subject
+
+	totpFactor := env.enroll(t, session.Token, "TOTP")
+	totpJSON := env.factorJSON(t, admin, userID, totpFactor.ID)
+	for _, key := range []string{"web_authn_aaguid", "last_webauthn_challenge_data"} {
+		if _, ok := totpJSON[key]; ok {
+			t.Errorf("a totp factor must not carry %q; got %v", key, totpJSON)
+		}
+	}
+
+	// A webauthn factor verified by an authenticator with the all-zero AAGUID:
+	// the credential and the challenge record are stored, the AAGUID is not.
+	factor := env.enrollWebAuthn(t, session.Token, "Anonymous key")
+	va := newVirtualAuthenticator(testWebAuthnRPID, testWebAuthnOrigin) // no AAGUID
+	ch := env.challengeWebAuthn(t, session.Token, factor.ID)
+	credential := va.createCredential(t, creationOptionsOf(t, ch))
+	env.clock.advance(2 * time.Second)
+	if rec := env.do(t, http.MethodPost, "/factors/"+factor.ID+"/verify",
+		webAuthnVerifyBody(ch.ID, webAuthnFactorTypeCreate, credential), session.Token); rec.Code != http.StatusOK {
+		t.Fatalf("verify status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	anon := env.factorJSON(t, admin, userID, factor.ID)
+	if _, ok := anon["web_authn_aaguid"]; ok {
+		t.Errorf("an all-zero AAGUID must be stored as NULL and omitted; got %v", anon["web_authn_aaguid"])
+	}
+	assertLastChallengeData(t, anon, webAuthnFactorTypeCreate, ch.ID)
 }

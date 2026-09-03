@@ -112,6 +112,21 @@ var knownExtensions = map[string]string{
 		"`ProviderAccessToken string json:\"provider_token,omitempty\"`; the spec omits it.",
 	"AccessTokenResponse.provider_refresh_token": "upstream tokens.AccessTokenResponse has " +
 		"`ProviderRefreshToken string json:\"provider_refresh_token,omitempty\"`; the spec omits it.",
+	"AccessTokenResponse.id_token": "upstream tokens.AccessTokenResponse has " +
+		"`IDToken string json:\"id_token,omitempty\"` (internal/tokens/service.go:121); the spec omits it. " +
+		"Upstream's only assignment to it is internal/api/oauthserver/handlers.go:461 (authorization_code " +
+		"grant, openid scope), and that handler re-projects into a map rather than serializing the struct, so " +
+		"no upstream SESSION body ever carries the key. Dilion matches: the field exists and is never set on " +
+		"this envelope — see TestAccessTokenResponseIDTokenNeverSetOnSessionGrants.",
+
+	"MFAFactor.web_authn_aaguid": "upstream models.Factor has " +
+		"`WebAuthnAAGUID *uuid.UUID json:\"web_authn_aaguid,omitempty\"` (internal/models/factor.go:175), " +
+		"written by SaveWebAuthnCredential; the spec omits it (see upstreamspec/doc.go).",
+	"MFAFactor.last_webauthn_challenge_data": "upstream models.Factor has " +
+		"`LastWebAuthnChallengeData *LastWebAuthnChallengeData json:\"last_webauthn_challenge_data,omitempty\"` " +
+		"(internal/models/factor.go:176), written by UpdateLastWebAuthnChallenge on every webauthn verify " +
+		"(internal/api/mfa.go:949) and carried by every factor read, since the field has no `json:\"-\"`; " +
+		"the spec omits it (see upstreamspec/doc.go).",
 
 	"SSOProvider.domains": "the real name of the spec's `sso_domains` — see knownSpecGaps[\"SSOProvider.sso_domains\"].",
 	"SSOProvider.resource_id": "upstream models.SSOProvider has `ResourceID *string json:\"resource_id,omitempty\"`; " +
@@ -455,4 +470,30 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestAccessTokenResponseIDTokenShape backs knownExtensions
+// ["AccessTokenResponse.id_token"]: the field exists, is tagged exactly as
+// upstream tags it, and — because upstream's `omitempty` is what keeps the key
+// out of every session body — disappears when unset.
+func TestAccessTokenResponseIDTokenShape(t *testing.T) {
+	omitted, err := json.Marshal(AccessTokenResponse{Token: "t"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(omitted), "id_token") {
+		t.Errorf("id_token must be omitted when unset; got %s", omitted)
+	}
+
+	set, err := json.Marshal(AccessTokenResponse{Token: "t", IDToken: "eyJ.a.b"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(set, &got); err != nil {
+		t.Fatalf("unmarshal %s: %v", set, err)
+	}
+	if got["id_token"] != "eyJ.a.b" {
+		t.Errorf("id_token key = %v, want the token string (body %s)", got["id_token"], set)
+	}
 }
