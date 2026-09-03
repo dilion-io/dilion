@@ -178,6 +178,24 @@ func (a *api) passwordGrant(w http.ResponseWriter, r *http.Request) error {
 	if user.EncryptedPassword == nil || ComparePassword(*user.EncryptedPassword, params.Password) != nil {
 		return badRequestError(ErrorCodeInvalidCredentials, "%s", InvalidLoginMessage)
 	}
+	// The credential is good, but the strength policy may have been tightened
+	// (or the password may have entered the HIBP corpus) since it was set.
+	// Upstream ACCEPTS the login and hands the client an advisory instead of
+	// rejecting — a policy change must never lock existing users out — so the
+	// result is stashed here and attached to the response below.
+	//
+	// Non-weak failures (over the 72-byte bcrypt limit, or an HIBP lookup that
+	// failed with fail-closed on) are swallowed with a WARN, exactly as
+	// upstream does: the sign-in path is not where a password is judged.
+	var weakPassword *WeakPasswordError
+	if herr := a.checkPasswordStrength(ctx, params.Password); herr != nil {
+		if wpe, ok := herr.internal.(*WeakPasswordError); ok {
+			weakPassword = wpe
+		} else {
+			a.log.WarnContext(ctx, "auth: password strength check on sign-in failed",
+				"error", herr)
+		}
+	}
 	// An unconfirmed identifier cannot sign in. The check runs AFTER the
 	// password comparison, upstream's order: it may only be reached by someone
 	// who already holds the credentials, so it is not an enumeration oracle.
@@ -204,6 +222,7 @@ func (a *api) passwordGrant(w http.ResponseWriter, r *http.Request) error {
 	}); err != nil {
 		return err
 	}
+	session.WeakPassword = weakPassword
 
 	return sendJSON(w, http.StatusOK, session)
 }

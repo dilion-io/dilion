@@ -25,6 +25,15 @@ jobs:
       - name: OpenAPI spec drift check
         run: make openapi-check
 
+      # 생성 산출물(types.gen.go)이 벤더링된 openapi.yaml 과 어긋나지 않는지.
+      # 이건 로컬에서 재현 가능한 결정적 검사라 blocking 이 맞다.
+      # (upstream 스펙 자체의 변화 감지는 아래 upstream-spec-drift 잡에서 비차단으로 수행)
+      - name: upstreamspec codegen drift check
+        run: |
+          go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
+          PATH="$PATH:$(go env GOPATH)/bin" go generate ./internal/auth/upstreamspec/
+          git diff --exit-code internal/auth/upstreamspec/types.gen.go
+
       - name: Teardown
         if: always()
         run: make down
@@ -82,3 +91,26 @@ jobs:
         run: make parity-down
         env:
           COMPOSE: docker compose
+
+  # upstream supabase/auth 의 openapi.yaml 이 우리가 벤더링한 사본과 달라졌는지.
+  #
+  # NON-BLOCKING (continue-on-error). 이 잡의 입력은 우리 저장소가 아니라 남의
+  # 저장소의 master 브랜치다 — 즉 아무 PR 도 건드리지 않은 상태에서 언제든 빨간불이
+  # 될 수 있고, 네트워크/레이트리밋 실패도 우리 잘못이 아니다. 무관한 PR 을 전부
+  # 막는 대신 "upstream 이 움직였으니 리뷰하라"는 경고로 남긴다.
+  #
+  # 실제 호환성 회귀는 여기서 잡는 게 아니라
+  #   - internal/auth/upstream_conformance_test.go (backend 잡, blocking)
+  #   - test/parity (parity 잡, blocking)
+  # 두 곳에서 잡힌다. 이 잡은 그 두 게이트의 입력이 낡았는지를 알려줄 뿐이다.
+  #
+  # 대응 절차: make upstream-spec-sync → SOURCE.md 갱신 → 컨포먼스 테스트 재실행.
+  upstream-spec-drift:
+    name: Upstream spec drift (non-blocking warning)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Compare vendored openapi.yaml against supabase/auth@master
+        run: make upstream-spec-check

@@ -433,10 +433,16 @@ deviations:
     endpoint: POST /auth/v1/token
     aspect: body-field
     field: weak_password
-    dilion: "omits the weak_password field on a successful password grant"
-    upstream: "includes weak_password: null"
-    reason: upstream always carries the weak_password advisory slot; Dilion emits it only when populated.
-    source: "empirical vs supabase/auth:v2.196.0"
+    dilion: "omits weak_password when the password is strong; emits {message, reasons} when it is weak"
+    upstream: "always includes weak_password (null when the password is strong)"
+    reason: >
+      Both servers ACCEPT a login whose password no longer meets the strength
+      policy and report the reasons as an advisory. The difference is encoding
+      only: upstream types the field interface{} and assigns a typed nil
+      pointer on every grant, which defeats `omitempty` and renders
+      `weak_password: null`; Dilion types it *WeakPasswordError, so the key is
+      simply absent. When populated the two bodies are identical.
+    source: "internal/auth/models.go (AccessTokenResponse.WeakPassword); empirical vs supabase/auth:v2.196.0"
 
   - id: admin-create-confirmed-at
     op: authAdminCreateUser
