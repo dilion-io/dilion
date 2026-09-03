@@ -19,6 +19,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -130,9 +131,82 @@ type Factor struct {
 	Phone            string     `json:"phone"`
 	LastChallengedAt *time.Time `json:"last_challenged_at"`
 
+	// WebAuthnAAGUID is auth.mfa_factors.web_authn_aaguid: the model identifier
+	// the authenticator reported when the webauthn factor was registered
+	// (upstream models.Factor.WebAuthnAAGUID, written by SaveWebAuthnCredential
+	// — see updateFactorWebAuthnCredential). Upstream types it *uuid.UUID with
+	// `omitempty`, which for a pointer means "absent when nil"; a *string
+	// serialises identically. Always nil on a totp/phone factor, and on a
+	// webauthn factor whose authenticator declined to identify its model (the
+	// all-zero AAGUID is stored as NULL — see formatUUIDBytes).
+	WebAuthnAAGUID *string `json:"web_authn_aaguid,omitempty"`
+
+	// LastWebAuthnChallengeData is auth.mfa_factors.last_webauthn_challenge_data
+	// (upstream models.Factor.LastWebAuthnChallengeData, migration
+	// 20250925093508_add_last_webauthn_challenge_data). Upstream writes it on
+	// EVERY webauthn verify — registration and assertion alike — and, having no
+	// `json:"-"`, returns it from every endpoint that serialises a factor. See
+	// updateFactorLastWebAuthnChallenge.
+	LastWebAuthnChallengeData *LastWebAuthnChallengeData `json:"last_webauthn_challenge_data,omitempty"`
+
 	// DB-only. The TOTP secret NEVER leaves the server after enrolment.
 	UserID string `json:"-"`
 	Secret string `json:"-"`
+}
+
+// LastWebAuthnChallengeData is the jsonb document stored on
+// auth.mfa_factors.last_webauthn_challenge_data, copied field-for-field from
+// upstream models.LastWebAuthnChallengeData:
+//
+//	Challenge          Challenge       `json:"challenge"`
+//	Type               string          `json:"type"`
+//	CredentialResponse json.RawMessage `json:"credential_response"`
+//
+// It is a forensic record of the last WebAuthn ceremony the factor completed —
+// upstream's column comment calls it "the latest WebAuthn challenge data
+// including attestation/assertion for customer verification". Nothing in the
+// request path ever reads it back; it exists to be served.
+type LastWebAuthnChallengeData struct {
+	// Challenge is the challenge row as it stood when the ceremony was
+	// validated, BEFORE it was consumed.
+	Challenge MFAChallengeRecord `json:"challenge"`
+	// Type is the ceremony: "create" (registration) or "request" (assertion).
+	Type string `json:"type"`
+	// CredentialResponse is the PARSED authenticator response, exactly as
+	// upstream stores it: go-webauthn's ParsedCredentialCreationData /
+	// ParsedCredentialAssertionData marshalled to JSON — not the raw body the
+	// client posted.
+	CredentialResponse json.RawMessage `json:"credential_response"`
+}
+
+// MFAChallengeRecord is the JSON projection of an auth.mfa_challenges row,
+// mirroring upstream models.Challenge's json tags (note `challenge_id`, not
+// `id`). It exists only as the `challenge` member of LastWebAuthnChallengeData.
+//
+// Upstream's Challenge additionally carries `factor` and `otp_code`, both
+// `omitempty`: `factor` is nil unless the row was eager-loaded (it is not on
+// this path) and `otp_code` is empty on a webauthn challenge, so both are
+// absent from upstream's stored document too. Omitting the fields here yields
+// byte-identical JSON.
+type MFAChallengeRecord struct {
+	ID                  string          `json:"challenge_id"`
+	FactorID            string          `json:"factor_id"`
+	CreatedAt           time.Time       `json:"created_at"`
+	VerifiedAt          *time.Time      `json:"verified_at,omitempty"`
+	IPAddress           string          `json:"ip_address"`
+	WebAuthnSessionData json.RawMessage `json:"web_authn_session_data,omitempty"`
+}
+
+// record projects an in-flight challenge into the stored shape.
+func (c *mfaChallenge) record(sessionData []byte) MFAChallengeRecord {
+	return MFAChallengeRecord{
+		ID:                  c.ID,
+		FactorID:            c.FactorID,
+		CreatedAt:           c.CreatedAt,
+		VerifiedAt:          c.VerifiedAt,
+		IPAddress:           c.IPAddress,
+		WebAuthnSessionData: json.RawMessage(sessionData),
+	}
 }
 
 // IsVerified / IsUnverified mirror upstream's helpers.
@@ -317,17 +391,30 @@ func invalidateSessionsWithAALLessThan(ctx context.Context, q querier, userID, l
 
 const factorColumns = `
 	id::text, user_id::text, coalesce(friendly_name, ''), factor_type::text, status::text,
-	created_at, updated_at, coalesce(secret, ''), coalesce(phone, ''), last_challenged_at`
+	created_at, updated_at, coalesce(secret, ''), coalesce(phone, ''), last_challenged_at,
+	web_authn_aaguid::text, last_webauthn_challenge_data`
 
 func scanFactor(row pgx.Row) (*Factor, error) {
 	var f Factor
+	var lastChallengeData []byte
 	if err := row.Scan(&f.ID, &f.UserID, &f.FriendlyName, &f.FactorType, &f.Status,
-		&f.CreatedAt, &f.UpdatedAt, &f.Secret, &f.Phone, &f.LastChallengedAt); err != nil {
+		&f.CreatedAt, &f.UpdatedAt, &f.Secret, &f.Phone, &f.LastChallengedAt,
+		&f.WebAuthnAAGUID, &lastChallengeData); err != nil {
 		return nil, err
 	}
 	f.CreatedAt = f.CreatedAt.UTC()
 	f.UpdatedAt = f.UpdatedAt.UTC()
 	f.LastChallengedAt = utc(f.LastChallengedAt)
+	// A malformed document is treated as absent rather than as a 500: the column
+	// is a forensic record, never an input to a decision, so it must not be able
+	// to break a factor read. Upstream's Scan would error; nothing upstream can
+	// write a non-conforming document either.
+	if len(lastChallengeData) > 0 {
+		var d LastWebAuthnChallengeData
+		if err := json.Unmarshal(lastChallengeData, &d); err == nil {
+			f.LastWebAuthnChallengeData = &d
+		}
+	}
 	return &f, nil
 }
 
@@ -379,6 +466,22 @@ func updateFactorWebAuthnCredential(ctx context.Context, q querier, id string, c
 		update auth.mfa_factors
 		   set web_authn_credential = $2::jsonb, web_authn_aaguid = $3::uuid, updated_at = $4
 		 where id = $1::uuid`, id, credential, aaguid, now)
+	return err
+}
+
+// updateFactorLastWebAuthnChallenge persists the forensic record of the WebAuthn
+// ceremony that just completed — upstream Factor.UpdateLastWebAuthnChallenge,
+// which writes it on EVERY verify (registration and assertion alike), not only
+// on the one that promotes the factor.
+func updateFactorLastWebAuthnChallenge(ctx context.Context, q querier, id string, data *LastWebAuthnChallengeData, now time.Time) error {
+	blob, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `
+		update auth.mfa_factors
+		   set last_webauthn_challenge_data = $2::jsonb, updated_at = $3
+		 where id = $1::uuid`, id, blob, now)
 	return err
 }
 

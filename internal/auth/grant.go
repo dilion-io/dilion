@@ -242,6 +242,9 @@ func (a *api) passwordGrant(w http.ResponseWriter, r *http.Request) error {
 //   - missing/expired session      -> 400 session_not_found / session_expired
 //   - session past Sessions.Timebox
 //     or Sessions.InactivityTimeout -> session destroyed, 400 session_expired
+//   - Sessions.SinglePerUser on and a
+//     newer login has refreshed since -> 400 session_expired (see
+//     checkSinglePerUser); nothing is destroyed
 //   - success                      -> old token revoked, child token issued with
 //     parent = old token, same session_id, sessions.refreshed_at bumped
 func (a *api) refreshTokenGrant(w http.ResponseWriter, r *http.Request) error {
@@ -279,6 +282,13 @@ func (a *api) refreshTokenGrant(w http.ResponseWriter, r *http.Request) error {
 				}
 				sess = nil
 			}
+		}
+
+		// SESSIONS_SINGLE_PER_USER, checked in upstream's position: before the
+		// revoked-token branch, so a reuse-interval replay is judged by the
+		// same rule as a normal refresh.
+		if serr := a.checkSinglePerUser(ctx, tx, sess, rt, now); serr != nil {
+			return serr
 		}
 
 		if rt.Revoked {
@@ -385,6 +395,92 @@ func (a *api) handleRefreshTokenReuse(ctx context.Context, tx querier, r *http.R
 	// commitAndFail: the revocation must survive the error response.
 	return nil, commitAndFail(
 		badRequestError(ErrorCodeRefreshTokenAlreadyUsed, "Invalid Refresh Token: Already Used"))
+}
+
+// checkSinglePerUser enforces GOTRUE_SESSIONS_SINGLE_PER_USER, reproducing
+// upstream tokens.Service.RefreshTokenGrant (internal/tokens/service.go, the
+// `if config.Sessions.SinglePerUser` block).
+//
+// # What upstream actually does, and what it does not
+//
+// The name suggests session creation is restricted. It is not: NOTHING in
+// upstream reads Sessions.SinglePerUser except this one refresh-time check —
+// `grep -rn SinglePerUser` over supabase/auth master hits
+// internal/conf/configuration.go (the field), internal/tokens/service.go:316
+// (this check) and a test. Signing in a second time is always allowed and
+// always mints a second session; no session is deleted and no refresh token is
+// revoked, then or here.
+//
+// What the flag does is make the OLDER session unusable, LAZILY: when a session
+// is refreshed, every other still-valid session of the same user is examined,
+// and if any of them has been refreshed more recently than this one, this
+// refresh is rejected with 400 session_expired "(Revoked by Newer Login)". The
+// newest login wins; the loser finds out the next time it tries to refresh, and
+// its row stays in the table until the session cleaner or a logout removes it.
+// Note the asymmetry that follows from that: the check is on
+// LastRefreshedAt, so a session that is merely OLDER is fine — it only loses
+// once the newer session has actually refreshed at least once.
+//
+// # Deviations, both forced by config surface
+//
+//   - Upstream partitions the comparison by session TAG
+//     (Session.DetermineTag over GOTRUE_SESSIONS_TAGS). Dilion has no
+//     Sessions.Tags knob, which is exactly upstream's `len(tags) == 0` case:
+//     DetermineTag returns "" for every session, so every session is comparable
+//     with every other. Identical behaviour for any deployment that does not
+//     set GOTRUE_SESSIONS_TAGS.
+//   - Upstream's "is the other session still valid" test is
+//     Session.CheckValidity, which also covers GOTRUE_SESSIONS_ALLOW_LOW_AAL.
+//     Dilion has no such knob either, so validity here is not_after + Timebox +
+//     InactivityTimeout — upstream's CheckValidity with AllowLowAAL unset.
+//
+// A no-op when the flag is off (the default), which is why it is safe to run
+// on every refresh.
+func (a *api) checkSinglePerUser(ctx context.Context, q querier, sess *session, rt *refreshToken, now time.Time) error {
+	if !a.cfg.Sessions.SinglePerUser || sess == nil {
+		return nil
+	}
+
+	others, err := findAllSessionsForUser(ctx, q, sess.UserID)
+	if err != nil {
+		return internalServerError("Error loading sessions").withInternal(err)
+	}
+
+	// The presented token's updated_at counts as activity on THIS session, but
+	// says nothing about any other session — upstream passes nil there.
+	mine := sess.lastRefreshedAt(rt)
+
+	for _, other := range others {
+		if other.ID == sess.ID {
+			continue
+		}
+		if !a.sessionStillValid(other, now) {
+			// Not active, so it cannot out-rank this one.
+			continue
+		}
+		if other.lastRefreshedAt(nil).After(mine) {
+			return badRequestError(ErrorCodeSessionExpired,
+				"Invalid Refresh Token: Session Expired (Revoked by Newer Login)")
+		}
+	}
+	return nil
+}
+
+// sessionStillValid is upstream models.Session.CheckValidity reduced to a
+// boolean, over the validity knobs Dilion configures (see checkSinglePerUser).
+// Unlike checkSessionValidity it never destroys anything: it is asked about
+// OTHER people's sessions, which this request has no business reaping.
+func (a *api) sessionStillValid(s *session, now time.Time) bool {
+	if s.NotAfter != nil && now.After(*s.NotAfter) {
+		return false
+	}
+	if tb := a.cfg.Sessions.Timebox; tb > 0 && now.After(s.CreatedAt.Add(tb)) {
+		return false
+	}
+	if it := a.cfg.Sessions.InactivityTimeout; it > 0 && now.After(s.lastRefreshedAt(nil).Add(it)) {
+		return false
+	}
+	return true
 }
 
 // checkSessionValidity enforces the session policy on a refresh, mirroring

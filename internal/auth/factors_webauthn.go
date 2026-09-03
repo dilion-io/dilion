@@ -256,6 +256,17 @@ func (a *api) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, mc *m
 		return rerr
 	}
 
+	// ceremony is the ceremony actually run, derived from the factor's status.
+	// Upstream stores the CLIENT-supplied params.WebAuthn.Type here (validated
+	// to be one of the two); Dilion treats the client's value as advisory —
+	// see WebAuthnVerifyData — so it records the ceremony it really performed,
+	// which is the same string whenever the client is honest.
+	ceremony := webAuthnFactorTypeRequest
+	// parsedResponse is the PARSED authenticator response. Upstream marshals
+	// exactly this (not the raw request body) into
+	// last_webauthn_challenge_data.credential_response.
+	var parsedResponse any
+
 	var credential *webauthn.Credential
 	if factor.IsUnverified() {
 		// Finish registration: CreateCredential runs the whole §7.1 attestation
@@ -273,6 +284,7 @@ func (a *api) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, mc *m
 			return badRequestError(ErrorCodeWebAuthnVerificationFailed, "Credential verification failed").withInternal(verr)
 		}
 		credential = cred
+		ceremony, parsedResponse = webAuthnFactorTypeCreate, parsed
 	} else {
 		// Finish login: ValidateLogin runs the whole §7.2 assertion check over the
 		// factor's stored credential.
@@ -293,6 +305,7 @@ func (a *api) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, mc *m
 			return badRequestError(ErrorCodeWebAuthnVerificationFailed, "Credential verification failed").withInternal(verr)
 		}
 		credential = cred
+		parsedResponse = parsed
 	}
 
 	blob, merr := json.Marshal(credential)
@@ -304,12 +317,29 @@ func (a *api) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, mc *m
 		aaguid = &s
 	}
 
+	// The forensic record upstream keeps of every completed ceremony
+	// (models.Factor.UpdateLastWebAuthnChallenge). The challenge is snapshotted
+	// as it stood when it was validated — verified_at still unset, exactly as
+	// upstream's, which marshals the object it destroyed moments earlier.
+	credentialResponse, merr2 := json.Marshal(parsedResponse)
+	if merr2 != nil {
+		return internalServerError("Error encoding WebAuthn credential response").withInternal(merr2)
+	}
+	lastChallenge := &LastWebAuthnChallengeData{
+		Challenge:          challenge.record(rawSession),
+		Type:               ceremony,
+		CredentialResponse: credentialResponse,
+	}
+
 	// The credential (and its advanced sign count) is written in the SAME
 	// transaction that upgrades the session, so enrolment and the aal2 promotion
 	// commit together.
 	store := func(ctx context.Context, tx pgx.Tx, now time.Time) error {
 		if err := updateFactorWebAuthnCredential(ctx, tx, factor.ID, blob, aaguid, now); err != nil {
 			return internalServerError("Database error saving WebAuthn credential").withInternal(err)
+		}
+		if err := updateFactorLastWebAuthnChallenge(ctx, tx, factor.ID, lastChallenge, now); err != nil {
+			return internalServerError("Database error saving WebAuthn challenge data").withInternal(err)
 		}
 		return nil
 	}
