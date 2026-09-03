@@ -1,0 +1,15 @@
+# oapi-codegen configuration for the upstream conformance oracle.
+#
+# TYPES ONLY. No client, no server, no embedded spec: this package exists so a
+# reflection test can read upstream's declared JSON shapes, and generating a
+# client or a router would create the false impression that runtime code may
+# call into it. See doc.go.
+#
+# Invoked by gen.go (`go generate ./internal/auth/upstreamspec/`), never by
+# hand — gen.go first normalizes the constructs that upstream's spec gets
+# wrong and that kin-openapi refuses to load. Do not run oapi-codegen directly
+# against openapi.yaml; it will fail.
+package: upstreamspec
+output: types.gen.go
+generate:
+  models: true

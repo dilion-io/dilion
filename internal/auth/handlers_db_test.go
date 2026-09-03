@@ -410,6 +410,61 @@ func TestPasswordGrant(t *testing.T) {
 	}
 }
 
+// A password that still AUTHENTICATES but no longer satisfies the strength
+// policy must sign in anyway, carrying upstream's advisory
+// (tokens.AccessTokenResponse.WeakPassword, assigned by
+// api.ResourceOwnerPasswordGrant). Raising the policy must never lock an
+// existing user out of their own account — the client is told to prompt for a
+// change instead of being handed a 4xx.
+func TestPasswordGrantReturnsWeakPasswordAdvisory(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Password.MinLength = 12
+	env := newTestEnvWithConfig(t, cfg)
+
+	// Sign up under the strict policy, then rewrite the stored hash to a
+	// password that predates it. This is what a real deployment looks like the
+	// day after GOTRUE_PASSWORD_MIN_LENGTH is raised.
+	env.signup(t, "grandfathered@example.com", "long-enough-password")
+	legacy, err := HashPassword("hunter")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if _, err := env.pool.Exec(context.Background(),
+		`update auth.users set encrypted_password = $2 where email = $1`,
+		"grandfathered@example.com", legacy); err != nil {
+		t.Fatalf("backdate password: %v", err)
+	}
+
+	rec := env.do(t, http.MethodPost, "/token?grant_type=password",
+		map[string]any{"email": "grandfathered@example.com", "password": "hunter"}, "")
+	session := decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+	if session.Token == "" {
+		t.Fatal("the login must succeed: a tightened policy is not a credential failure")
+	}
+	if session.WeakPassword == nil {
+		t.Fatalf("weak_password advisory missing from %s", rec.Body.String())
+	}
+	if got := session.WeakPassword.Reasons; len(got) != 1 || got[0] != "length" {
+		t.Errorf("weak_password.reasons = %v, want [length]", got)
+	}
+	if session.WeakPassword.Message == "" {
+		t.Error("weak_password.message must carry upstream's human-readable text")
+	}
+
+	// A compliant password leaves the key out of the body entirely. (Upstream
+	// renders a literal `"weak_password": null` here — deviation
+	// token-weak-password-field in test/parity/deviations.yaml.)
+	env.signup(t, "compliant@example.com", "long-enough-password")
+	rec = env.do(t, http.MethodPost, "/token?grant_type=password",
+		map[string]any{"email": "compliant@example.com", "password": "long-enough-password"}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "weak_password") {
+		t.Errorf("weak_password must be absent for a compliant password: %s", rec.Body.String())
+	}
+}
+
 // Rotation: the presented token is revoked and a child is issued on the same
 // session. Re-presenting a revoked token is reuse: the whole family dies.
 //

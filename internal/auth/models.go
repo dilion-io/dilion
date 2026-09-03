@@ -93,6 +93,21 @@ type AccessTokenResponse struct {
 	// (upstream parity); empty otherwise.
 	ProviderToken        string `json:"provider_token,omitempty"`
 	ProviderRefreshToken string `json:"provider_refresh_token,omitempty"`
+
+	// WeakPassword is upstream's sign-in advisory (tokens.AccessTokenResponse
+	// .WeakPassword, set in api.ResourceOwnerPasswordGrant): the presented
+	// credential DID authenticate, but it no longer satisfies the currently
+	// configured strength rules. Upstream accepts the login and reports the
+	// reasons here so a client can prompt for a password change; it does not
+	// reject. Populated ONLY by the password grant — see passwordGrant.
+	//
+	// Deviation from upstream, catalogued as `token-weak-password-field` in
+	// test/parity/deviations.yaml: upstream types this field `interface{}` and
+	// assigns a typed nil pointer to it on every successful grant, which
+	// defeats `omitempty` and puts a literal `"weak_password": null` in the
+	// body. Dilion types it concretely, so a strong password simply omits the
+	// key. Populated, the two are identical: {"message":…,"reasons":[…]}.
+	WeakPassword *WeakPasswordError `json:"weak_password,omitempty"`
 }
 
 // AdminListUsersResponse is the GET /admin/users body. `aud` is deprecated

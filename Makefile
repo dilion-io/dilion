@@ -9,10 +9,11 @@ MASTER_KEY_FILE := .dev/master.key
 
 .PHONY: help up down ps build vet test test-db openapi openapi-check \
         web-install web-check dev dev-web e2e-token ci clean \
-        parity-up parity-test parity-down parity
+        parity-up parity-test parity-down parity \
+        upstream-spec-sync upstream-spec-check
 
 help: ## 타깃 목록
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-20s %s\n", $$1, $$2}'
 
 ## ---- 환경 (docker compose) ----
 
@@ -108,6 +109,49 @@ parity-down: ## parity 스택 종료 + 볼륨 삭제
 
 parity: parity-up ## 스택 기동 → 테스트 → 종료 (teardown 보장)
 	@set -e; trap '$(PARITY) down -v' EXIT; $(MAKE) parity-test
+
+## ---- upstream 스펙 (conformance oracle) ----
+
+# internal/auth/upstreamspec/openapi.yaml 은 upstream supabase/auth 의 openapi.yaml
+# 을 그대로(verbatim) 벤더링한 것이다. 런타임 코드는 이 패키지를 import 하지 않으며,
+# 생성된 타입은 오직 internal/auth/upstream_conformance_test.go 의 대조군으로만 쓴다.
+# 자세한 배경은 internal/auth/upstreamspec/doc.go 와 SOURCE.md 참고.
+UPSTREAM_SPEC_REPO ?= supabase/auth
+UPSTREAM_SPEC_REF ?= master
+UPSTREAM_SPEC_URL := https://raw.githubusercontent.com/$(UPSTREAM_SPEC_REPO)/$(UPSTREAM_SPEC_REF)/openapi.yaml
+UPSTREAM_SPEC_API := https://api.github.com/repos/$(UPSTREAM_SPEC_REPO)/commits?path=openapi.yaml&sha=$(UPSTREAM_SPEC_REF)&per_page=1
+UPSTREAM_SPEC_DIR := internal/auth/upstreamspec
+UPSTREAM_SPEC := $(UPSTREAM_SPEC_DIR)/openapi.yaml
+GOBIN_DIR := $(shell go env GOPATH)/bin
+
+upstream-spec-sync: ## upstream openapi.yaml 재수집 + 타입 재생성 (SOURCE.md 수동 갱신 필요)
+	curl -fsSL '$(UPSTREAM_SPEC_URL)' -o $(UPSTREAM_SPEC)
+	PATH="$$PATH:$(GOBIN_DIR)" go generate ./$(UPSTREAM_SPEC_DIR)/
+	@echo
+	@echo "벤더링한 커밋 (SOURCE.md 에 기록할 것):"
+	@curl -fsSL '$(UPSTREAM_SPEC_API)' | grep -m1 '"sha"' || true
+	@echo "sha256: $$(sha256sum $(UPSTREAM_SPEC) | cut -d' ' -f1)"
+	@echo "fetched: $$(date -u +%Y-%m-%d)"
+	@git --no-pager diff --stat $(UPSTREAM_SPEC_DIR) || true
+
+upstream-spec-check: ## 벤더링 스펙 ↔ upstream master 드리프트 검출 (CI 경고용, 네트워크 필요)
+	@tmp=$$(mktemp); trap 'rm -f $$tmp' EXIT; \
+	curl -fsSL '$(UPSTREAM_SPEC_URL)' -o $$tmp; \
+	if diff -q $(UPSTREAM_SPEC) $$tmp >/dev/null; then \
+		echo "upstream-spec-check: OK — $(UPSTREAM_SPEC) 는 $(UPSTREAM_SPEC_REPO)@$(UPSTREAM_SPEC_REF) 와 동일"; \
+	else \
+		echo "upstream-spec-check: DRIFT — upstream openapi.yaml 이 변경됨"; \
+		echo "  vendored: $$(wc -l < $(UPSTREAM_SPEC)) lines, sha256 $$(sha256sum $(UPSTREAM_SPEC) | cut -d' ' -f1)"; \
+		echo "  upstream: $$(wc -l < $$tmp) lines, sha256 $$(sha256sum $$tmp | cut -d' ' -f1)"; \
+		echo "  --- diffstat ---"; \
+		diff -u $(UPSTREAM_SPEC) $$tmp | diffstat 2>/dev/null || diff -u $(UPSTREAM_SPEC) $$tmp | \
+			awk '/^\+[^+]/{a++} /^-[^-]/{d++} END{printf "  +%d / -%d lines\n", a+0, d+0}'; \
+		echo "  --- 변경된 스키마/경로 (첫 60줄) ---"; \
+		diff -u $(UPSTREAM_SPEC) $$tmp | grep -E '^[-+][^-+]' | head -60; \
+		echo; \
+		echo "  대응: make upstream-spec-sync 후 SOURCE.md 갱신, go test ./internal/auth/ -run TestUpstreamSpecConformance"; \
+		exit 1; \
+	fi
 
 clean: ## 빌드 산출물 정리
 	rm -rf web/dist
