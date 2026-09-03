@@ -37,12 +37,23 @@ vet: ## go vet 전체
 test: build vet ## 유닛 테스트 (DB 불필요; DB 테스트는 skip)
 	go test ./...
 
-test-db: up build vet ## 전체 테스트 (DB 통합 포함, -race)
-	DILION_TEST_DB='$(DSN_BASE)/dilion_test_a' go test -race -count=1 \
-		./internal/store/... ./internal/kmslocal/... ./internal/devmail/...
-	DILION_TEST_DB='$(DSN_BASE)/dilion_test_b' go test -race -count=1 ./internal/auth/...
-	DILION_TEST_DB=1 DILION_TEST_DB_DSN='$(DSN_BASE)/dilion_test_c' go test -race -count=1 ./internal/privacy/...
-	DILION_TEST_DB=1 go test -race -count=1 ./internal/api/... ./internal/iam/... ./internal/audit/...
+# CI 리포팅용(선택). 경로를 주면 4개 스위트의 `go test -json`(test2json) 스트림을
+# 그 파일에 누적한다 — CI 가 robherley/go-test-action 으로 렌더한다.
+# 비어 있으면 지금까지처럼 사람이 읽는 기본 출력만 나온다. 게이트 자체는 동일.
+GOTEST_JSON ?=
+GOTEST_FLAGS := -race -count=1 $(if $(GOTEST_JSON),-json,)
+# tee 로 로그 가시성은 유지하되, pipefail 로 go test 의 실패 코드가 tee 에 삼켜지지
+# 않게 한다 (각 레시피 줄에 지역적으로만 건다 — 다른 타깃 영향 없음).
+GOTEST_PIPE := $(if $(GOTEST_JSON),| tee -a '$(GOTEST_JSON)',)
+GOTEST_RUN := set -o pipefail;
+
+test-db: up build vet ## 전체 테스트 (DB 통합 포함, -race). GOTEST_JSON=<path> 로 test2json 수집
+	@$(if $(GOTEST_JSON),mkdir -p "$$(dirname '$(GOTEST_JSON)')" && rm -f '$(GOTEST_JSON)',true)
+	$(GOTEST_RUN) DILION_TEST_DB='$(DSN_BASE)/dilion_test_a' go test $(GOTEST_FLAGS) \
+		./internal/store/... ./internal/kmslocal/... ./internal/devmail/... $(GOTEST_PIPE)
+	$(GOTEST_RUN) DILION_TEST_DB='$(DSN_BASE)/dilion_test_b' go test $(GOTEST_FLAGS) ./internal/auth/... $(GOTEST_PIPE)
+	$(GOTEST_RUN) DILION_TEST_DB=1 DILION_TEST_DB_DSN='$(DSN_BASE)/dilion_test_c' go test $(GOTEST_FLAGS) ./internal/privacy/... $(GOTEST_PIPE)
+	$(GOTEST_RUN) DILION_TEST_DB=1 go test $(GOTEST_FLAGS) ./internal/api/... ./internal/iam/... ./internal/audit/... $(GOTEST_PIPE)
 
 openapi: ## web/openapi.yaml 재생성 (huma → OpenAPI 3.1)
 	go run ./cmd/openapi
@@ -90,6 +101,10 @@ PARITY := $(COMPOSE) $(PARITY_BASE_FILE) $(PARITY_FLAGS_FILE)
 PARITY_DILION_URL ?= http://localhost:8787/auth/v1
 PARITY_GOTRUE_URL ?= http://localhost:9999
 PARITY_JWT_SECRET ?= parity-super-secret-shared-jwt-key-0123456789
+# CI 리포팅용(선택). 경로를 주면 하네스가 커버리지/KNOWN/FAIL 요약을 마크다운으로
+# 그 파일에 쓴다 (CI 는 $GITHUB_STEP_SUMMARY 에 그대로 붙인다). 비어 있으면 미작성.
+#   예: PARITY_SUMMARY_FILE=/tmp/parity.md make parity-test
+PARITY_SUMMARY_FILE ?=
 
 parity-up: ## parity 스택 기동 (postgres + upstream gotrue + dilion)
 	$(PARITY) up -d --build
@@ -97,11 +112,12 @@ parity-up: ## parity 스택 기동 (postgres + upstream gotrue + dilion)
 	@echo "waiting for dilion…";  until curl -fs $(PARITY_DILION_URL)/health >/dev/null; do sleep 1; done
 	@echo "parity stack up: dilion :8787  gotrue :9999 (flags=$(PARITY_FLAGS))"
 
-parity-test: ## upstream supabase/auth 대비 차등 + 커버리지 스위트
+parity-test: ## upstream supabase/auth 대비 차등 + 커버리지 스위트 (PARITY_SUMMARY_FILE=<path> 로 md 요약)
 	PARITY_DILION_URL=$(PARITY_DILION_URL) \
 	PARITY_GOTRUE_URL=$(PARITY_GOTRUE_URL) \
 	PARITY_JWT_SECRET=$(PARITY_JWT_SECRET) \
 	PARITY_FLAGS=$(PARITY_FLAGS) \
+	PARITY_SUMMARY_FILE='$(PARITY_SUMMARY_FILE)' \
 	go test -tags parity ./test/parity/ -run TestParity -v
 
 parity-down: ## parity 스택 종료 + 볼륨 삭제

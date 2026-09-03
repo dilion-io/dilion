@@ -359,13 +359,34 @@ func TestParity(t *testing.T) {
 	t.Logf("parity profile: PARITY_FLAGS=%q (flagged surfaces %s)", os.Getenv("PARITY_FLAGS"),
 		map[bool]string{true: "ENABLED on both", false: "disabled (default stack)"}[flagsOn])
 
+	hit := map[string]bool{}
+	var knownCount, failCount int
+
+	// PARITY_SUMMARY_FILE 이 설정되면 같은 수치를 마크다운으로도 남긴다
+	// (CI 의 $GITHUB_STEP_SUMMARY 에 그대로 append 된다). t.Logf 출력은 그대로 유지.
+	// 부트스트랩 t.Fatalf 로 죽어도 "여기까지 커버리지 0" 이라는 사실이 요약에 남도록
+	// 시나리오 실행 전에 defer 로 걸어 둔다.
+	if path := os.Getenv("PARITY_SUMMARY_FILE"); path != "" {
+		defer func() {
+			in := SummaryInput{
+				Known:   knownCount,
+				Fail:    failCount,
+				Profile: map[bool]string{true: "flagged (PARITY_FLAGS=1)", false: "default (flags off)"}[flagsOn],
+				Failed:  t.Failed(),
+			}
+			if e.contract != nil {
+				in.Coverage = e.contract.Coverage(hit)
+			}
+			if err := WriteMarkdownSummary(path, in); err != nil {
+				t.Logf("parity summary: %v", err)
+			}
+		}()
+	}
+
 	fixtures := newFixtures()
 	dilionCreds := e.bootstrap(t, e.dilionURL, fixtures)
 	gotrueCreds := e.bootstrap(t, e.gotrueURL, fixtures)
 	serviceRole := e.mintServiceRole(t)
-
-	hit := map[string]bool{}
-	var knownCount, failCount int
 
 	for _, sc := range scenarios() {
 		sc := sc
