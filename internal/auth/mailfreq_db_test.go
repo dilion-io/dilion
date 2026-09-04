@@ -99,6 +99,14 @@ func TestMailFrequencyCanBeEffectivelyDisabled(t *testing.T) {
 	env.confirmedUser(t, "freq-off@app.test", "correct-horse")
 
 	for i := 0; i < 3; i++ {
+		// Postgres truncates one_time_tokens.updated_at to microseconds, so a
+		// frozen clock can put `now` and the stored `sent_at` on the SAME
+		// instant — and a 1ns window is then not cleared, throttling the send.
+		// Real requests are never simultaneous; advancing by the storage
+		// resolution models that and makes the case deterministic instead of
+		// depending on whether time.Now() landed on a microsecond boundary.
+		env.clock.advance(time.Microsecond)
+
 		rec := env.do(t, http.MethodPost, "/recover", map[string]any{"email": "freq-off@app.test"}, "")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("/recover #%d status = %d, want 200; body = %s", i+1, rec.Code, rec.Body.String())
