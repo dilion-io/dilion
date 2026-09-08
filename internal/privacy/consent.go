@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	ConsentGrant           = "GRANT"
 	ConsentWithdraw        = "WITHDRAW"
 	ConsentReconfirmNotice = "RECONFIRM_NOTICE"
+	consentMutationLockNS  = 3347
 )
 
 // GetConsents projects the ledger into the current state per purpose and
@@ -135,7 +137,7 @@ func (e *Engine) UpdateConsent(ctx context.Context, projectID, userID string, ch
 	if ch.Purpose == "" {
 		return nil, fmt.Errorf("%w: purpose is required", ErrInvalidInput)
 	}
-	_, policy, err := e.resolvePolicy(ctx, uid)
+	policyID, policy, err := e.resolvePolicy(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +162,42 @@ func (e *Engine) UpdateConsent(ctx context.Context, projectID, userID string, ch
 		return nil, err
 	}
 
-	if err := e.appendConsentEvent(ctx, e.pool, consentEvent{
+	var nextDue *time.Time
+	if due, ok := reconfirmDue(policy, ch.Purpose, ch.Granted, now, nil); ok {
+		nextDue = &due
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("privacy: consent transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	lockKey := fmt.Sprintf("%d:%s%d:%s%d:%s", len(pid), pid, len(uid), uid, len(ch.Purpose), ch.Purpose)
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`,
+		consentMutationLockNS, lockKey); err != nil {
+		return nil, fmt.Errorf("privacy: consent advisory lock: %w", err)
+	}
+	// Serialise the ledger's ordering as well as the projection, including
+	// equal timestamps from fixed/coarse clocks. Evidence recorded_at is the
+	// receipt time; created_at is the ordered commit event time.
+	var previous *time.Time
+	if err := tx.QueryRow(ctx, `select max(created_at) from dilion_privacy.consent_events
+		where project_id = $1 and user_id = $2::uuid and purpose = $3
+		  and action in ('GRANT','WITHDRAW')`, pid, uid, ch.Purpose).Scan(&previous); err != nil {
+		return nil, err
+	}
+	if previous != nil && !now.After(*previous) {
+		now = previous.Add(time.Microsecond)
+	}
+	var lastNotice *time.Time
+	if err := tx.QueryRow(ctx, `select max(created_at) from dilion_privacy.consent_events
+		where project_id = $1 and user_id = $2::uuid and purpose = $3
+		  and action = 'RECONFIRM_NOTICE'`, pid, uid, ch.Purpose).Scan(&lastNotice); err != nil {
+		return nil, err
+	}
+	if due, ok := reconfirmDue(policy, ch.Purpose, ch.Granted, now, lastNotice); ok {
+		nextDue = &due
+	}
+	if err := e.appendConsentEvent(ctx, tx, consentEvent{
 		ProjectID:     pid,
 		UserID:        uid,
 		Purpose:       ch.Purpose,
@@ -172,6 +209,24 @@ func (e *Engine) UpdateConsent(ctx context.Context, projectID, userID string, ch
 	}); err != nil {
 		return nil, err
 	}
+	if _, err := tx.Exec(ctx, `insert into dilion_privacy.consent_state
+		(project_id, user_id, purpose, granted, policy_version, updated_at,
+		 next_reconfirm_at, scheduled_policy_id, schedule_revision, schedule_computed)
+		values ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,true)
+		on conflict (project_id, user_id, purpose) do update set
+		 granted = excluded.granted,
+		 policy_version = excluded.policy_version,
+		 updated_at = excluded.updated_at,
+		 next_reconfirm_at = excluded.next_reconfirm_at,
+		 scheduled_policy_id = excluded.scheduled_policy_id,
+		 schedule_revision = excluded.schedule_revision,
+		 schedule_computed = true`,
+		pid, uid, ch.Purpose, ch.Granted, ch.PolicyVersion, now, nextDue, policyID, e.policyRevision); err != nil {
+		return nil, fmt.Errorf("privacy: update consent state: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("privacy: consent commit: %w", err)
+	}
 
 	if err := e.runHook(ctx, ports.ConsentChanged, map[string]any{
 		"project_id": pid, "user_id": uid, "purpose": ch.Purpose,
@@ -181,19 +236,13 @@ func (e *Engine) UpdateConsent(ctx context.Context, projectID, userID string, ch
 		e.log.Warn("consent_changed hook failed", "err", err, "purpose", ch.Purpose)
 	}
 
-	notices, err := e.lastReconfirmNotices(ctx, pid, uid)
-	if err != nil {
-		return nil, err
-	}
 	st := &ConsentState{
 		Purpose:       ch.Purpose,
 		Granted:       ch.Granted,
 		PolicyVersion: ch.PolicyVersion,
 		UpdatedAt:     now,
 	}
-	if due, ok := reconfirmDue(policy, ch.Purpose, ch.Granted, now, notices[ch.Purpose]); ok {
-		st.ReconfirmDue = &due
-	}
+	st.ReconfirmDue = nextDue
 	return st, nil
 }
 
@@ -253,55 +302,44 @@ type reconfirmCandidate struct {
 // scanReconfirmDue appends a RECONFIRM_NOTICE ledger entry and an outbox event
 // for every granted purpose whose reconfirm period has elapsed.
 func (e *Engine) scanReconfirmDue(ctx context.Context) error {
-	const q = `
-		with latest as (
-			select distinct on (user_id, purpose)
-				user_id, purpose, action, created_at, coalesce(policy_version,'') as policy_version
-			from dilion_privacy.consent_events
-			where project_id = $1 and action in ('GRANT','WITHDRAW')
-			order by user_id, purpose, created_at desc, id desc
-		), notice as (
-			select user_id, purpose, max(created_at) as noticed_at
-			from dilion_privacy.consent_events
-			where project_id = $1 and action = 'RECONFIRM_NOTICE'
-			group by user_id, purpose
-		)
-		select l.user_id::text, l.purpose, l.created_at, l.policy_version, n.noticed_at,
-		       coalesce(sp.policy_id, $2)
-		from latest l
-		left join notice n on n.user_id = l.user_id and n.purpose = l.purpose
-		left join dilion_privacy.subject_policies sp on sp.user_id = l.user_id
-		where l.action = 'GRANT'
-		limit $3`
-
-	// TODO(wave2): this is a full projection scan of the ledger. Replace with a
-	// materialised consent-state table + due index when volumes grow.
-	rows, err := e.pool.Query(ctx, q, defaultProjectID, e.policies.DefaultPolicy, e.policies.RetentionBatchSize)
+	batch := e.policies.RetentionBatchSize
+	if err := e.reconcileConsentSchedules(ctx, batch); err != nil {
+		return err
+	}
+	const q = `select cs.user_id::text, cs.purpose, cs.updated_at, cs.policy_version,
+		cs.last_notice_at, cs.scheduled_policy_id
+		from dilion_privacy.consent_state cs
+		left join dilion_privacy.subject_policies sp on sp.user_id = cs.user_id
+		where cs.project_id = $1 and cs.granted and cs.schedule_computed
+		  and cs.schedule_revision = $2
+		  and cs.scheduled_policy_id = coalesce(sp.policy_id, $3)
+		  and cs.next_reconfirm_at <= $4
+		  and not exists (select 1 from dilion_pii.subject_keys sk
+		    where sk.user_id = cs.user_id and sk.scope = 'CONSENT' and sk.shredded_at is not null)
+		order by cs.next_reconfirm_at, cs.user_id, cs.purpose
+		limit $5`
+	now := e.now()
+	rows, err := e.pool.Query(ctx, q, defaultProjectID, e.policyRevision,
+		e.policies.DefaultPolicy, now, batch)
 	if err != nil {
 		return fmt.Errorf("privacy: reconfirm scan: %w", err)
 	}
-	var cands []reconfirmCandidate
+	defer rows.Close()
+	var candidates []reconfirmCandidate
 	for rows.Next() {
 		var c reconfirmCandidate
 		if err := rows.Scan(&c.UserID, &c.Purpose, &c.GrantedAt, &c.Version, &c.NoticedAt, &c.PolicyID); err != nil {
-			rows.Close()
 			return fmt.Errorf("privacy: reconfirm scan: %w", err)
 		}
-		cands = append(cands, c)
+		candidates = append(candidates, c)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("privacy: reconfirm scan: %w", err)
 	}
-
-	now := e.now()
-	for _, c := range cands {
-		policy, _ := e.policies.Resolve(c.PolicyID)
-		due, ok := reconfirmDue(policy, c.Purpose, true, c.GrantedAt, c.NoticedAt)
-		if !ok || due.After(now) {
-			continue
-		}
-		if err := e.emitReconfirmNotice(ctx, c, now); err != nil {
+	rows.Close()
+	for _, c := range candidates {
+		_, err := e.emitReconfirmNotice(ctx, c, now)
+		if err != nil {
 			e.log.Error("reconfirm notice failed", "user_id", c.UserID, "purpose", c.Purpose, "err", err)
 			continue
 		}
@@ -309,7 +347,91 @@ func (e *Engine) scanReconfirmDue(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) emitReconfirmNotice(ctx context.Context, c reconfirmCandidate, now time.Time) error {
+// reconcileConsentSchedules refreshes a bounded set of new/backfilled/stale
+// projection rows. Once refreshed, normal scans use the partial due-date index
+// and never walk the append-only ledger.
+func (e *Engine) reconcileConsentSchedules(ctx context.Context, batch int) error {
+	// Rotate a keyset cursor over at most batch state rows. Filtering all stale
+	// revisions with an OR/join before LIMIT would scan the entire table on
+	// every idle tick, even though only a bounded number of rows is returned.
+	e.scheduleMu.Lock()
+	defer e.scheduleMu.Unlock()
+	q := `select cs.user_id::text, cs.purpose, cs.updated_at, cs.policy_version,
+		cs.last_notice_at, coalesce(sp.policy_id, $2), cs.granted,
+		cs.schedule_computed and cs.schedule_revision = $3
+		  and cs.scheduled_policy_id = coalesce(sp.policy_id, $2)
+		from dilion_privacy.consent_state cs
+		left join dilion_privacy.subject_policies sp on sp.user_id = cs.user_id
+		where cs.project_id = $1`
+	args := []any{defaultProjectID, e.policies.DefaultPolicy, e.policyRevision, batch}
+	if e.scheduleUser != "" {
+		q += ` and (cs.user_id, cs.purpose) > ($5::uuid, $6)`
+		args = append(args, e.scheduleUser, e.schedulePurpose)
+	}
+	q += ` order by cs.user_id, cs.purpose limit $4`
+	rows, err := e.pool.Query(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("privacy: consent schedule scan: %w", err)
+	}
+	type scheduleCandidate struct {
+		reconfirmCandidate
+		granted bool
+		current *bool
+	}
+	var candidates []scheduleCandidate
+	for rows.Next() {
+		var c scheduleCandidate
+		if err := rows.Scan(&c.UserID, &c.Purpose, &c.GrantedAt, &c.Version, &c.NoticedAt, &c.PolicyID, &c.granted, &c.current); err != nil {
+			rows.Close()
+			return fmt.Errorf("privacy: consent schedule scan: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("privacy: consent schedule scan: %w", err)
+	}
+	for _, c := range candidates {
+		if c.current != nil && *c.current {
+			continue
+		}
+		policy, known := e.policies.Resolve(c.PolicyID)
+		if !known {
+			policy, _ = e.policies.Resolve(e.policies.DefaultPolicy)
+		}
+		var nextDue *time.Time
+		if due, ok := reconfirmDue(policy, c.Purpose, c.granted, c.GrantedAt, c.NoticedAt); ok {
+			nextDue = &due
+		}
+		if _, err := e.pool.Exec(ctx, `update dilion_privacy.consent_state
+			set next_reconfirm_at = $1, scheduled_policy_id = $2,
+			    schedule_revision = $3, schedule_computed = true
+			where project_id = $4 and user_id = $5::uuid and purpose = $6
+			  and updated_at = $7 and last_notice_at is not distinct from $8`,
+			nextDue, c.PolicyID, e.policyRevision, defaultProjectID, c.UserID,
+			c.Purpose, c.GrantedAt, c.NoticedAt); err != nil {
+			return fmt.Errorf("privacy: refresh consent schedule: %w", err)
+		}
+	}
+	if len(candidates) < batch {
+		e.scheduleUser, e.schedulePurpose = "", ""
+	} else {
+		last := candidates[len(candidates)-1]
+		e.scheduleUser, e.schedulePurpose = last.UserID, last.Purpose
+	}
+	return nil
+}
+
+func (e *Engine) emitReconfirmNotice(ctx context.Context, c reconfirmCandidate, now time.Time) (bool, error) {
+	policy, known := e.policies.Resolve(c.PolicyID)
+	if !known {
+		policy, _ = e.policies.Resolve(e.policies.DefaultPolicy)
+	}
+	period, ok := policy.ReconfirmFor(c.Purpose)
+	if !ok {
+		return false, nil
+	}
+
 	evidence, err := e.sealConsentEvidence(ctx, c.UserID, map[string]any{
 		"purpose":     c.Purpose,
 		"action":      ConsentReconfirmNotice,
@@ -320,7 +442,7 @@ func (e *Engine) emitReconfirmNotice(ctx context.Context, c reconfirmCandidate, 
 		"recorded_at": now.Format(time.RFC3339Nano),
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	payload, err := json.Marshal(map[string]any{
 		"user_id": c.UserID, "project_id": defaultProjectID, "purpose": c.Purpose,
@@ -328,28 +450,60 @@ func (e *Engine) emitReconfirmNotice(ctx context.Context, c reconfirmCandidate, 
 		"granted_at": c.GrantedAt.Format(time.RFC3339),
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
+	// Encrypt before reserving a database connection: local KMS uses the same
+	// pool. Recheck the exact candidate under a nonblocking row lock.
 	tx, err := e.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("privacy: reconfirm tx: %w", err)
+		return false, fmt.Errorf("privacy: reconfirm tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var claimed bool
+	lockKey := fmt.Sprintf("%d:%s%d:%s%d:%s", len(defaultProjectID), defaultProjectID, len(c.UserID), c.UserID, len(c.Purpose), c.Purpose)
+	if err := tx.QueryRow(ctx, `select pg_try_advisory_xact_lock($1, hashtext($2))`,
+		consentMutationLockNS, lockKey).Scan(&claimed); err != nil {
+		return false, err
+	}
+	if !claimed {
+		return false, nil
+	}
+	err = tx.QueryRow(ctx, `select true from dilion_privacy.consent_state cs
+		where project_id = $1 and user_id = $2::uuid and purpose = $3
+		  and granted and schedule_computed and schedule_revision = $4
+		  and updated_at = $5 and policy_version = $6 and scheduled_policy_id = $7
+		  and next_reconfirm_at <= $8
+		  and scheduled_policy_id = coalesce(
+		    (select policy_id from dilion_privacy.subject_policies where user_id = cs.user_id), $9)
+		for update skip locked`, defaultProjectID, c.UserID, c.Purpose, e.policyRevision,
+		c.GrantedAt, c.Version, c.PolicyID, now, e.policies.DefaultPolicy).Scan(&claimed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("privacy: reconfirm recheck: %w", err)
+	}
 	if err := e.appendConsentEvent(ctx, tx, consentEvent{
 		ProjectID: defaultProjectID, UserID: c.UserID, Purpose: c.Purpose,
 		Action: ConsentReconfirmNotice, PolicyVersion: c.Version, CreatedAt: now,
 		Source: "scanner", Evidence: evidence,
 	}); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tx.Exec(ctx, `insert into dilion_privacy.outbox (event_type, aggregate_id, payload, created_at)
 		values ('consent.reconfirm_due', $1, $2::jsonb, $3)`, c.UserID, string(payload), now); err != nil {
-		return fmt.Errorf("privacy: reconfirm outbox: %w", err)
+		return false, fmt.Errorf("privacy: reconfirm outbox: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `update dilion_privacy.consent_state
+		set last_notice_at = $1, next_reconfirm_at = $2, schedule_revision = $3,
+		    schedule_computed = true
+		where project_id = $4 and user_id = $5::uuid and purpose = $6`,
+		now, period.AddTo(now), e.policyRevision, defaultProjectID, c.UserID, c.Purpose); err != nil {
+		return false, fmt.Errorf("privacy: advance consent schedule: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("privacy: reconfirm commit: %w", err)
+		return false, fmt.Errorf("privacy: reconfirm commit: %w", err)
 	}
 
 	if err := e.runHook(ctx, ports.ConsentReconfirm, map[string]any{
@@ -359,7 +513,7 @@ func (e *Engine) emitReconfirmNotice(ctx context.Context, c reconfirmCandidate, 
 		e.log.Warn("consent_reconfirm hook failed", "err", err)
 	}
 	e.log.Info("consent reconfirm notice emitted", "user_id", c.UserID, "purpose", c.Purpose)
-	return nil
+	return true, nil
 }
 
 // queryExecer is the shared subset of *pgxpool.Pool and pgx.Tx used here, so

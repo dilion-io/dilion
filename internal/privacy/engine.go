@@ -15,12 +15,15 @@ package privacy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +39,10 @@ import (
 // belong to a data subject (webhook secrets). It must never be crypto-shredded
 // by a subject erasure.
 const systemSubjectID = "system"
+
+// subjectMutationLockNS serialises final profile commits with deletion request
+// creation across processes. It is distinct from the per-request pipeline lock.
+const subjectMutationLockNS = 3346
 
 // defaultProjectID — wave 1 is single-tenant (PLAN.md §3.5).
 const defaultProjectID = "default"
@@ -65,16 +72,20 @@ type EngineDeps struct {
 
 // Engine implements Service.
 type Engine struct {
-	pool         *pgxpool.Pool
-	kms          ports.KMS
-	hooks        *hooks.Registry
-	clock        ports.Clock
-	policies     *PolicySet
-	piiFields    map[string]FieldHint // nil = free-form fields
-	connectors   map[string]ports.Connector
-	tombstoneKey []byte
-	http         *http.Client
-	log          *slog.Logger
+	pool            *pgxpool.Pool
+	kms             ports.KMS
+	hooks           *hooks.Registry
+	clock           ports.Clock
+	policies        *PolicySet
+	policyRevision  string
+	scheduleMu      sync.Mutex
+	scheduleUser    string
+	schedulePurpose string
+	piiFields       map[string]FieldHint // nil = free-form fields
+	connectors      map[string]ports.Connector
+	tombstoneKey    []byte
+	http            *http.Client
+	log             *slog.Logger
 }
 
 var _ Service = (*Engine)(nil)
@@ -95,6 +106,10 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	policyDoc, err := json.Marshal(set)
+	if err != nil {
+		return nil, fmt.Errorf("privacy: fingerprint policies: %w", err)
+	}
 	// Instance-fixed PII field definitions are validated at construction: a
 	// malformed definition must not become a per-request surprise.
 	fields, err := ParsePIIFields(d.PIIFieldsYAML)
@@ -102,16 +117,17 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{
-		pool:         d.Pool,
-		kms:          d.KMS,
-		hooks:        d.Hooks,
-		clock:        d.Clock,
-		policies:     set,
-		piiFields:    fields,
-		connectors:   d.Connectors,
-		tombstoneKey: append([]byte(nil), d.TombstoneKey...),
-		http:         &http.Client{Timeout: 15 * time.Second},
-		log:          slog.Default().With("component", "privacy"),
+		pool:           d.Pool,
+		kms:            d.KMS,
+		hooks:          d.Hooks,
+		clock:          d.Clock,
+		policies:       set,
+		policyRevision: fmt.Sprintf("%x", sha256.Sum256(policyDoc)),
+		piiFields:      fields,
+		connectors:     d.Connectors,
+		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
+		http:           &http.Client{Timeout: 15 * time.Second},
+		log:            slog.Default().With("component", "privacy"),
 	}
 	if e.clock == nil {
 		e.clock = ports.SystemClock{}

@@ -10,7 +10,7 @@ to both; responses are normalised (volatile ids/timestamps/tokens scrubbed) and
 diffed structurally. A diff that matches an entry in [`deviations.yaml`](./deviations.yaml)
 is downgraded from **FAIL** to **KNOWN**; anything else fails the test.
 
-> Status: **verified end-to-end** against `supabase/auth:v2.196.0`, both profiles
+> Historical baseline against `supabase/auth:v2.196.0` (not a live support table), both profiles
 > green (0 FAIL):
 >
 > | profile | how it runs | ops exercised | result |
@@ -28,6 +28,20 @@ is downgraded from **FAIL** to **KNOWN**; anything else fails the test.
 > (software WebAuthn authenticator, signed SAML assertion, scriptable consent
 > cookie, stubbed external IdP) — see the coverage section and the TODO scaffold
 > in harness_test.go.
+
+Every CI run also generates an operation-level **기능 지원표** in the GitHub
+Actions summary. The table is derived from that run rather than maintained by
+hand: `구현됨` means a successful response path was compared without differences
+or assertion failures; `부분 호환` means a KNOWN/FAIL difference or assertion
+failure; `미구현` means Dilion returned HTTP 501 on a tested path; and
+`미검증` means comparison was missing/interrupted or only error paths were
+compared. A passing error-only test is not proof that a feature works.
+Only compared 2xx responses count as positive evidence; error redirects can
+also return 3xx, so redirect-only operations remain unverified.
+Statuses describe only the scenarios in that run, not complete protocol support.
+CI runs both default and flagged profiles separately. Reproduce either summary
+with `make parity-test PARITY_FLAGS=0 PARITY_SUMMARY_FILE=/tmp/parity-summary.md`
+(use `1` for flagged, and start the matching stack with `make parity-up` first).
 
 ---
 
@@ -121,7 +135,7 @@ docker run -d --name gotrue --network <net> -p 9999:9999 \
 
 ### GoTrue — from source (fallback if the image cannot be pulled)
 
-`go.mod` requires **Go 1.26.6**. Migrations still run as a separate step.
+`go.mod` requires **Go 1.26.8**. Migrations still run as a separate step.
 
 ```bash
 git clone https://github.com/supabase/auth && cd auth

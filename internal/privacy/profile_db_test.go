@@ -3,12 +3,160 @@ package privacy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/dilion-project/dilion/ports"
 )
+
+func TestConcurrentProfilePatchesDoNotLoseFields(t *testing.T) {
+	env := newTestEngine(t, "")
+	user := env.newProfileUser(t)
+	if _, err := env.e.UpdateProfile(env.ctx, "default", user,
+		map[string]ProfileField{"base": {Value: "kept", Hint: HintGeneric}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 20
+	ctx, cancel := context.WithTimeout(env.ctx, 30*time.Second)
+	defer cancel()
+	// Two independent engines and a one-connection pool reproduce both
+	// cross-instance lost updates and nested KMS connection starvation.
+	cfg := env.pool.Config()
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var engines []*Engine
+	for i := 0; i < 2; i++ {
+		e, err := NewEngine(EngineDeps{Pool: pool, KMS: newFakeKMS(pool),
+			Clock: env.clock, TombstoneKey: []byte("test-tombstone-key")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engines = append(engines, e)
+	}
+	start := make(chan struct{})
+	errCh := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			key := fmt.Sprintf("field_%02d", i)
+			_, err := engines[i%len(engines)].UpdateProfile(ctx, "default", user,
+				map[string]ProfileField{key: {Value: key, Hint: HintGeneric}}, nil)
+			errCh <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent patch: %v", err)
+		}
+	}
+
+	got, err := env.e.GetProfile(env.ctx, "default", user, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Fields) != writers+1 {
+		t.Fatalf("profile fields = %d, want %d; lost update: %+v", len(got.Fields), writers+1, got.Fields)
+	}
+}
+
+type pausedProfileKMS struct {
+	ports.KMS
+	ready  chan struct{}
+	resume chan struct{}
+}
+
+func (k *pausedProfileKMS) Encrypt(ctx context.Context, subject string, scope ports.KeyScope, data []byte) ([]byte, error) {
+	ct, err := k.KMS.Encrypt(ctx, subject, scope, data)
+	if err != nil {
+		return nil, err
+	}
+	close(k.ready)
+	select {
+	case <-k.resume:
+		return ct, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestProfilePatchCannotResurrectCompletedErasure(t *testing.T) {
+	env := newTestEngine(t, "")
+	user := env.newProfileUser(t)
+	ctx, cancel := context.WithTimeout(env.ctx, 20*time.Second)
+	defer cancel()
+	kms := &pausedProfileKMS{KMS: env.kms, ready: make(chan struct{}), resume: make(chan struct{})}
+	writer, err := NewEngine(EngineDeps{Pool: env.pool, KMS: kms, Clock: env.clock,
+		TombstoneKey: []byte("test-tombstone-key")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := writer.UpdateProfile(ctx, "default", user,
+			map[string]ProfileField{"name": {Value: "late", Hint: HintName}}, nil)
+		done <- err
+	}()
+	select {
+	case <-kms.ready:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := env.e.CreateRequest(ctx, CreateRequestInput{UserID: user, Type: RequestDeletion, Immediate: true}); err != nil {
+		t.Fatal(err)
+	}
+	env.drain(t, 2)
+	close(kms.resume)
+	if err := <-done; !errors.Is(err, ErrConflict) {
+		t.Fatalf("late patch = %v, want conflict", err)
+	}
+	if n := env.profileRows(t, user); n != 0 {
+		t.Fatalf("late patch resurrected %d vault rows", n)
+	}
+}
+
+func TestCanceledRequestCannotEraseOrReturnToManualReview(t *testing.T) {
+	env := newTestEngine(t, "")
+	user := env.newProfileUser(t)
+	req, err := env.e.CreateRequest(env.ctx, CreateRequestInput{UserID: user, Type: RequestDeletion, Immediate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.hooks.Register(ports.BeforeErasureStep, func(ctx context.Context, p map[string]any) (map[string]any, error) {
+		if p["phase"] == "pipeline_start" {
+			_, err := env.e.CancelRequest(ctx, "default", req.ID)
+			return nil, err
+		}
+		return nil, nil
+	})
+	env.drain(t, 1)
+	if err := env.e.setManualReview(env.ctx, req.ID, "LATE_WORKER"); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := env.status(t, req.ID); status != StatusCanceled {
+		t.Fatalf("late worker changed canceled status to %s", status)
+	}
+	if env.kms.isDestroyed(user, ports.KeyScopeDefault) {
+		t.Fatal("canceled request shredded the key")
+	}
+}
 
 // newProfileUser seeds a subject and clears the placeholder vault row that
 // newUser writes for the erasure pipeline, so the profile starts empty.

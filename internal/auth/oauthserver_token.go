@@ -304,10 +304,7 @@ func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, ses
 		return "", time.Time{}, internalServerError("Error running token claims hook").withInternal(err)
 	}
 
-	role := u.Role
-	if role == "" {
-		role = RoleAuthenticated
-	}
+	role := userTokenRole(u.Role)
 	aud := u.Aud
 	if aud == "" {
 		aud = AudienceAuthenticated

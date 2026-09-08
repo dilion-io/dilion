@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -13,11 +14,26 @@ import (
 // data the harness already prints with t.Logf — the markdown file is an
 // ADDITIONAL sink (for CI's $GITHUB_STEP_SUMMARY), never a replacement.
 type SummaryInput struct {
-	Coverage CoverageReport
-	Known    int    // deviations.yaml 로 허용된 차이 수
-	Fail     int    // 허용되지 않은 차이 수
-	Profile  string // "flagged (PARITY_FLAGS=1)" / "default (flags off)"
-	Failed   bool   // t.Failed() — 스위트 전체의 성패
+	Coverage   CoverageReport
+	Operations map[string]OperationResult
+	Known      int    // deviations.yaml 로 허용된 차이 수
+	Fail       int    // 허용되지 않은 차이 수
+	Profile    string // "flagged (PARITY_FLAGS=1)" / "default (flags off)"
+	Failed     bool   // t.Failed() — 스위트 전체의 성패
+}
+
+// OperationResult is accumulated directly while a scenario/flow runs. Summary
+// status is therefore evidence-based rather than a hand-maintained capability
+// claim in documentation.
+type OperationResult struct {
+	Exercised       bool
+	Compared        bool
+	Positive        bool // A 2xx response path was compared on both servers.
+	Incomplete      bool // At least one attempted scenario did not finish.
+	AssertionFailed bool // Includes status/capture failures outside the diff engine.
+	Known           int
+	Fail            int
+	Unimplemented   bool // Dilion returned HTTP 501 during an exercised operation.
 }
 
 // maxUncoveredList caps the collapsible list so a pathological run cannot blow
@@ -54,7 +70,7 @@ func renderSummary(in SummaryInput) string {
 	b.WriteString("## Parity vs upstream supabase/auth\n\n")
 
 	if in.Failed {
-		fmt.Fprintf(&b, "**❌ FAIL** — %d unexpected diff(s) against upstream.\n\n", in.Fail)
+		fmt.Fprintf(&b, "**❌ FAIL** — %d unexpected diff(s); see the test log for assertion or setup failures.\n\n", in.Fail)
 	} else {
 		b.WriteString("**✅ PASS** — no unexpected diffs against upstream.\n\n")
 	}
@@ -67,6 +83,19 @@ func renderSummary(in SummaryInput) string {
 		fmt.Fprintf(&b, "| Profile | %s |\n", in.Profile)
 	}
 	b.WriteString("\n")
+
+	b.WriteString("### 기능 지원표\n\n")
+	b.WriteString("| operationId | 상태 | 실행 근거 |\n| --- | --- | --- |\n")
+	all := append(append([]string(nil), in.Coverage.Covered...), in.Coverage.Uncovered...)
+	slices.Sort(all)
+	for _, id := range all {
+		result := in.Operations[id]
+		status, evidence := operationStatus(result)
+		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", id, status, evidence)
+	}
+	b.WriteString("\n")
+	b.WriteString("> 이 실행의 테스트 범위에 한정한 결과이며 전체 기능 지원 보증이 아닙니다. 구현됨=성공 경로 비교 완료 및 차이 없음, ")
+	b.WriteString("부분 호환=KNOWN/FAIL 또는 검증 실패, 미구현=테스트 경로에서 Dilion이 501 응답, 미검증=비교 미완료 또는 오류 경로만 검증.\n\n")
 
 	if n := len(in.Coverage.Uncovered); n > 0 {
 		fmt.Fprintf(&b, "<details>\n<summary>%d uncovered operationId(s)</summary>\n\n", n)
@@ -87,4 +116,44 @@ func renderSummary(in SummaryInput) string {
 	}
 
 	return b.String()
+}
+
+func operationStatus(r OperationResult) (status, evidence string) {
+	switch {
+	case r.Unimplemented:
+		return "미구현", "Dilion HTTP 501"
+	case r.Incomplete:
+		return "미검증", "테스트 중단 · 비교 미완료"
+	case !r.Exercised || !r.Compared:
+		return "미검증", "parity 비교 미실행"
+	case r.Known > 0 || r.Fail > 0:
+		return "부분 호환", fmt.Sprintf("KNOWN %d · FAIL %d", r.Known, r.Fail)
+	case r.AssertionFailed:
+		return "부분 호환", "응답 상태 또는 시나리오 검증 실패"
+	case !r.Positive:
+		return "미검증", "오류/리디렉션 경로만 비교 · 성공 경로 미검증"
+	default:
+		return "구현됨", "비교 실행 · diff 0"
+	}
+}
+
+// Start before HTTP execution and finish in a defer, so Fatal/Skip cannot leave
+// a prior successful scenario falsely representing an interrupted operation.
+func trackOperation(results map[string]OperationResult, op string) func(bool, bool, bool, bool) {
+	if op != "" {
+		r := results[op]
+		r.Exercised = true
+		results[op] = r
+	}
+	return func(completed, compared, positive, failed bool) {
+		if op == "" {
+			return
+		}
+		r := results[op]
+		r.Incomplete = r.Incomplete || !completed
+		r.Compared = r.Compared || compared
+		r.Positive = r.Positive || (compared && positive)
+		r.AssertionFailed = r.AssertionFailed || failed
+		results[op] = r
+	}
 }

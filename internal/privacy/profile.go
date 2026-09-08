@@ -13,6 +13,7 @@ package privacy
 // unreadable by design, and the engine reports it as "not found".
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,83 +98,106 @@ func (e *Engine) UpdateProfile(ctx context.Context, projectID, userID string, se
 	if err := validateProfilePatch(set, remove); err != nil {
 		return nil, err
 	}
+	// Retry optimistic patches: no pool connection is held during KMS calls.
+	// The final transaction serialises with deletion creation, then compares the
+	// encrypted snapshot. Concurrent patches therefore merge, never overwrite.
+	for attempt := 0; attempt < 64; attempt++ {
+		p, retry, err := e.patchProfile(ctx, pid, uid, set, remove)
+		if !retry {
+			return p, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("%w: concurrent profile changes; retry the patch", ErrConflict)
+}
 
-	// An erasure in flight must not be raced by a vault write (§2.9).
-	active, err := e.hasActiveDeletion(ctx, uid)
+func (e *Engine) patchProfile(ctx context.Context, pid, uid string, set map[string]ProfileField, remove []string) (*Profile, bool, error) {
+	if active, err := e.hasActiveDeletion(ctx, uid); err != nil {
+		return nil, false, err
+	} else if active {
+		return nil, false, fmt.Errorf("%w: deletion blocks profile writes", ErrConflict)
+	}
+	var before []byte
+	err := e.pool.QueryRow(ctx, `select enc_profile from dilion_pii.user_profiles where user_id = $1::uuid`, uid).Scan(&before)
+	found := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+	fields, err := e.decodeProfile(ctx, uid, before)
 	if err != nil {
-		return nil, err
-	}
-	if active {
-		return nil, fmt.Errorf("%w: an active DELETION request blocks profile writes", ErrConflict)
-	}
-
-	fields, _, _, err := e.readProfile(ctx, uid)
-	if err != nil {
-		return nil, err
-	}
-	if fields == nil {
-		fields = map[string]ProfileField{}
+		return nil, false, err
 	}
 	for k, f := range set {
-		fields[k] = ProfileField{Value: f.Value, Hint: f.Hint}
+		fields[k] = f
 	}
 	for _, k := range remove {
 		delete(fields, k)
 	}
 	if len(fields) > maxProfileFields {
-		return nil, fmt.Errorf("%w: profile has %d fields, max %d", ErrInvalidInput, len(fields), maxProfileFields)
+		return nil, false, fmt.Errorf("%w: profile has %d fields, max %d", ErrInvalidInput, len(fields), maxProfileFields)
 	}
-
-	now := e.now()
-	if len(fields) == 0 {
-		// Nothing left to protect: drop the row (and its search-index entries)
-		// instead of storing an empty envelope (row DELETE + key shred is the
-		// erasure pair, §2.7).
-		tx, err := e.pool.Begin(ctx)
+	var enc []byte
+	if len(fields) > 0 {
+		enc, err = e.sealProfile(ctx, uid, fields)
 		if err != nil {
-			return nil, fmt.Errorf("privacy: delete profile: %w", err)
+			return nil, false, err
 		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if _, err := tx.Exec(ctx,
-			`delete from dilion_pii.user_profiles where user_id = $1::uuid`, uid); err != nil {
-			return nil, fmt.Errorf("privacy: delete profile: %w", err)
-		}
-		if err := e.syncSearchIndex(ctx, tx, uid, nil); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return nil, fmt.Errorf("privacy: delete profile: %w", err)
-		}
-		return projectProfile(uid, nil, nil, false), nil
 	}
-
-	enc, err := e.sealProfile(ctx, uid, fields)
-	if err != nil {
-		return nil, err
-	}
-	// Document and blind index commit together: an index row must never point
-	// at values the sealed document does not hold (search.go).
 	tx, err := e.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
+		return nil, false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	const ins = `insert into dilion_pii.user_profiles (user_id, enc_profile, created_at, updated_at)
-		values ($1::uuid, $2, $3, $3)
-		on conflict (user_id) do update
-		set enc_profile = excluded.enc_profile, updated_at = excluded.updated_at`
-	if _, err := tx.Exec(ctx, ins, uid, enc, now); err != nil {
-		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, subjectMutationLockNS, uid); err != nil {
+		return nil, false, err
+	}
+	active, err := e.hasActiveDeletionWith(ctx, tx, uid)
+	if err != nil {
+		return nil, false, err
+	}
+	var erased bool
+	if err := tx.QueryRow(ctx, `select
+		exists(select 1 from dilion_privacy.erasure_registry where tombstone_id = $1)
+		or exists(select 1 from dilion_pii.subject_keys
+		  where user_id = $2::uuid and scope = 'DEFAULT' and shredded_at is not null)`,
+		e.tombstoneID(uid), uid).Scan(&erased); err != nil {
+		return nil, false, err
+	}
+	if active || erased {
+		return nil, false, fmt.Errorf("%w: deletion blocks profile writes", ErrConflict)
+	}
+	var current []byte
+	err = tx.QueryRow(ctx, `select enc_profile from dilion_pii.user_profiles where user_id = $1::uuid`, uid).Scan(&current)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+	if found != (err == nil) || !bytes.Equal(before, current) {
+		return nil, true, nil
+	}
+	now := e.now()
+	if len(fields) == 0 {
+		_, err = tx.Exec(ctx, `delete from dilion_pii.user_profiles where user_id = $1::uuid`, uid)
+	} else {
+		_, err = tx.Exec(ctx, `insert into dilion_pii.user_profiles (user_id, enc_profile, created_at, updated_at)
+			values ($1::uuid, $2, $3, $3)
+			on conflict (user_id) do update set enc_profile = excluded.enc_profile, updated_at = excluded.updated_at`, uid, enc, now)
+	}
+	if err != nil {
+		return nil, false, err
 	}
 	if err := e.syncSearchIndex(ctx, tx, uid, fields); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("privacy: upsert profile: %w", err)
+		return nil, false, err
 	}
-	e.log.Info("pii profile updated", "project_id", pid, "user_id", uid,
-		"set", len(set), "removed", len(remove), "fields", len(fields))
-	return projectProfile(uid, fields, &now, false), nil
+	e.log.Info("pii profile updated", "project_id", pid, "user_id", uid, "fields", len(fields))
+	if len(fields) == 0 {
+		return projectProfile(uid, nil, nil, false), false, nil
+	}
+	return projectProfile(uid, fields, &now, false), false, nil
 }
 
 // ---- storage ---------------------------------------------------------------
@@ -182,9 +206,13 @@ func (e *Engine) UpdateProfile(ctx context.Context, projectID, userID string, se
 // A row that cannot be decrypted is reported as ErrNotFound: after a
 // crypto-shred the profile is gone as far as every reader is concerned (§2.7).
 func (e *Engine) readProfile(ctx context.Context, userID string) (map[string]ProfileField, *time.Time, bool, error) {
+	return e.readProfileWith(ctx, e.pool, userID)
+}
+
+func (e *Engine) readProfileWith(ctx context.Context, db queryExecer, userID string) (map[string]ProfileField, *time.Time, bool, error) {
 	var enc []byte
 	var updatedAt *time.Time
-	err := e.pool.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`select enc_profile, updated_at from dilion_pii.user_profiles where user_id = $1::uuid`, userID).
 		Scan(&enc, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -193,24 +221,28 @@ func (e *Engine) readProfile(ctx context.Context, userID string) (map[string]Pro
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("privacy: read profile: %w", err)
 	}
-	if len(enc) == 0 {
-		return map[string]ProfileField{}, updatedAt, true, nil
-	}
+	fields, err := e.decodeProfile(ctx, userID, enc)
+	return fields, updatedAt, true, err
+}
 
+func (e *Engine) decodeProfile(ctx context.Context, userID string, enc []byte) (map[string]ProfileField, error) {
+	if len(enc) == 0 {
+		return map[string]ProfileField{}, nil
+	}
 	plain, err := e.kms.Decrypt(ctx, userID, ports.KeyScopeDefault, enc)
 	if err != nil {
 		// Expected post-erasure (DEFAULT dek shredded). Never surfaced as a 500.
 		e.log.Debug("pii profile is unreadable; treating as absent", "user_id", userID, "err", err)
-		return nil, nil, true, ErrNotFound
+		return nil, ErrNotFound
 	}
 	var doc profileDoc
 	if err := json.Unmarshal(plain, &doc); err != nil {
-		return nil, nil, true, fmt.Errorf("privacy: decode profile: %w", err)
+		return nil, fmt.Errorf("privacy: decode profile: %w", err)
 	}
 	if doc.Fields == nil {
 		doc.Fields = map[string]ProfileField{}
 	}
-	return doc.Fields, updatedAt, true, nil
+	return doc.Fields, nil
 }
 
 // sealProfile encrypts the document with the subject's DEFAULT-scope DEK, the
@@ -228,12 +260,16 @@ func (e *Engine) sealProfile(ctx context.Context, userID string, fields map[stri
 }
 
 func (e *Engine) hasActiveDeletion(ctx context.Context, userID string) (bool, error) {
+	return e.hasActiveDeletionWith(ctx, e.pool, userID)
+}
+
+func (e *Engine) hasActiveDeletionWith(ctx context.Context, db queryExecer, userID string) (bool, error) {
 	const q = `select exists (
 		select 1 from dilion_privacy.personal_data_requests
 		where user_id = $1::uuid and type = 'DELETION'
 		  and status in ('REQUESTED','PROCESSING','MANUAL_REVIEW'))`
 	var ok bool
-	if err := e.pool.QueryRow(ctx, q, userID).Scan(&ok); err != nil {
+	if err := db.QueryRow(ctx, q, userID).Scan(&ok); err != nil {
 		return false, fmt.Errorf("privacy: active deletion check: %w", err)
 	}
 	return ok, nil
