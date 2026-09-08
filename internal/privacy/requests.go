@@ -160,7 +160,28 @@ func (e *Engine) CreateRequest(ctx context.Context, in CreateRequestInput) (*Req
 		values ($1,$2::uuid,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)
 		returning ` + requestCols
 
-	row := e.pool.QueryRow(ctx, ins, id, userID, in.Type, status, policyID,
+	var requestDB queryExecer = e.pool
+	var tx pgx.Tx
+	if in.Type == RequestDeletion {
+		tx, err = e.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("privacy: create request transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`, subjectMutationLockNS, userID); err != nil {
+			return nil, fmt.Errorf("privacy: subject advisory lock: %w", err)
+		}
+		active, err := e.hasActiveDeletionWith(ctx, tx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if active {
+			return nil, ErrConflict
+		}
+		requestDB = tx
+	}
+
+	row := requestDB.QueryRow(ctx, ins, id, userID, in.Type, status, policyID,
 		string(snapshot), scheduledAt, now, idem, requestedBy, reviewReason)
 	req, err := scanRequest(row)
 	if err != nil {
@@ -173,6 +194,11 @@ func (e *Engine) CreateRequest(ctx context.Context, in CreateRequestInput) (*Req
 			return nil, ErrConflict
 		}
 		return nil, fmt.Errorf("privacy: create request: %w", err)
+	}
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("privacy: create request commit: %w", err)
+		}
 	}
 
 	if in.Type == RequestExport {
@@ -297,7 +323,8 @@ func (e *Engine) CancelRequest(ctx context.Context, id string) (*Request, error)
 // setManualReview parks a request for human handling and records why.
 func (e *Engine) setManualReview(ctx context.Context, requestID, reason string) error {
 	_, err := e.pool.Exec(ctx, `update dilion_privacy.personal_data_requests
-		set status = 'MANUAL_REVIEW', manual_review_reason = $2 where id = $1`, requestID, reason)
+		set status = 'MANUAL_REVIEW', manual_review_reason = $2
+		where id = $1 and status in ('REQUESTED','PROCESSING')`, requestID, reason)
 	if err != nil {
 		return fmt.Errorf("privacy: set manual review: %w", err)
 	}

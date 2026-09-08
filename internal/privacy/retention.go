@@ -69,8 +69,13 @@ func (e *Engine) sweepConsentShredDue(ctx context.Context, now time.Time, batch 
 	const q = `select user_id::text from dilion_pii.subject_keys
 		where scope = 'CONSENT' and shredded_at is null
 		  and shred_after is not null and shred_after <= $1
-		order by shred_after limit $2`
-	rows, err := e.pool.Query(ctx, q, now, batch)
+		  and not exists (
+			select 1 from dilion_privacy.legal_holds h
+			where h.user_id = dilion_pii.subject_keys.user_id
+			  and h.released_at is null and (h.domain is null or h.domain = $2)
+		  )
+		order by shred_after, user_id limit $3`
+	rows, err := e.pool.Query(ctx, q, now, DomainConsentEvidence, batch)
 	if err != nil {
 		return fmt.Errorf("privacy: consent shred sweep: %w", err)
 	}
@@ -101,10 +106,17 @@ func (e *Engine) sweepConsentFromCreated(ctx context.Context, policyID string, d
 			on k.user_id = ce.user_id and k.scope = 'CONSENT' and k.shredded_at is null
 		left join dilion_privacy.subject_policies sp on sp.user_id = ce.user_id
 		where coalesce(sp.policy_id, $1) = $2
+		  and not exists (
+			select 1 from dilion_privacy.legal_holds h
+			where h.user_id = ce.user_id and h.released_at is null
+			  and (h.domain is null or h.domain = $3)
+		  )
 		group by ce.user_id
-		having max(ce.created_at) <= $3
-		limit $4`
-	rows, err := e.pool.Query(ctx, q, e.policies.DefaultPolicy, policyID, cutoff, batch)
+		having max(ce.created_at) <= $4
+		order by ce.user_id
+		limit $5`
+	rows, err := e.pool.Query(ctx, q, e.policies.DefaultPolicy, policyID,
+		DomainConsentEvidence, cutoff, batch)
 	if err != nil {
 		return fmt.Errorf("privacy: consent retention sweep: %w", err)
 	}

@@ -115,6 +115,8 @@ func (e *Engine) withRequestLock(ctx context.Context, requestID string, fn func(
 		if _, err := conn.Exec(unlockCtx, `select pg_advisory_unlock($1, hashtext($2))`,
 			advisoryLockNS, requestID); err != nil {
 			e.log.Warn("advisory unlock failed", "request_id", requestID, "err", err)
+			// Never return a connection with an uncertain session lock to the pool.
+			_ = conn.Conn().Close(unlockCtx)
 		}
 	}()
 	return fn(ctx)
@@ -175,9 +177,13 @@ func (e *Engine) processRequest(ctx context.Context, requestID string) error {
 	}
 
 	if status == StatusRequested {
-		if _, err := e.pool.Exec(ctx, `update dilion_privacy.personal_data_requests
-			set status = 'PROCESSING' where id = $1 and status = 'REQUESTED'`, rc.RequestID); err != nil {
+		tag, err := e.pool.Exec(ctx, `update dilion_privacy.personal_data_requests
+			set status = 'PROCESSING' where id = $1 and status = 'REQUESTED'`, rc.RequestID)
+		if err != nil {
 			return fmt.Errorf("privacy: mark processing: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return nil // cancellation won; no erasure step may execute
 		}
 	}
 

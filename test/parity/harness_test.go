@@ -360,6 +360,7 @@ func TestParity(t *testing.T) {
 		map[bool]string{true: "ENABLED on both", false: "disabled (default stack)"}[flagsOn])
 
 	hit := map[string]bool{}
+	operationResults := map[string]OperationResult{}
 	var knownCount, failCount int
 
 	// PARITY_SUMMARY_FILE 이 설정되면 같은 수치를 마크다운으로도 남긴다
@@ -369,10 +370,11 @@ func TestParity(t *testing.T) {
 	if path := os.Getenv("PARITY_SUMMARY_FILE"); path != "" {
 		defer func() {
 			in := SummaryInput{
-				Known:   knownCount,
-				Fail:    failCount,
-				Profile: map[bool]string{true: "flagged (PARITY_FLAGS=1)", false: "default (flags off)"}[flagsOn],
-				Failed:  t.Failed(),
+				Known:      knownCount,
+				Fail:       failCount,
+				Operations: operationResults,
+				Profile:    map[bool]string{true: "flagged (PARITY_FLAGS=1)", false: "default (flags off)"}[flagsOn],
+				Failed:     t.Failed(),
 			}
 			if e.contract != nil {
 				in.Coverage = e.contract.Coverage(hit)
@@ -397,10 +399,21 @@ func TestParity(t *testing.T) {
 			op := e.contract.Resolve(sc.method, sc.path)
 			if op != "" {
 				hit[op] = true
+				result := operationResults[op]
+				result.Exercised = true
+				operationResults[op] = result
 			}
+			completed, compared, positive := false, false, false
+			finish := trackOperation(operationResults, op)
+			defer func() { finish(completed, compared, positive, t.Failed()) }()
 
 			dStatus, dHdr, dBody := e.exec(t, e.dilionURL, sc, dilionCreds, serviceRole)
 			uStatus, uHdr, uBody := e.exec(t, e.gotrueURL, sc, gotrueCreds, serviceRole)
+			if dStatus == http.StatusNotImplemented && op != "" {
+				result := operationResults[op]
+				result.Unimplemented = true
+				operationResults[op] = result
+			}
 
 			if sc.wantStatus != 0 {
 				if dStatus != sc.wantStatus {
@@ -412,16 +425,27 @@ func TestParity(t *testing.T) {
 			}
 
 			diffs := e.diff(sc, dStatus, uStatus, dHdr, uHdr, dBody, uBody)
+			compared = true
+			// Error redirects (for example expired verify links) also use 3xx.
+			// Until redirect outcome is validated, only 2xx is positive evidence.
+			positive = dStatus >= 200 && dStatus < 300 && uStatus >= 200 && uStatus < 300
 
 			for _, d := range diffs {
 				if dev := Match(e.devs, op, d); dev != nil {
 					knownCount++
+					result := operationResults[op]
+					result.Known++
+					operationResults[op] = result
 					t.Logf("KNOWN  %-24s %s  (deviation %q: %s)", op, d, dev.ID, dev.Reason)
 					continue
 				}
 				failCount++
+				result := operationResults[op]
+				result.Fail++
+				operationResults[op] = result
 				t.Errorf("FAIL   %-24s %s", op, d)
 			}
+			completed = true
 			if len(diffs) == 0 {
 				t.Logf("green  %-24s (%s %s)", op, sc.method, sc.path)
 			}
@@ -433,7 +457,7 @@ func TestParity(t *testing.T) {
 		if !profileMatches(f.profile, flagsOn) {
 			continue
 		}
-		k, fl := e.runFlow(t, f, dilionCreds, gotrueCreds, serviceRole, hit)
+		k, fl := e.runFlow(t, f, dilionCreds, gotrueCreds, serviceRole, hit, operationResults)
 		knownCount += k
 		failCount += fl
 	}

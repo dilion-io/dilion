@@ -31,6 +31,84 @@ func TestRBACConstantsMirrorIAM(t *testing.T) {
 	}
 }
 
+func TestAdminUserRoleRejectsMachineCredentials(t *testing.T) {
+	for _, role := range []string{RoleServiceRole, "SERVICE_ROLE", "supabase_admin"} {
+		if _, err := validateAdminUserRole(role); err == nil {
+			t.Errorf("validateAdminUserRole(%q) accepted a reserved role", role)
+		}
+	}
+	for _, role := range []string{"", RoleAuthenticated, "custom_rls_role"} {
+		got, err := validateAdminUserRole(role)
+		if err != nil {
+			t.Errorf("validateAdminUserRole(%q): %v", role, err)
+		}
+		if role == "" && got != RoleAuthenticated {
+			t.Errorf("empty role = %q, want %q", got, RoleAuthenticated)
+		}
+	}
+}
+
+func TestAdminRoleEscalationRejectedWithoutMutation(t *testing.T) {
+	env := newTestEnv(t)
+	user := env.signup(t, "role-target@example.test", "hunter22").User
+	env.router = env.routerWith(&stubAuthorizer{allow: map[string]bool{PermUsersAdmin: true}})
+	for _, bearer := range []string{env.userToken(t, user.ID), env.serviceRoleToken(t)} {
+		for _, role := range []string{"service_role", "supabase_admin", " SERVICE_ROLE "} {
+			for _, method := range []string{http.MethodPost, http.MethodPut} {
+				path := "/admin/users"
+				if method == http.MethodPut {
+					path += "/" + user.ID
+				}
+				rec := env.do(t, method, path, map[string]any{
+					"email": "role-escalation@example.test", "role": role,
+				}, bearer)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("%s %s role %q: %d %s", method, path, role, rec.Code, rec.Body.String())
+				}
+			}
+		}
+	}
+	var email, role string
+	if err := env.pool.QueryRow(context.Background(), "select email, role from auth.users where id=$1", user.ID).Scan(&email, &role); err != nil {
+		t.Fatal(err)
+	}
+	if email != user.Email || role != RoleAuthenticated {
+		t.Fatalf("rejected update changed user: %s %s", email, role)
+	}
+	var n int
+	if err := env.pool.QueryRow(context.Background(), "select count(*) from auth.users where email='role-escalation@example.test'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rejected create persisted user: %d %v", n, err)
+	}
+}
+
+func TestLegacyMachineRoleCannotEscapeThroughUserTokens(t *testing.T) {
+	env := newTestEnv(t)
+	first := env.signup(t, "legacy-role@example.test", "hunter22")
+	for _, role := range []string{"service_role", "supabase_admin", " SERVICE_ROLE "} {
+		if _, err := env.pool.Exec(context.Background(), "update auth.users set role=$1 where id=$2", role, first.User.ID); err != nil {
+			t.Fatal(err)
+		}
+		login := decodeInto[AccessTokenResponse](t, env.do(t, http.MethodPost, "/token?grant_type=password",
+			map[string]any{"email": first.User.Email, "password": "hunter22"}, ""), http.StatusOK)
+		refreshed := decodeInto[AccessTokenResponse](t, env.do(t, http.MethodPost, "/token?grant_type=refresh_token",
+			map[string]any{"refresh_token": login.RefreshToken}, ""), http.StatusOK)
+		a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Hooks: env.hooks})
+		legacy := *first.User
+		legacy.Role = role
+		oauthToken, _, err := a.issueOAuthAccessToken(context.Background(), env.pool, &legacy,
+			"00000000-0000-4000-8000-000000000099", "test-client", "openid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, token := range []string{login.Token, refreshed.Token, oauthToken} {
+			claims, err := env.tokens.Verify(context.Background(), token)
+			if err != nil || claims.Role != RoleAuthenticated {
+				t.Fatalf("legacy role escaped: claims=%+v err=%v", claims, err)
+			}
+		}
+	}
+}
+
 // ---- stub Authorizer ------------------------------------------------------
 
 type stubAuthorizer struct {

@@ -583,10 +583,10 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		return "", time.Time{}, internalServerError("Error running token claims hook").withInternal(err)
 	}
 
-	role := u.Role
-	if role == "" {
-		role = RoleAuthenticated
-	}
+	// auth.users represents a human session. Reserved machine roles must never
+	// escape into a password/refresh token, including for rows created before the
+	// admin validation was introduced.
+	role := userTokenRole(u.Role)
 	aud := u.Aud
 	if aud == "" {
 		aud = AudienceAuthenticated

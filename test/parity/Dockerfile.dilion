@@ -6,7 +6,7 @@
 # Dilion runs its own migrations at startup (dilion.Server.Migrate), so no
 # separate migrate step is needed — unlike GoTrue.
 
-FROM golang:1.26 AS build
+FROM golang:1.26.8 AS build
 WORKDIR /src
 # Cache module downloads.
 COPY go.mod go.sum ./
