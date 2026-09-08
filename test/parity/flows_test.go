@@ -237,7 +237,7 @@ func jsonHdr() map[string]string { return map[string]string{"Content-Type": "app
 // runFlow executes flow f against both servers, threading each server's own
 // captured state, and diffs every non-setup step. It returns the ops it touched
 // plus the KNOWN/FAIL tallies (added to the caller's totals).
-func (e *harnessEnv) runFlow(t *testing.T, f flow, dilionCreds, gotrueCreds map[string]*serverCreds, serviceRole string, hit map[string]bool) (known, fail int) {
+func (e *harnessEnv) runFlow(t *testing.T, f flow, dilionCreds, gotrueCreds map[string]*serverCreds, serviceRole string, hit map[string]bool, operationResults map[string]OperationResult) (known, fail int) {
 	t.Helper()
 	// {{flow_email}} is identical on both servers so admin-created users compare.
 	flowEmail := fmt.Sprintf("parity-%s-%d@example.test", f.name, time.Now().UnixNano())
@@ -257,10 +257,21 @@ func (e *harnessEnv) runFlow(t *testing.T, f flow, dilionCreds, gotrueCreds map[
 			op := e.contract.Resolve(st.method, dPath)
 			if op != "" {
 				hit[op] = true
+				result := operationResults[op]
+				result.Exercised = true
+				operationResults[op] = result
 			}
+			completed, compared, positive := false, false, false
+			finish := trackOperation(operationResults, op)
+			defer func() { finish(completed, compared, positive, t.Failed()) }()
 
 			dStatus, dHdr, dBody := e.execStep(t, e.dilionURL, f, st, dilionCreds, serviceRole, dVars)
 			uStatus, uHdr, uBody := e.execStep(t, e.gotrueURL, f, st, gotrueCreds, serviceRole, uVars)
+			if dStatus == http.StatusNotImplemented && op != "" {
+				result := operationResults[op]
+				result.Unimplemented = true
+				operationResults[op] = result
+			}
 
 			if st.wantStatus != 0 {
 				if dStatus != st.wantStatus {
@@ -271,19 +282,29 @@ func (e *harnessEnv) runFlow(t *testing.T, f flow, dilionCreds, gotrueCreds map[
 				}
 			}
 			if st.skipCompare {
+				completed = true
 				return
 			}
 
 			diffs := e.diffStep(st, dStatus, uStatus, dHdr, uHdr, dBody, uBody)
+			compared = true
+			positive = dStatus >= 200 && dStatus < 300 && uStatus >= 200 && uStatus < 300
 			for _, d := range diffs {
 				if dev := Match(e.devs, op, d); dev != nil {
 					known++
+					result := operationResults[op]
+					result.Known++
+					operationResults[op] = result
 					t.Logf("KNOWN  %-28s %s  (deviation %q: %s)", op, d, dev.ID, dev.Reason)
 					continue
 				}
 				fail++
+				result := operationResults[op]
+				result.Fail++
+				operationResults[op] = result
 				t.Errorf("FAIL   %-28s %s", op, d)
 			}
+			completed = true
 			if len(diffs) == 0 {
 				t.Logf("green  %-28s (%s %s)", op, st.method, st.path)
 			}

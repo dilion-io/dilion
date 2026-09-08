@@ -20,6 +20,32 @@ import (
 // defaultPerPage matches gotrue's admin listing default.
 const defaultPerPage int64 = 50
 
+// Reserved roles are machine credentials, not attributes an auth.users row may
+// acquire through the human-user administration API. Allowing either role here
+// turns the next password/refresh grant into an authorization bypass.
+func validateAdminUserRole(role string) (string, error) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return RoleAuthenticated, nil
+	}
+	switch strings.ToLower(role) {
+	case RoleServiceRole, "supabase_admin":
+		return "", badRequestError(ErrorCodeValidationFailed,
+			"Role %q is reserved for machine credentials", role)
+	default:
+		return role, nil
+	}
+}
+
+// userTokenRole sanitises legacy rows at every user-token issuance boundary.
+func userTokenRole(role string) string {
+	normalized, err := validateAdminUserRole(role)
+	if err != nil {
+		return RoleAuthenticated
+	}
+	return normalized
+}
+
 // AdminUserParams is the POST/PUT /admin/users body (wave-1 subset).
 type AdminUserParams struct {
 	ID           string         `json:"id"`
@@ -207,9 +233,9 @@ func (a *api) adminCreateUser(w http.ResponseWriter, r *http.Request) error {
 	if aud == "" {
 		aud = requestAud(r)
 	}
-	role := params.Role
-	if role == "" {
-		role = RoleAuthenticated
+	role, rerr := validateAdminUserRole(params.Role)
+	if rerr != nil {
+		return rerr
 	}
 
 	var encrypted *string
@@ -335,7 +361,11 @@ func (a *api) adminUpdateUser(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if params.Role != "" {
-		set["role"] = params.Role
+		role, rerr := validateAdminUserRole(params.Role)
+		if rerr != nil {
+			return rerr
+		}
+		set["role"] = role
 	}
 
 	if params.Password != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -78,7 +79,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, authDDL); err != nil {
 		t.Fatalf("auth ddl: %v", err)
 	}
-	for _, m := range []string{"0200_privacy.sql", "0201_pii_search_index.sql"} {
+	for _, m := range []string{"0200_privacy.sql", "0201_pii_search_index.sql", "0202_consent_state.sql"} {
 		body, err := os.ReadFile("../../migrations/" + m)
 		if err != nil {
 			t.Fatalf("read migration: %v", err)
@@ -96,6 +97,7 @@ func resetDB(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	stmts := []string{
+		`delete from dilion_privacy.consent_state`,
 		`alter table dilion_privacy.consent_events disable trigger user`,
 		`delete from dilion_privacy.consent_events`,
 		`alter table dilion_privacy.consent_events enable trigger user`,
@@ -887,6 +889,36 @@ func TestReconfirmScannerEmitsNoticeAndOutbox(t *testing.T) {
 	}
 }
 
+func TestReconfirmScannerDoesNotStarveDueRowsBehindNotDueRows(t *testing.T) {
+	env := newTestEngine(t, "compliance:\n  retention-batch-size: 1\n")
+	due := "00000000-0000-4000-8000-000000000002"
+	notDue := "00000000-0000-4000-8000-000000000001"
+	for _, user := range []string{due, notDue} {
+		env.setPolicy(t, user, "kr")
+	}
+	if _, err := env.e.UpdateConsent(env.ctx, "default", due, ConsentChange{
+		Purpose: "marketing.email", Granted: true, Source: "ui"}); err != nil {
+		t.Fatal(err)
+	}
+	env.clock.Advance(2*365*24*time.Hour + 48*time.Hour)
+	if _, err := env.e.UpdateConsent(env.ctx, "default", notDue, ConsentChange{
+		Purpose: "marketing.email", Granted: true, Source: "ui"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.e.scanReconfirmDue(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var noticed string
+	if err := env.pool.QueryRow(env.ctx, `select user_id::text from dilion_privacy.consent_events
+		where action = 'RECONFIRM_NOTICE'`).Scan(&noticed); err != nil {
+		t.Fatal(err)
+	}
+	if noticed != due {
+		t.Errorf("noticed user = %s, want due user %s", noticed, due)
+	}
+}
+
 func TestReconfirmOutboxFansOutToWebhook(t *testing.T) {
 	env := newTestEngine(t, "")
 	user := env.newUser(t)
@@ -1082,6 +1114,64 @@ func TestRetentionScannerShredsConsentKeys(t *testing.T) {
 	}
 	if shredded == nil {
 		t.Error("shredded_at must be recorded")
+	}
+}
+
+func TestRetentionBatchExcludesHeldRowsBeforeLimit(t *testing.T) {
+	env := newTestEngine(t, "")
+	held := env.newUser(t)
+	due := env.newUser(t)
+	for _, user := range []string{held, due} {
+		if _, err := env.e.UpdateConsent(env.ctx, "default", user, ConsentChange{
+			Purpose: "marketing.email", Granted: true, Source: "ui"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := env.pool.Exec(env.ctx, `update dilion_pii.subject_keys
+		set shred_after = case when user_id = $1::uuid then $3::timestamptz else $4::timestamptz end
+		where user_id = any($2::uuid[]) and scope = 'CONSENT'`, held, []string{held, due},
+		env.clock.Now().Add(-2*time.Hour), env.clock.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.e.CreateHold(env.ctx, CreateHoldInput{UserID: held, Reason: "preserve"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.e.sweepConsentShredDue(env.ctx, env.clock.Now(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if env.kms.isDestroyed(held, ports.KeyScopeConsent) {
+		t.Error("held key was shredded")
+	}
+	if !env.kms.isDestroyed(due, ports.KeyScopeConsent) {
+		t.Error("eligible key behind held row was starved")
+	}
+}
+
+func TestCreatedRetentionBatchExcludesHeldRowsBeforeLimit(t *testing.T) {
+	env := newTestEngine(t, "")
+	users := []string{env.newUser(t), env.newUser(t)}
+	sort.Strings(users)
+	held, due := users[0], users[1]
+	for _, user := range users {
+		if _, err := env.e.UpdateConsent(env.ctx, "default", user, ConsentChange{
+			Purpose: "analytics", Granted: true, Source: "ui"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := env.e.CreateHold(env.ctx, CreateHoldInput{UserID: held, Reason: "preserve"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.e.sweepConsentFromCreated(env.ctx, env.e.policies.DefaultPolicy,
+		Duration{Days: 1}, env.clock.Now().AddDate(0, 0, 2), 1); err != nil {
+		t.Fatal(err)
+	}
+	if env.kms.isDestroyed(held, ports.KeyScopeConsent) {
+		t.Error("held key was shredded")
+	}
+	if !env.kms.isDestroyed(due, ports.KeyScopeConsent) {
+		t.Error("eligible key behind held row was starved")
 	}
 }
 

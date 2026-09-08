@@ -5,6 +5,23 @@ on:
   pull_request:
 
 jobs:
+  govulncheck:
+    name: Go vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+
+      - name: Scan reachable vulnerabilities
+        run: govulncheck ./...
+
   backend:
     name: Backend (build · vet · tests · openapi drift)
     runs-on: ubuntu-latest
@@ -213,6 +230,12 @@ jobs:
   parity:
     name: Parity vs upstream supabase/auth (differential + coverage)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ['0', '1']
+    env:
+      PARITY_FLAGS: ${{ matrix.flags }}
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -220,6 +243,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Test parity harness and summary classification
+        run: go test -tags parity ./test/parity/...
 
       - name: Bring up parity stack (dilion + real gotrue + postgres)
         run: make parity-up
