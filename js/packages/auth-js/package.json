@@ -1,0 +1,39 @@
+{
+  "name": "@dilion-io/auth-js",
+  "version": "0.1.0",
+  "description": "Supabase-compatible auth client with Dilion OPAQUE extensions",
+  "type": "module",
+  "license": "UNLICENSED",
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./auth": {
+      "import": { "types": "./dist/auth.d.ts", "default": "./dist/auth.js" },
+      "require": { "types": "./dist/auth.d.cts", "default": "./dist/auth.cjs" }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsup src/index.ts src/auth.ts --format esm,cjs --dts --clean",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "compat:upstream": "tsc -p tsconfig.upstream.json"
+  },
+  "dependencies": {
+    "@supabase/auth-js": "^2.116.0",
+    "@supabase/supabase-js": "^2.116.0",
+    "@serenity-kit/opaque": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsup": "^8.5.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

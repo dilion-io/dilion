@@ -134,6 +134,9 @@ func (a *api) cleanupOnce(ctx context.Context) (int64, error) {
 		sql   string
 		arg   any
 	}{
+		{table: "auth.opaque_handshakes", sql: `delete from auth.opaque_handshakes where ctid in (select ctid from auth.opaque_handshakes where expires_at < $1 limit 5000)`, arg: now},
+		{table: "auth.opaque_session_keys", sql: `delete from auth.opaque_session_keys where ctid in (select ctid from auth.opaque_session_keys where expires_at < $1 limit 5000)`, arg: now},
+		{table: "auth.opaque_attempts", sql: `delete from auth.opaque_attempts where ctid in (select ctid from auth.opaque_attempts where window_start < $1 limit 5000)`, arg: now.Add(-time.Hour)},
 		{
 			// One-time tokens (confirmation, recovery, email change, ...).
 			table: "auth.one_time_tokens",

@@ -511,6 +511,18 @@ func (s *Server) humaConfig() huma.Config {
 // Handler returns the HTTP handler, for embedding into an existing server.
 func (s *Server) Handler() http.Handler { return s.router }
 
+// WithOpaqueSessionKey lends the shared OPAQUE key to a short, synchronous
+// operation after checking the bearer, live session, MFA and key lifetime.
+// Select the trusted instance on ctx just as for HTTP requests. fn must not
+// retain the slice, perform network I/O, or recursively update auth state:
+// account/session locks remain held, and the slice is wiped on return.
+func (s *Server) WithOpaqueSessionKey(ctx context.Context, bearer, keyID string, fn func([]byte) error) error {
+	if s.authMount == nil {
+		return fmt.Errorf("dilion: auth is not initialized")
+	}
+	return s.authMount.WithOpaqueSessionKey(ctx, bearer, keyID, fn)
+}
+
 // Pool exposes the database pool for embedders sharing it with their app. It is
 // the pool given with WithPool/WithDSN and is nil in a deployment configured
 // with WithInstanceResolver alone — use PoolFor there.

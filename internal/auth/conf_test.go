@@ -1,9 +1,53 @@
 package auth
 
 import (
+	"os"
 	"testing"
 	"time"
 )
+
+func TestOpaqueEnvironmentDefaults(t *testing.T) {
+	key := opaqueTestConfig().Opaque.MasterKey
+	for _, tc := range []struct {
+		name      string
+		env       map[string]string
+		enabled   bool
+		wantError bool
+	}{
+		{name: "no key stays disabled"},
+		{name: "key enables by default", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": key}, enabled: true},
+		{name: "explicit opt out", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": key, "DILION_AUTH_OPAQUE_ENABLED": "false"}},
+		{name: "explicit opt in", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": key, "DILION_AUTH_OPAQUE_ENABLED": "true"}, enabled: true},
+		{name: "enabled without key fails", env: map[string]string{"DILION_AUTH_OPAQUE_ENABLED": "true"}, wantError: true},
+		{name: "invalid key fails by default", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": "invalid"}, wantError: true},
+		{name: "empty key stays disabled", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": ""}},
+		{name: "legacy key enables", env: map[string]string{"GOTRUE_OPAQUE_MASTER_KEY": key}, enabled: true},
+		{name: "legacy opt out", env: map[string]string{"GOTRUE_OPAQUE_MASTER_KEY": key, "GOTRUE_OPAQUE_ENABLED": "false"}},
+		{name: "preferred opt out wins", env: map[string]string{"GOTRUE_OPAQUE_MASTER_KEY": key, "GOTRUE_OPAQUE_ENABLED": "true", "DILION_AUTH_OPAQUE_ENABLED": "false"}},
+		{name: "invalid flag fails", env: map[string]string{"DILION_AUTH_OPAQUE_MASTER_KEY": key, "DILION_AUTH_OPAQUE_ENABLED": "invalid"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range []string{"DILION_AUTH_OPAQUE_MASTER_KEY", "DILION_AUTH_OPAQUE_ENABLED", "GOTRUE_OPAQUE_MASTER_KEY", "GOTRUE_OPAQUE_ENABLED"} {
+				// Register restoration before unsetting, so absence (not merely an
+				// empty value) exercises defaults and legacy fallback correctly.
+				t.Setenv(name, "")
+				if err := os.Unsetenv(name); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			cfg, err := LoadConfig()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("configuration error = %v, wantError = %v", err, tc.wantError)
+			}
+			if err == nil && cfg.Opaque.Enabled != tc.enabled {
+				t.Fatalf("enabled = %v, want %v", cfg.Opaque.Enabled, tc.enabled)
+			}
+		})
+	}
+}
 
 func TestDefaultConfig(t *testing.T) {
 	c := DefaultConfig()

@@ -582,6 +582,7 @@ type CORSConfig struct {
 // or DefaultConfig (defaults only) — never as a bare literal, or the compiled
 // redirect allow-list will be empty.
 type Config struct {
+	Opaque OpaqueConfig `json:"opaque"`
 	// SiteURL mirrors GOTRUE_SITE_URL: the default redirect target and an
 	// always-allowed redirect destination. Defaults to DefaultSiteURL.
 	SiteURL string `json:"site_url"`
@@ -723,6 +724,11 @@ func LoadConfig() (*Config, error) {
 	c := DefaultConfig()
 	var errs []string
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Sprintf(format, args...)) }
+	c.Opaque.MasterKey = envString("OPAQUE_MASTER_KEY", "")
+	// Provisioning a key enables OPAQUE by default; an explicit false still
+	// disables it. Invalid provisioned keys fail validation, never silently
+	// downgrade authentication to a disabled feature.
+	c.Opaque.Enabled = envBool("OPAQUE_ENABLED", c.Opaque.MasterKey != "", fail)
 
 	c.SiteURL = envString("SITE_URL", c.SiteURL)
 	c.URIAllowList = envStringSlice("URI_ALLOW_LIST", c.URIAllowList)
@@ -864,6 +870,9 @@ func LoadConfig() (*Config, error) {
 // allow-list. It is called by LoadConfig and by newAPI, so an embedder-supplied
 // Config is always usable.
 func (c *Config) Validate() error {
+	if err := c.Opaque.validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.SiteURL) == "" {
 		c.SiteURL = DefaultSiteURL
 	}
