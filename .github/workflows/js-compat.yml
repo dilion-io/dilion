@@ -1,0 +1,131 @@
+name: JS SDK compatibility
+
+on:
+  push:
+    paths: ['js/**', 'internal/auth/**', 'migrations/01*.sql', 'go.mod', 'go.sum', '.github/workflows/js-compat.yml']
+  pull_request:
+    paths: ['js/**', 'internal/auth/**', 'migrations/01*.sql', 'go.mod', 'go.sum', '.github/workflows/js-compat.yml']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 22 * * *' # Daily 07:17 Asia/Seoul
+
+permissions:
+  contents: read
+
+jobs:
+  server-http:
+    name: OPAQUE SDK / Go HTTP / PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dilion
+          POSTGRES_PASSWORD: dilion
+          POSTGRES_DB: dilion_opaque_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dilion -d dilion_opaque_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22'
+      - run: npm install --global pnpm@10.27.0
+      - run: pnpm install --frozen-lockfile && pnpm build
+        working-directory: js
+      - name: Real server lifecycle and SDK HTTP integration
+        env:
+          DILION_TEST_DB: postgres://dilion:dilion@localhost:5432/dilion_opaque_test
+          DILION_OPAQUE_SDK_HTTP: '1'
+        run: go test -race ./internal/auth -run '^TestOpaque' -count=1 -v
+  compatibility:
+    name: Auth / TypeScript (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [locked, latest-supabase, latest-supabase-and-typescript]
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22'
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.27.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: js/packages/auth-js/test/interop/go.sum
+      - run: pnpm install --frozen-lockfile
+      # Produce the release declarations using the supported compiler FIRST;
+      # the monitor then checks consumers against upstream's current releases.
+      - run: pnpm build
+      - name: Resolve current Supabase releases
+        if: matrix.profile != 'locked'
+        run: pnpm --filter @dilion-io/auth-js add @supabase/auth-js@latest @supabase/supabase-js@latest
+      - name: Resolve current TypeScript release
+        if: matrix.profile == 'latest-supabase-and-typescript'
+        run: pnpm --filter @dilion-io/auth-js add --save-dev typescript@latest
+      - name: Upstream-only control
+        id: upstream
+        continue-on-error: true
+        run: pnpm --filter @dilion-io/auth-js compat:upstream
+      - name: Dilion source and ESM/CJS consumer compatibility
+        id: dilion
+        continue-on-error: true
+        run: pnpm typecheck
+      - name: Runtime and Go interoperability
+        id: runtime
+        continue-on-error: true
+        env:
+          DILION_OPAQUE_GO_INTEROP: '1'
+        run: pnpm test
+      - name: Compatibility summary
+        if: always()
+        env:
+          PROFILE: ${{ matrix.profile }}
+          UPSTREAM: ${{ steps.upstream.outcome }}
+          DILION: ${{ steps.dilion.outcome }}
+          RUNTIME: ${{ steps.runtime.outcome }}
+        run: |
+          {
+            echo "## JS compatibility: $PROFILE"
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            echo "| Supabase alone (strict declaration checking) | $UPSTREAM |"
+            echo "| Dilion types, database inference, ESM/CJS exports | $DILION |"
+            echo "| Runtime / OPAQUE interoperability | $RUNTIME |"
+            echo
+            echo 'If the upstream control fails, the problem also exists without Dilion.'
+            echo 'A successful runtime check does not imply TypeScript compatibility.'
+            echo
+            echo 'Resolved dependency versions:'
+            echo '~~~text'
+            pnpm --filter @dilion-io/auth-js list --depth 0
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce compatibility result
+        if: always()
+        env:
+          UPSTREAM: ${{ steps.upstream.outcome }}
+          DILION: ${{ steps.dilion.outcome }}
+          RUNTIME: ${{ steps.runtime.outcome }}
+        run: |
+          test "$UPSTREAM" = success
+          test "$DILION" = success
+          test "$RUNTIME" = success
