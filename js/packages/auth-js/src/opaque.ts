@@ -28,6 +28,16 @@ export interface OpaqueLoginData extends OpaqueKeys {
   key_id: string
 }
 
+export interface OpaqueSignupData {
+  /** May be a privacy-preserving placeholder when confirmation is required. */
+  user: User
+  /** Registration alone does not authenticate: explicitly sign in afterwards. */
+  session: null
+  confirmation_required: boolean
+  /** Provisional until successful OPAQUE login; never use as proof of signup. */
+  export_key: Uint8Array
+}
+
 export interface OpaqueOptions {
   /** Auth base URL, including /auth/v1, NOT /auth/v1/opaque. */
   url: string
@@ -141,6 +151,50 @@ export class OpaqueAuth {
     } finally {
       this.busy = false
     }
+  }
+
+  /** Create an account without a legacy password grant or prior session. */
+  signUp(input: {
+    email: string; password: string; signal?: AbortSignal
+    options?: { data?: Record<string, unknown>; emailRedirectTo?: string; captchaToken?: string }
+  }): Promise<OpaqueResult<OpaqueSignupData>> {
+    return this.run(async (signal, epoch) => {
+      if (!input.password) throw new OpaqueAuthError('OPAQUE signup requires a password')
+      const initial = await this.auth.getSession()
+      if (initial.error) throw initial.error
+      const opaque = await import('@serenity-kit/opaque')
+      await opaque.ready
+      signal.throwIfAborted()
+      const start = opaque.client.startRegistration({ password: input.password })
+      const reply = await this.post<Start & { registration_response: string }>('/signup/start', {
+        email: input.email, registration_request: start.registrationRequest,
+        ...(input.options?.data ? { data: input.options.data } : {}),
+        ...(input.options?.emailRedirectTo ? { redirect_to: input.options.emailRedirectTo } : {}),
+        ...(input.options?.captchaToken ? { gotrue_meta_security: { captcha_token: input.options.captchaToken } } : {}),
+      }, signal)
+      this.validateStart(reply)
+      const result = opaque.client.finishRegistration({
+        clientRegistrationState: start.clientRegistrationState, registrationResponse: reply.registration_response,
+        password: input.password, keyStretching: stretching,
+        identifiers: { client: reply.client_identity, server: reply.server_identity },
+      })
+      const export_key = decodeKey(result.exportKey)
+      try {
+        signal.throwIfAborted()
+        if (this.epoch !== epoch) throw new OpaqueAuthError('Auth session changed during OPAQUE signup')
+        const finished = await this.post<Omit<OpaqueSignupData, 'export_key'>>('/signup/finish', {
+          handshake_id: reply.handshake_id, registration_record: result.registrationRecord,
+        }, signal)
+        if (!finished.user || typeof finished.user.id !== 'string' || !finished.user.id ||
+          finished.session !== null || typeof finished.confirmation_required !== 'boolean') {
+          throw new OpaqueAuthError('Invalid OPAQUE signup acknowledgement')
+        }
+        signal.throwIfAborted()
+        if (this.epoch !== epoch) throw new OpaqueAuthError('Auth session changed during OPAQUE signup')
+        // No setSession: do not persist a provisional user or registration key.
+        return { user: finished.user, session: null, confirmation_required: finished.confirmation_required, export_key }
+      } catch (error) { export_key.fill(0); throw error }
+    }, input.signal)
   }
 
   /** Enrol a verified signed-in account; never sends the plaintext password. */

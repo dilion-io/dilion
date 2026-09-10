@@ -14,7 +14,7 @@ const token = () => encoded({ alg: 'HS256', typ: 'JWT' }) + '.' +
 const user = { id: uid, aud: 'authenticated', role: 'authenticated', email: 'a@example.test',
   app_metadata: {}, user_metadata: {}, created_at: new Date().toISOString() }
 
-async function fixture(options: { failFinish?: boolean; suite?: string } = {}) {
+async function fixture(options: { failFinish?: boolean; suite?: string; signupConfirmation?: boolean } = {}) {
   await protocol.ready
   const setup = protocol.server.createSetup()
   const registration = protocol.client.startRegistration({ password })
@@ -45,7 +45,7 @@ async function fixture(options: { failFinish?: boolean; suite?: string } = {}) {
       serverState = ''
       return Response.json({ access_token: token(), refresh_token: 'refresh', key_id: 'key-1' })
     }
-    if (path.endsWith('/registration/start')) {
+    if (path.endsWith('/registration/start') || path.endsWith('/signup/start')) {
       const result = protocol.server.createRegistrationResponse({ serverSetup: setup, userIdentifier: uid,
         registrationRequest: body.registration_request })
       return Response.json({ ...base, registration_response: result.registrationResponse })
@@ -53,6 +53,11 @@ async function fixture(options: { failFinish?: boolean; suite?: string } = {}) {
     if (path.endsWith('/registration/finish')) {
       registrationRecord = body.registration_record
       return Response.json({ success: true })
+    }
+    if (path.endsWith('/signup/finish')) {
+      if (options.failFinish) return Response.json({ error: 'rejected' }, { status: 422 })
+      registrationRecord = body.registration_record
+      return Response.json({ user, session: null, confirmation_required: options.signupConfirmation ?? false })
     }
     if (path.endsWith('/user')) return Response.json(user)
     if (path.endsWith('/logout')) return new Response(null, { status: 204 })
@@ -96,6 +101,50 @@ describe('Supabase delegation', () => {
     const result = await auth.opaque.signInWithPassword({ email: user.email, password })
     expect(result.error).toBeInstanceOf(AuthError)
     auth.opaque.dispose()
+  })
+})
+
+describe('OPAQUE signup', () => {
+  it('creates without a prior session, preserves options, then recovers the export key on login', async () => {
+    const f = await fixture()
+    const signup = await f.client.auth.opaque.signUp({ email: user.email, password,
+      options: { data: { name: 'Alice' }, emailRedirectTo: 'https://app.test/welcome', captchaToken: 'test-captcha' },
+    })
+    expect(signup.error).toBeNull()
+    expect(signup.data?.session).toBeNull()
+    expect(signup.data?.confirmation_required).toBe(false)
+    expect(signup.data?.export_key).toHaveLength(64)
+    expect((await f.client.auth.getSession()).data.session).toBeNull()
+    expect(f.persisted.size).toBe(0)
+    expect(f.requests.map(r => r.path)).toEqual(['/auth/v1/opaque/signup/start', '/auth/v1/opaque/signup/finish'])
+    expect(f.requests[0].body).toMatchObject({ email: user.email, data: { name: 'Alice' }, redirect_to: 'https://app.test/welcome', gotrue_meta_security: { captcha_token: 'test-captcha' } })
+    expect(JSON.stringify(f.requests)).not.toContain(password)
+    const login = await f.client.auth.opaque.signInWithPassword({ email: user.email, password })
+    expect(login.error).toBeNull()
+    expect(login.data?.export_key).toEqual(signup.data?.export_key)
+    f.client.auth.opaque.dispose()
+  })
+  it('leaves email confirmation and session establishment to explicit follow-up steps', async () => {
+    const f = await fixture({ signupConfirmation: true })
+    const result = await f.client.auth.opaque.signUp({ email: user.email, password })
+    expect(result.error).toBeNull()
+    expect(result.data?.confirmation_required).toBe(true)
+    expect(result.data?.session).toBeNull()
+    expect(f.requests).toHaveLength(2)
+    expect(f.persisted.size).toBe(0)
+    f.client.auth.opaque.dispose()
+  })
+  it('returns no keys on rejection and rejects empty passwords or cancellation', async () => {
+    const f = await fixture({ failFinish: true })
+    const failed = await f.client.auth.opaque.signUp({ email: user.email, password })
+    expect(failed.error).toBeInstanceOf(AuthError)
+    expect(failed.data).toBeNull()
+    expect(f.persisted.size).toBe(0)
+    const before = f.requests.length
+    expect((await f.client.auth.opaque.signUp({ email: user.email, password: '' })).error).toBeInstanceOf(AuthError)
+    expect((await f.client.auth.opaque.signUp({ email: user.email, password, signal: AbortSignal.abort() })).error).toBeInstanceOf(AuthError)
+    expect(f.requests).toHaveLength(before)
+    f.client.auth.opaque.dispose()
   })
 })
 
