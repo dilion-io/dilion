@@ -84,6 +84,45 @@ Server-side recent reauthentication/MFA and verified-identity gates are mandator
 Existing bcrypt/password accounts require an explicit migration policy; their
 stored hashes cannot be converted into OPAQUE records.
 
+## Create an account with OPAQUE
+
+~~~ts
+const { data, error } = await client.auth.opaque.signUp({
+  email: 'new-user@example.com',
+  password: 'user-supplied-password',
+  options: {
+    data: { display_name: 'New user' },
+    emailRedirectTo: 'https://app.example.com/confirmed',
+    // captchaToken: freshCaptchaToken,
+  },
+})
+if (error) throw error
+// data.session is always null: registration does not authenticate the client.
+if (data.confirmation_required) {
+  // Follow the confirmation email or use the existing auth.verifyOtp API.
+}
+// After confirmation (or immediately when autoconfirm is enabled), explicitly
+// call auth.opaque.signInWithPassword to obtain a session and shared key.
+~~~
+
+This method does not require a previous session, does not call the legacy
+`auth.signUp`, and never sends the password to the server. The account has no
+legacy password hash. Existing `auth.signUp` behavior remains unchanged.
+Options support user metadata, an allow-listed confirmation redirect, and
+CAPTCHA. Obtain a fresh CAPTCHA token for the later login if CAPTCHA is enabled;
+the signup token is not reused for login. Signup uses implicit email confirmation
+links / `verifyOtp`; it does not create a PKCE challenge for this extension.
+
+The result contains `user`, `session: null`, `confirmation_required`, and a
+client-local `export_key`. That export key is **provisional until successful
+OPAQUE login**; never encrypt durable data with it or treat it as proof that a
+new account was created. When email confirmation is required, `user` is a
+privacy-preserving placeholder for both new and existing addresses. No existing
+credential or metadata is overwritten by signup. Duplicate signup does not
+resend email: use the standard `auth.resend({ type: 'signup', email })` flow.
+With autoconfirm enabled, a duplicate address returns `user_already_exists`.
+Signup does not replace any session already active in the client.
+
 ## Wire contract
 
 For CAPTCHA-enabled servers, pass `captchaToken` to
@@ -94,6 +133,8 @@ All routes are relative to the auth base URL and therefore resolve under
 
 | POST route | Request | Successful response |
 | --- | --- | --- |
+| `signup/start` | `email, registration_request`, optional `data, redirect_to, gotrue_meta_security` | common fields + `registration_response` |
+| `signup/finish` | `handshake_id, registration_record` | `user, session: null, confirmation_required` |
 | `registration/start` | `registration_request` + bearer session | common fields + `registration_response` |
 | `registration/finish` | `handshake_id, registration_record` + bearer session | `{ "success": true }` |
 | `login/start` | `email, ke1` | common fields + `ke2` |
