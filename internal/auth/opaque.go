@@ -33,6 +33,8 @@ func init() {
 			})
 			r.With(a.limit(LimiterTokenPassword)).Post("/login/start", a.handle(a.opaqueLoginStart))
 			r.With(a.limit(LimiterTokenPassword)).Post("/login/finish", a.handle(a.opaqueLoginFinish))
+			r.With(a.limit(LimiterSignup)).Post("/signup/start", a.handle(a.opaqueSignupStart))
+			r.With(a.limit(LimiterSignup)).Post("/signup/finish", a.handle(a.opaqueSignupFinish))
 			r.Group(func(r chi.Router) {
 				r.Use(a.requireAuthentication)
 				r.With(a.limit(LimiterUser)).Post("/registration/start", a.handle(a.opaqueRegistrationStart))
@@ -54,15 +56,22 @@ type opaqueParams struct {
 
 func decodeOpaque(r *http.Request) (*opaqueParams, error) {
 	var p opaqueParams
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&p); err != nil {
-		return nil, badRequestError(ErrorCodeBadJSON, "Invalid OPAQUE request")
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, badRequestError(ErrorCodeBadJSON, "Invalid OPAQUE request")
+	if err := decodeOpaqueBody(r, &p); err != nil {
+		return nil, err
 	}
 	return &p, nil
+}
+
+func decodeOpaqueBody(r *http.Request, p any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(p); err != nil {
+		return badRequestError(ErrorCodeBadJSON, "Invalid OPAQUE request")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return badRequestError(ErrorCodeBadJSON, "Invalid OPAQUE request")
+	}
+	return nil
 }
 
 func opaqueBytes(s string) ([]byte, error) {
@@ -86,6 +95,7 @@ func opaqueDB(err error) error {
 // Every security-relevant field is authenticated inside the ciphertext. A
 // database row cannot be moved between ceremonies, instances, or IDs.
 type opaqueState struct {
+	Signup      *opaqueSignupState
 	UserUpdated time.Time
 	UserID      string
 	SessionID   string
@@ -99,7 +109,14 @@ type opaqueState struct {
 func (a *api) putOpaqueState(ctx context.Context, kind string, s *opaqueState) (string, error) {
 	id := uuid.NewString()
 	s.Expires = a.now().Add(opaqueHandshakeTTL)
-	plain, _ := json.Marshal(s)
+	plain, marshalErr := json.Marshal(s)
+	if marshalErr != nil {
+		return "", internalServerError("Unable to encode OPAQUE state")
+	}
+	if len(plain) > 16<<10 {
+		clear(plain)
+		return "", badRequestError(ErrorCodeValidationFailed, "OPAQUE state exceeds size limit")
+	}
 	defer clear(plain)
 	sealed := a.sealOpaque(ctx, kind+":"+id, plain)
 	err := a.inTx(ctx, func(tx pgx.Tx) error {

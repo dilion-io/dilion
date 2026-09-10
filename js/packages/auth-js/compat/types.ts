@@ -39,6 +39,7 @@ function fixtures() {
   const upstreamQuery = original.from('profiles').select('id, name')
   type QuerySame = Assert<Equal<upstream.QueryData<typeof query>, upstream.QueryData<typeof upstreamQuery>>>
   type PasswordSame = Assert<Equal<typeof client.auth.signInWithPassword, typeof original.auth.signInWithPassword>>
+  type SignupSame = Assert<Equal<typeof client.auth.signUp, typeof original.auth.signUp>>
   type SessionSame = Assert<Equal<typeof client.auth.setSession, typeof original.auth.setSession>>
   type OAuthSame = Assert<Equal<typeof client.auth.signInWithOAuth, typeof original.auth.signInWithOAuth>>
   type MFASame = Assert<Equal<typeof client.auth.mfa, typeof original.auth.mfa>>
@@ -52,8 +53,11 @@ function fixtures() {
   client.rpc('greeting', { name: 123 })
   // @ts-expect-error password is required
   client.auth.opaque.signInWithPassword({ email: 'a@example.test' })
+  // @ts-expect-error signup password is required
+  client.auth.opaque.signUp({ email: 'a@example.test' })
+  client.auth.opaque.signUp({ email: 'a@example.test', password: 'secret', options: { data: { name: 'Alice' }, captchaToken: 'captcha' } })
   void [assignable, auth, standalone, extended, custom, versioned]
-  const assertions: [QuerySame, PasswordSame, SessionSame, OAuthSame, MFASame, AdminSame] = [true, true, true, true, true, true]
+  const assertions: [QuerySame, PasswordSame, SignupSame, SessionSame, OAuthSame, MFASame, AdminSame] = [true, true, true, true, true, true, true]
   return assertions
 }
 void fixtures

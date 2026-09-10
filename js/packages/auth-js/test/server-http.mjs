@@ -4,6 +4,23 @@ import assert from 'node:assert/strict'
 import { createClient } from '../dist/index.js'
 
 const [url, access_token, refresh_token] = process.argv.slice(2)
+// A new client, no bootstrap token and no legacy password exchange.
+const fresh = createClient(url, 'test-anon-key', {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+})
+const signup = await fresh.auth.opaque.signUp({ email: 'sdk-signup@example.com', password: 'only-opaque-signup-password', options: { data: { name: 'Fresh account' } } })
+assert.equal(signup.error, null)
+assert.equal(signup.data.session, null)
+assert.equal(signup.data.confirmation_required, false)
+assert.equal((await fresh.auth.getSession()).data.session, null)
+const signedIn = await fresh.auth.opaque.signInWithPassword({ email: 'sdk-signup@example.com', password: 'only-opaque-signup-password' })
+assert.equal(signedIn.error, null)
+assert.deepEqual(signedIn.data.export_key, signup.data.export_key)
+assert.equal(signedIn.data.user.user_metadata.name, 'Fresh account')
+const duplicate = await fresh.auth.opaque.signUp({ email: 'sdk-signup@example.com', password: 'do-not-replace' })
+assert.notEqual(duplicate.error, null)
+fresh.auth.opaque.dispose()
+await fresh.auth.stopAutoRefresh()
 const client = createClient(url, 'test-anon-key', {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 })

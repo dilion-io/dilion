@@ -1,7 +1,7 @@
 # OPAQUE authentication
 
 Dilion implements RFC 9807 registration and login at
-`/auth/v1/opaque/{registration,login}/{start,finish}`. The JavaScript entry point
+`/auth/v1/opaque/{signup,registration,login}/{start,finish}`. The JavaScript entry point
 is `@dilion-io/auth-js`; see [SDK usage](../js/packages/auth-js/README.md).
 The server uses `github.com/bytemare/opaque` v0.18.0 and the SDK uses
 `@serenity-kit/opaque` 1.1.0. The suite is fixed to
@@ -11,7 +11,8 @@ password or `export_key`; it cannot enforce password strength against plaintext.
 
 ## Enable
 
-Apply migration `0117_auth_opaque.sql` using the normal migration runner. Set:
+Apply migrations `0117_auth_opaque.sql` and `0118_auth_opaque_signup.sql` using
+the normal migration runner. Set:
 
 ```sh
 DILION_AUTH_OPAQUE_MASTER_KEY=<32 random bytes, unpadded base64url>
@@ -38,13 +39,44 @@ unencrypted backend port publicly. The SDK rejects non-loopback HTTP.
 
 ## Registration and account lifecycle
 
-Registration enrolls an existing, email-confirmed, non-anonymous, non-SSO account.
+There are two distinct registration entry points:
+
+- **New account:** `auth.opaque.signUp()` uses `signup/start` and `signup/finish`
+  without a bearer session. Start creates only encrypted, two-minute, single-use
+  state. Finish atomically creates the user, email identity and encrypted OPAQUE
+  credential, with `encrypted_password = NULL`. It checks signup/email-provider
+  flags at both steps, applies CAPTCHA and IP/shared account rate limits, and
+  calls the existing before/after signup and user-created hooks. Hook metadata
+  never contains the password. Email and metadata are bound to the handshake;
+  finish cannot override them. Email rewrites by BeforeSignup are revalidated.
+- **Existing account:** `auth.opaque.register()` uses `registration/start` and
+  `registration/finish` with recent-authentication/MFA gates described below.
+
+New-account signup respects `Mailer.Autoconfirm`. With confirmation required,
+the normal confirmation mail and `/verify` flow are used; email delivery must be
+configured. Delivery failure rolls back account and credential creation. No
+OPAQUE login is allowed before email confirmation. Confirmation links use the
+existing redirect allow-list and implicit flow; the extension does not initiate
+PKCE. Registration returns `session: null` even with autoconfirm, since no KE3
+proof has been verified. Explicitly perform OPAQUE login afterwards to establish
+a session and shared key; do not reuse the signup CAPTCHA token for login.
+
+Duplicate signup never replaces an existing account's credentials or metadata,
+including unconfirmed accounts. With confirmation required, both new and
+existing addresses return a sanitized placeholder user and no session; the
+client's registration export key is not proof of creation and must not be used
+until a successful OPAQUE login. Duplicates do not resend confirmation mail:
+use `/resend` explicitly. With autoconfirm enabled, duplicates return 422
+`user_already_exists`. An interrupted/failed signup may require a fresh signup
+attempt or resend/login; retries never silently overwrite a credential.
+
+Existing-account enrollment requires an email-confirmed, non-anonymous, non-SSO account.
 SSO-managed users must continue through their identity provider. Create
 or verify the account using the existing OTP/OAuth/password routes first. If the
 password must never reach the server, bootstrap with OTP/OAuth instead of the
-legacy password grant. Direct OPAQUE-only signup is not implemented.
+legacy password grant, or use the direct OPAQUE signup flow above.
 
-Both registration steps require the SAME live session, created within five
+Both existing-account registration steps require the SAME live session, created within five
 minutes. An account with a verified MFA factor needs AAL2. Refreshing an old
 session does not satisfy recent authentication. Concurrent/stale registration
 finishes are rejected if the account or credential changed in between.
@@ -135,14 +167,18 @@ Tests reset auth tables: use a dedicated test database, never production.
 Tests cover storage tampering/tenant isolation, native registration/login,
 cross-mount finish, expiry/replay/concurrent consumption, account throttling,
 credential reset and actual SDK/WASM → Dilion HTTP → PostgreSQL key agreement.
+Signup tests also cover email confirmation, no legacy hash/session issuance,
+duplicate and concurrent signup, hooks, policy changes, CAPTCHA, ceremony/audience
+binding and mail-failure rollback. The real SDK HTTP test creates a fresh account
+without a bootstrap session and verifies export-key recovery on later login.
 The JS compatibility workflow runs the real-server test in its own daily job.
 
 This implementation is not independently security-audited. The selected Go
 cryptographic library also explicitly states that it has not been independently
 audited. Review and load-test before production rollout; start with the feature
 disabled using `DILION_AUTH_OPAQUE_ENABLED=false` during preparation if a master
-key has already been provisioned. Master-key rotation tooling, direct OPAQUE
-signup and encrypted-data recovery/rewrapping are not included.
+key has already been provisioned. Master-key rotation tooling and encrypted-data
+recovery/rewrapping are not included.
 
 References: [RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html),
 [bytemare security and operational notes](https://github.com/bytemare/opaque).

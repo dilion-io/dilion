@@ -27,12 +27,13 @@ var corsAllowedMethods = []string{
 	http.MethodDelete, http.MethodPatch, http.MethodOptions,
 }
 
-// corsDefaultAllowedHeaders mirrors the defaults upstream passes to
-// conf.CORSConfiguration.AllAllowedHeaders (internal/api/api.go).
+// corsDefaultAllowedHeaders mirrors upstream's defaults, plus apikey for
+// direct browser use of the Supabase-compatible SDK without a gateway.
 var corsDefaultAllowedHeaders = []string{
 	"Accept", "Authorization", "Content-Type",
 	"X-Client-Info", "X-Client-IP", "X-JWT-AUD",
 	"x-use-cookie", "X-Supabase-Api-Version",
+	"apikey",
 }
 
 // corsExposedHeaders mirrors upstream's ExposedHeaders.
