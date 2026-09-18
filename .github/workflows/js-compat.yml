@@ -84,6 +84,12 @@ jobs:
         id: upstream
         continue-on-error: true
         run: pnpm --filter @dilion-io/auth-js compat:upstream
+      # The gate for the canary profiles: our own sources, with third-party
+      # declaration files left unchecked. See tsconfig.sources.json.
+      - name: Dilion sources under the resolved compiler
+        id: sources
+        continue-on-error: true
+        run: pnpm --filter @dilion-io/auth-js typecheck:sources
       - name: Dilion source and ESM/CJS consumer compatibility
         id: dilion
         continue-on-error: true
@@ -99,33 +105,72 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
           UPSTREAM: ${{ steps.upstream.outcome }}
+          SOURCES: ${{ steps.sources.outcome }}
           DILION: ${{ steps.dilion.outcome }}
           RUNTIME: ${{ steps.runtime.outcome }}
         run: |
           {
             echo "## JS compatibility: $PROFILE"
             echo
-            echo '| Check | Result |'
-            echo '| --- | --- |'
-            echo "| Supabase alone (strict declaration checking) | $UPSTREAM |"
-            echo "| Dilion types, database inference, ESM/CJS exports | $DILION |"
-            echo "| Runtime / OPAQUE interoperability | $RUNTIME |"
+            echo '| Check | Result | Gates this profile |'
+            echo '| --- | --- | --- |'
+            if [ "$PROFILE" = locked ]; then third_party=yes; else third_party='no (reported only)'; fi
+            echo "| Supabase alone (strict declaration checking) | $UPSTREAM | $third_party |"
+            echo "| Dilion sources alone (third-party declarations ignored) | $SOURCES | yes |"
+            echo "| Dilion types, database inference, ESM/CJS exports | $DILION | $third_party |"
+            echo "| Runtime / OPAQUE interoperability | $RUNTIME | yes |"
             echo
             echo 'If the upstream control fails, the problem also exists without Dilion.'
             echo 'A successful runtime check does not imply TypeScript compatibility.'
+            echo 'On the latest-* profiles, strict declaration checking spans packages and a'
+            echo 'compiler this repository does not pin, so it is reported rather than enforced;'
+            echo 'the Dilion-sources and runtime checks are what turn those profiles red.'
             echo
             echo 'Resolved dependency versions:'
             echo '~~~text'
             pnpm --filter @dilion-io/auth-js list --depth 0
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"
+      # Deliberately asymmetric. Do not "simplify" this back to requiring every
+      # check on every profile.
+      #
+      # `locked` is the supported configuration: every version is pinned, so every
+      # failure is reproducible and ours to act on, and all four checks gate.
+      #
+      # The latest-* profiles resolve @latest of packages, and of the compiler
+      # itself, so strict declaration checking across that graph fails on other
+      # people's release schedules. Both failures that appeared when TypeScript
+      # 7.0 shipped were third-party and unfixable from this repository:
+      # @supabase/auth-js's `PublicKeyCredentialFuture` contradicts the WebAuthn
+      # Level 3 types that TS 7 added to lib.dom, and @types/chai vs vitest trip a
+      # TS 7 change in how a method merges with a function-typed property
+      # (microsoft/typescript-go#1192). Gating on those would hold this scheduled
+      # job red until upstream moved, which is how a canary stops being read.
+      # So they are reported, and the checks that can only fail because of our own
+      # code -- Dilion sources and runtime -- carry the gate.
       - name: Enforce compatibility result
         if: always()
         env:
+          PROFILE: ${{ matrix.profile }}
           UPSTREAM: ${{ steps.upstream.outcome }}
+          SOURCES: ${{ steps.sources.outcome }}
           DILION: ${{ steps.dilion.outcome }}
           RUNTIME: ${{ steps.runtime.outcome }}
         run: |
-          test "$UPSTREAM" = success
-          test "$DILION" = success
-          test "$RUNTIME" = success
+          failed=0
+          test "$SOURCES" = success ||
+            { echo "::error::Dilion sources do not typecheck under the resolved compiler."; failed=1; }
+          test "$RUNTIME" = success ||
+            { echo "::error::Runtime or Go OPAQUE interoperability failed."; failed=1; }
+          if [ "$PROFILE" = locked ]; then
+            test "$UPSTREAM" = success ||
+              { echo "::error::Pinned Supabase declarations fail strict checking."; failed=1; }
+            test "$DILION" = success ||
+              { echo "::error::Pinned dependency graph fails strict declaration checking."; failed=1; }
+          else
+            test "$UPSTREAM" = success ||
+              echo "::warning::Upstream's current release fails strict declaration checking on its own, so this is not attributable to Dilion."
+            test "$DILION" = success ||
+              echo "::warning::Strict declaration checking failed somewhere in the resolved dependency graph; see the step log for which file reported the error, and the Dilion-sources row above for whether any of it is ours."
+          fi
+          exit "$failed"

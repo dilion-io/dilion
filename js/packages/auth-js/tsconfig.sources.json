@@ -1,0 +1,18 @@
+{
+  // Dilion's own sources, with third-party declaration files left unchecked.
+  //
+  // The default tsconfig.json keeps `skipLibCheck: false` on purpose, so that a
+  // breaking change in an upstream .d.ts is caught rather than silently absorbed.
+  // That is the right default, but it means a single broken declaration anywhere
+  // in the graph -- in a package we do not own, under a compiler we do not pin --
+  // is indistinguishable from a real defect in this package.
+  //
+  // This project separates the two: errors reported *inside* .d.ts files are
+  // suppressed here, while every structural assertion written in our own .ts files
+  // (compat/types.ts's `Equal<>` parity checks and its `@ts-expect-error`
+  // negatives included) is still evaluated in full.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "skipLibCheck": true
+  }
+}
