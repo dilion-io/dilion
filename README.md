@@ -43,6 +43,37 @@ make dev-web
 복호화할 수 없습니다. DB를 보존하며 중지하려면 `docker compose stop`을 사용하세요.
 `make down`은 DB 볼륨도 삭제합니다.
 
+## 배포 이미지와 패키지
+
+`v*` 태그를 푸시하면 릴리스 워크플로가 서버 이미지와 JS SDK를 같은 버전으로 함께
+발행합니다. 태그와 `js/packages/auth-js/package.json`의 버전이 어긋나면 아무것도
+발행하지 않고 실패합니다.
+
+서버 이미지는 GitHub Container Registry에 `linux/amd64`와 `linux/arm64`로 올라갑니다.
+
+```bash
+docker run --rm -p 8787:8787 \
+  -e DILION_DSN='postgres://dilion:dilion@host:5432/dilion' \
+  ghcr.io/dilion-io/dilion:latest
+```
+
+마이그레이션은 서버가 시작할 때 직접 적용하므로 별도 단계가 필요하지 않습니다.
+`DILION_JWT_SECRET`과 `DILION_MASTER_KEY`를 주지 않으면 부팅마다 임시 키를 만들므로
+운영에서는 반드시 지정해야 합니다. 재시작하면 발급한 토큰이 무효가 되고 저장된
+개인정보를 복호화할 수 없습니다. 환경 변수 전체 목록은
+[cmd/dilion/main.go](cmd/dilion/main.go)의 주석에 있습니다.
+
+같은 이미지를 로컬에서 빌드하려면 `make docker-build`를 사용합니다.
+
+JS SDK는 npm에 발행됩니다.
+
+```bash
+npm install @dilion-io/auth-js
+```
+
+사전 릴리스(`v0.1.0-rc1` 등)는 npm `next` 태그로만 올라가고 이미지의 `latest`도
+갱신하지 않습니다.
+
 ## 인증과 SDK
 
 인증 API의 기본 경로는 `/auth/v1`입니다. 이메일·비밀번호, OTP, OAuth/OIDC,

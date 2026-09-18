@@ -9,6 +9,16 @@ limits](../../../docs/opaque.md) for the required migration, external master key
 recent-authentication/MFA enrollment gates and shared-key lifecycle. Actual SDK
 HTTP tests use Dilion handlers and PostgreSQL; this is not a security audit.
 
+## Install
+
+```bash
+npm install @dilion-io/auth-js     # pnpm add / yarn add all work too
+```
+
+Requires Node.js 22 or newer. `@supabase/supabase-js` and `@supabase/auth-js` are
+dependencies, so an existing Supabase client stays usable -- see the next section.
+Prereleases are published under the `next` tag.
+
 ## Supabase-compatible entry point
 
 ~~~ts
@@ -200,3 +210,8 @@ References: [RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html),
 [Go OPAQUE](https://github.com/bytemare/opaque).
 The Go implementation explicitly notes that it has not been independently
 audited; passing tests is not a substitute for an integration security review.
+
+## License
+
+[Apache-2.0](LICENSE), the same as the [Dilion
+repository](https://github.com/dilion-io/dilion) this package is built from.
