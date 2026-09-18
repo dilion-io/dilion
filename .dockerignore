@@ -1,0 +1,24 @@
+# The server image builds the Go module and nothing else. Only migrations/*.sql
+# and internal/privacy/builtin_policies.yaml are embedded (go:embed); the
+# frontend and the JS SDK are separate artifacts that the binary never reads.
+# Keeping them out of the build context drops roughly 300 MB per build.
+web/
+js/
+.git/
+**/node_modules/
+
+# Local development state and build output.
+.dev/
+dist/
+*.tgz
+.env
+.env.*
+
+# Editor and OS noise.
+.idea/
+.vscode/
+.DS_Store
+
+# Nothing the binary needs.
+.github/
+test/

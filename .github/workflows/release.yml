@@ -1,0 +1,282 @@
+name: Release
+
+# One `v*` tag releases both artifacts: the npm package and the server image.
+#
+#   git tag v0.1.0      && git push origin v0.1.0     # → latest / :latest
+#   git tag v0.1.0-rc1  && git push origin v0.1.0-rc1 # → next   / no :latest
+#
+# A manual run is ALWAYS a rehearsal. Publishing is bound to a tag so that every
+# released version has one, and so that no button in the Actions UI can publish
+# by accident. To retry a failed publish, re-run the tag's workflow run.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two runs of the same tag must never race to the registry.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      npm_tag: ${{ steps.v.outputs.npm_tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          pkg=js/packages/auth-js/package.json
+          pkg_version="$(node -p "require('./$pkg').version")"
+
+          if [ "$EVENT" = push ]; then
+            version="${REF_NAME#v}"
+            dry_run=false
+          else
+            version="$pkg_version"
+            dry_run=true
+          fi
+
+          # No build metadata: '+' is legal in semver but not in an OCI tag.
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$REF_NAME' is not a release version. Expected v<major>.<minor>.<patch>[-prerelease], for example v0.1.0 or v0.1.0-rc1."
+            exit 1
+          fi
+
+          # One tag releases both artifacts, so the SDK version must BE the tagged
+          # version. Bump package.json in the commit you tag.
+          if [ "$dry_run" = false ] && [ "$version" != "$pkg_version" ]; then
+            echo "::error::Tag $REF_NAME releases $version but $pkg is at $pkg_version. Bump the package version, commit, and re-tag."
+            exit 1
+          fi
+
+          # A prerelease must not become the default install for either artifact.
+          case "$version" in
+            *-*) prerelease=true;  npm_tag=next   ;;
+            *)   prerelease=false; npm_tag=latest ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "npm_tag=$npm_tag"
+            echo "prerelease=$prerelease"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Release $version"
+            echo
+            [ "$dry_run" = true ] && echo '> **Rehearsal.** Nothing is published; a real release comes from a `v*` tag.' && echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Version | \`$version\` |"
+            echo "| Prerelease | $prerelease |"
+            echo "| npm dist-tag | \`$npm_tag\` |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  npm:
+    name: npm — @dilion-io/auth-js
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # provenance attestation
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.27.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: js/packages/auth-js/test/interop/go.sum
+
+      # The release must not depend on an earlier run still being valid, so the
+      # supported (frozen-lockfile) gate runs again here against the tagged tree.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - name: Test, including Go OPAQUE interoperability
+        env:
+          DILION_OPAQUE_GO_INTEROP: '1'
+        run: pnpm test
+
+      # Fail before the gates' cost is sunk, not after, if the token is unusable.
+      - name: Verify npm credentials
+        if: needs.version.outputs.dry_run == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo '::error::Set the repository NPM_TOKEN secret to enable npm publishing.'
+            exit 1
+          fi
+          echo "Authenticated to npm as $(npm whoami)"
+
+      # A version on the registry is permanent, so re-running a tag must be a
+      # no-op rather than an error.
+      - name: Check whether this version is already published
+        id: exists
+        working-directory: js/packages/auth-js
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if npm view "@dilion-io/auth-js@$VERSION" version >/dev/null 2>&1; then
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::@dilion-io/auth-js@$VERSION is already on the registry; leaving it alone."
+          else
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      # npm, not pnpm: pnpm publish has no --provenance flag. Safe here because
+      # the package has no workspace: dependencies for pnpm to rewrite.
+      # A rehearsal always exercises the pack/publish path; a real publish skips
+      # only when the registry already has this version.
+      - name: Publish
+        if: steps.exists.outputs.published == 'false' || needs.version.outputs.dry_run == 'true'
+        working-directory: js/packages/auth-js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+          DRY_RUN: ${{ needs.version.outputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            npm publish --access public --tag "$NPM_TAG" --dry-run
+          else
+            npm publish --access public --tag "$NPM_TAG" --provenance
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+          DRY_RUN: ${{ needs.version.outputs.dry_run }}
+          ALREADY: ${{ steps.exists.outputs.published }}
+        run: |
+          {
+            echo "### npm"
+            echo
+            if [ "$DRY_RUN" = true ]; then
+              echo "Rehearsed \`@dilion-io/auth-js@$VERSION\` (dist-tag \`$NPM_TAG\`). Not published."
+            elif [ "$ALREADY" = true ]; then
+              echo "\`@dilion-io/auth-js@$VERSION\` was already on the registry; nothing was published."
+            else
+              echo "Published \`@dilion-io/auth-js@$VERSION\` under dist-tag \`$NPM_TAG\`, with provenance."
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  docker:
+    name: Image — ghcr.io/${{ github.repository }}
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # build provenance attestation
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The image build compiles the binary anyway, but says nothing about vet or
+      # the unit tests. `make test` runs build and vet first. The DB-backed and
+      # parity suites stay in ci.yml, which has already run on this commit.
+      - name: Build, vet, unit tests
+        run: make test
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      # No QEMU: the Dockerfile cross-compiles from the build platform instead.
+
+      - uses: docker/login-action@v4.6.0
+        if: needs.version.outputs.dry_run == 'false'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.version.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.prerelease == 'false' }}
+
+      # metadata-action publishes no timestamp output, and an empty build-arg would
+      # override the Dockerfile's ARG default rather than fall back to it.
+      - id: created
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.version.outputs.dry_run == 'false' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.created.outputs.at }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: always()
+        env:
+          DRY_RUN: ${{ needs.version.outputs.dry_run }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Container image"
+            echo
+            if [ "$DRY_RUN" = true ]; then
+              echo 'Built for `linux/amd64` and `linux/arm64`. Not pushed. Would have tagged:'
+            else
+              echo 'Pushed for `linux/amd64` and `linux/arm64`, with SBOM and provenance:'
+            fi
+            echo
+            echo '~~~text'
+            printf '%s\n' "$TAGS"
+            [ -n "$DIGEST" ] && echo "digest: $DIGEST"
+            echo '~~~'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"

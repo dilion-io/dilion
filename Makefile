@@ -6,8 +6,11 @@ PGPORT ?= 55432
 DSN_BASE := postgres://dilion:dilion@$(PGHOST):$(PGPORT)
 DEV_DSN ?= $(DSN_BASE)/dilion_dev
 MASTER_KEY_FILE := .dev/master.key
+DOCKER_IMAGE ?= ghcr.io/dilion-io/dilion
+DOCKER_VERSION ?= dev
 
 .PHONY: help up down ps build vet test test-db openapi openapi-check \
+        docker-build \
         web-install web-check dev dev-web e2e-token ci clean \
         parity-up parity-test parity-down parity \
         upstream-spec-sync upstream-spec-check
@@ -60,6 +63,18 @@ openapi: ## web/openapi.yaml 재생성 (huma → OpenAPI 3.1)
 
 openapi-check: openapi ## 스펙-커밋 불일치 검출 (CI용; git 필요)
 	git diff --exit-code web/openapi.yaml
+
+## ---- 컨테이너 이미지 ----
+
+# 릴리스 워크플로(.github/workflows/release.yml)가 굽는 것과 같은 Dockerfile 이다.
+# CI 는 멀티아키(amd64+arm64)로 굽고 여기서는 호스트 아키텍처만 굽는다 — 그 외에는
+# 동일한 빌드다. VERSION 라벨은 CI 에서 태그 값으로, 로컬에서는 dev 로 남는다.
+docker-build: ## 서버 이미지 빌드 (DOCKER_VERSION / DOCKER_IMAGE 로 태그 지정)
+	docker build \
+	  --build-arg VERSION='$(DOCKER_VERSION)' \
+	  --build-arg REVISION='$(shell git rev-parse HEAD 2>/dev/null || echo unknown)' \
+	  --build-arg CREATED='$(shell date -u +%Y-%m-%dT%H:%M:%SZ)' \
+	  -t '$(DOCKER_IMAGE):$(DOCKER_VERSION)' .
 
 ## ---- 프론트엔드 ----
 

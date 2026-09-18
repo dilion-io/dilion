@@ -14,8 +14,12 @@ Node 22+, pnpm 10.27.0 and Go 1.26.8+ (for the optional interoperability test).
 Run build before typecheck: compatibility fixtures also consume the package's
 published ESM and CommonJS declaration entry points.
 
-The package is [@dilion-io/auth-js](packages/auth-js/README.md).
-No npm publication or license grant has been made by this change.
+The package is [@dilion-io/auth-js](packages/auth-js/README.md), published to npm
+under Apache-2.0 by `.github/workflows/release.yml` when a `v*` tag is pushed.
+One tag releases both the SDK and the server image, so the tag and
+`packages/auth-js/package.json` must carry the same version -- bump the package
+version in the commit you tag, or the release fails before publishing anything.
+Prereleases (`v0.1.0-rc1`) go to the npm `next` tag and never move `latest`.
 
 ## Daily compatibility monitoring
 
