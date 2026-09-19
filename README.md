@@ -45,9 +45,25 @@ make dev-web
 
 ## 배포 이미지와 패키지
 
-`v*` 태그를 푸시하면 릴리스 워크플로가 서버 이미지와 JS SDK를 같은 버전으로 함께
-발행합니다. 태그와 `js/packages/auth-js/package.json`의 버전이 어긋나면 아무것도
-발행하지 않고 실패합니다.
+릴리스는 커밋 메시지로 시작합니다. `js/packages/auth-js/package.json`의 버전을 올리고
+제목이 정확히 `chore(release): v<버전>`인 커밋을 기본 브랜치에 푸시하면, 워크플로가
+`v<버전>` 태그를 만든 뒤 서버 이미지와 JS SDK를 같은 버전으로 함께 발행합니다.
+
+```bash
+# js/packages/auth-js/package.json 의 version 을 0.1.0-rc1 로 올린 뒤
+git commit -am 'chore(release): v0.1.0-rc1'
+git push
+```
+
+태그는 릴리스 봇(`dilion-release[bot]`)이 만들며, 그 태그 푸시가 실제 발행 실행을
+시작합니다. 따라서 릴리스 하나는 워크플로 실행 두 번으로 나뉩니다 — 커밋 푸시가
+태그를 만들고, 태그 푸시가 게이트와 발행을 수행합니다. 발행은 항상 태그에서
+실행되므로 npm provenance와 이미지 attestation에도 브랜치가 아닌 태그가 기록됩니다.
+
+`v*` 태그를 직접 푸시해도 같은 릴리스가 실행되며, 이때는 태그 생성 실행만 없습니다.
+커밋이 말하는 버전과 package.json 의 버전이 어긋나면 태그도 만들지 않고 아무것도
+발행하지 않은 채 실패합니다. 제목이 위 형식과 정확히 일치하지 않는 커밋은 릴리스로
+보지 않으며, 릴리스처럼 보이는 경우에만 경고를 남깁니다.
 
 서버 이미지는 GitHub Container Registry에 `linux/amd64`와 `linux/arm64`로 올라갑니다.
 
