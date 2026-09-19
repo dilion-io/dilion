@@ -15,10 +15,13 @@ Run build before typecheck: compatibility fixtures also consume the package's
 published ESM and CommonJS declaration entry points.
 
 The package is [@dilion-io/auth-js](packages/auth-js/README.md), published to npm
-under Apache-2.0 by `.github/workflows/release.yml` when a `v*` tag is pushed.
-One tag releases both the SDK and the server image, so the tag and
-`packages/auth-js/package.json` must carry the same version -- bump the package
-version in the commit you tag, or the release fails before publishing anything.
+under Apache-2.0 by `.github/workflows/release.yml`. A commit on the default
+branch whose subject is exactly `chore(release): v<semver>` creates the matching
+tag, and that tag push is what runs the release; pushing a `v*` tag by hand does
+the same thing without the tagging run. One release covers both the SDK and the
+server image, so the released
+version and `packages/auth-js/package.json` must agree -- bump the package
+version in the release commit, or nothing is tagged and nothing is published.
 Prereleases (`v0.1.0-rc1`) go to the npm `next` tag and never move `latest`.
 
 ## Daily compatibility monitoring

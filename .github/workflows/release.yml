@@ -1,15 +1,34 @@
 name: Release
 
-# One `v*` tag releases both artifacts: the npm package and the server image.
+# One version releases both artifacts: the npm package and the server image.
 #
-#   git tag v0.1.0      && git push origin v0.1.0     # → latest / :latest
-#   git tag v0.1.0-rc1  && git push origin v0.1.0-rc1 # → next   / no :latest
+# Normal path -- commit the version bump, and the tag is created for you:
 #
-# A manual run is ALWAYS a rehearsal. Publishing is bound to a tag so that every
-# released version has one, and so that no button in the Actions UI can publish
-# by accident. To retry a failed publish, re-run the tag's workflow run.
+#   (bump js/packages/auth-js/package.json to 0.1.0-rc1)
+#   git commit -m 'chore(release): v0.1.0-rc1' && git push
+#
+# The subject line must be exactly `chore(release): v<semver>`. Anything else on
+# the default branch is ignored, with a warning if it looked like a release.
+#
+# Pushing a `v*` tag by hand does the same thing, minus the tag creation.
+#
+# A manual run is ALWAYS a rehearsal, so no button in the Actions UI can publish
+# by accident. To retry a failed release, re-run the workflow run: tagging and
+# npm publishing are both idempotent.
+#
+# A release therefore takes two runs, and that is deliberate:
+#
+#   run 1  (push to main)  chore(release): v0.0.2  ->  creates tag v0.0.2
+#   run 2  (push of tag)   v0.0.2                  ->  gates, npm, image
+#
+# The tag is pushed by a GitHub App installation token, which -- unlike
+# GITHUB_TOKEN, whose events GitHub suppresses to prevent loops -- does start
+# run 2. Splitting it this way means there is exactly one path that publishes,
+# and it always runs from the tag, so npm provenance and the image attestation
+# record refs/tags/v0.0.2 rather than a branch.
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -24,10 +43,19 @@ concurrency:
 jobs:
   version:
     name: Resolve release version
+    # Ordinary pushes to the default branch skip the whole workflow rather than
+    # burning a runner to decide they are not a release.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref_type == 'tag' ||
+      startsWith(github.event.head_commit.message, 'chore(release): v')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      # tag | release | rehearse | none
+      mode: ${{ steps.v.outputs.mode }}
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
       npm_tag: ${{ steps.v.outputs.npm_tag }}
       prerelease: ${{ steps.v.outputs.prerelease }}
       dry_run: ${{ steps.v.outputs.dry_run }}
@@ -38,29 +66,50 @@ jobs:
       - id: v
         env:
           EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          # Through the environment, never interpolated into the script: a commit
+          # subject is whatever the author typed.
+          COMMIT_SUBJECT: ${{ github.event.head_commit.message }}
         run: |
           pkg=js/packages/auth-js/package.json
           pkg_version="$(node -p "require('./$pkg').version")"
+          semver='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
 
-          if [ "$EVENT" = push ]; then
+          if [ "$EVENT" = workflow_dispatch ]; then
+            mode=rehearse
+            version="$pkg_version"
+            dry_run=true
+          elif [ "$REF_TYPE" = tag ]; then
+            # The tag exists: this run is the one that publishes.
+            mode=release
             version="${REF_NAME#v}"
             dry_run=false
           else
-            version="$pkg_version"
-            dry_run=true
+            subject="$(printf '%s' "$COMMIT_SUBJECT" | head -n1)"
+            # The job-level `if` only checked a prefix. Require the exact form
+            # here, and say so rather than releasing something unintended.
+            if ! printf '%s' "$subject" | grep -qE "^chore\(release\): v$semver$"; then
+              echo "mode=none" >> "$GITHUB_OUTPUT"
+              echo "::warning::'$subject' looks like a release commit but is not exactly 'chore(release): v<semver>', so nothing was released."
+              exit 0
+            fi
+            # A release commit only tags; the tag push starts the release.
+            mode=tag
+            version="$(printf '%s' "$subject" | sed -E 's/^chore\(release\): v//')"
+            dry_run=false
           fi
 
           # No build metadata: '+' is legal in semver but not in an OCI tag.
-          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
-            echo "::error::'$REF_NAME' is not a release version. Expected v<major>.<minor>.<patch>[-prerelease], for example v0.1.0 or v0.1.0-rc1."
+          if ! printf '%s' "$version" | grep -qE "^$semver$"; then
+            echo "::error::'$version' is not a release version. Expected <major>.<minor>.<patch>[-prerelease], for example v0.1.0 or v0.1.0-rc1."
             exit 1
           fi
 
-          # One tag releases both artifacts, so the SDK version must BE the tagged
-          # version. Bump package.json in the commit you tag.
+          # One version releases both artifacts, so the SDK version must BE the
+          # released version. Bump package.json in the same commit.
           if [ "$dry_run" = false ] && [ "$version" != "$pkg_version" ]; then
-            echo "::error::Tag $REF_NAME releases $version but $pkg is at $pkg_version. Bump the package version, commit, and re-tag."
+            echo "::error::Releasing $version, but $pkg is at $pkg_version. Bump the package version in the release commit so the image and the package agree."
             exit 1
           fi
 
@@ -71,7 +120,9 @@ jobs:
           esac
 
           {
+            echo "mode=$mode"
             echo "version=$version"
+            echo "tag=v$version"
             echo "npm_tag=$npm_tag"
             echo "prerelease=$prerelease"
             echo "dry_run=$dry_run"
@@ -80,18 +131,84 @@ jobs:
           {
             echo "## Release $version"
             echo
-            [ "$dry_run" = true ] && echo '> **Rehearsal.** Nothing is published; a real release comes from a `v*` tag.' && echo
+            case "$mode" in
+              tag)      echo '> Tagging only. Publishing happens in the run that this tag push starts.' ;;
+              release)  echo '> Publishing from the tag.' ;;
+              rehearse) echo '> **Rehearsal.** Nothing is tagged and nothing is published; a real release comes from a `chore(release): v<semver>` commit.' ;;
+            esac
+            echo
             echo "| | |"
             echo "| --- | --- |"
             echo "| Version | \`$version\` |"
+            echo "| Tag | \`v$version\` |"
             echo "| Prerelease | $prerelease |"
             echo "| npm dist-tag | \`$npm_tag\` |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Only a release commit reaches this job; a tag push skips straight to
+  # publishing. The tag push this job makes is what starts that run.
+  tag:
+    name: Tag ${{ needs.version.outputs.tag }}
+    needs: version
+    if: needs.version.outputs.mode == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # GITHUB_TOKEN cannot be used here: GitHub suppresses the events its
+      # pushes create, so the tag would sit there and never release. An App
+      # installation token does start the run, is minted per job, expires in an
+      # hour, and is revoked when the job ends. Scoped to contents -- writing a
+      # ref is all it does.
+      - uses: actions/create-github-app-token@v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Credentials are persisted here, unlike every other job: the push needs
+      # them. A shallow checkout is enough -- the tag is written at the commit
+      # this run was triggered by, and the existence check is a remote lookup.
+      - uses: actions/checkout@v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Create and push the release tag
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          git config user.name 'dilion-release[bot]'
+          git config user.email 'dilion-bot@dilion.io'
+
+          # Ask the remote what the tag points at today. For an annotated tag
+          # ls-remote reports both the tag object and, as `^{}`, the commit it
+          # wraps; the commit is what we want to compare.
+          refs="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+          target="$(printf '%s\n' "$refs" | awk -v r="refs/tags/$TAG^{}" '$2 == r { print $1 }')"
+          if [ -z "$target" ]; then
+            target="$(printf '%s\n' "$refs" | awk -v r="refs/tags/$TAG" '$2 == r { print $1 }')"
+          fi
+
+          if [ -n "$target" ]; then
+            # Re-running a release lands here and must not fail.
+            if [ "$target" = "$SHA" ]; then
+              echo "::notice::$TAG already points at $SHA; leaving it alone. Re-run the tag's own workflow run to retry publishing."
+              exit 0
+            fi
+            echo "::error::$TAG already exists and points at $target, not $SHA. Delete the tag or release a new version."
+            exit 1
+          fi
+
+          git tag -a "$TAG" -m "$TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+          echo "::notice::Created $TAG at $SHA. The release runs in the workflow run that tag push starts."
+
   npm:
     name: npm — @dilion-io/auth-js
     needs: version
+    if: needs.version.outputs.mode == 'release' || needs.version.outputs.mode == 'rehearse'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -194,6 +311,7 @@ jobs:
   docker:
     name: Image — ghcr.io/${{ github.repository }}
     needs: version
+    if: needs.version.outputs.mode == 'release' || needs.version.outputs.mode == 'rehearse'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -219,6 +337,12 @@ jobs:
 
       # No QEMU: the Dockerfile cross-compiles from the build platform instead.
 
+      # GITHUB_TOKEN on purpose, and not the release App's token: GHCR does not
+      # accept GitHub App installation tokens. docker login appears to succeed
+      # with one and the push is then denied. GitHub has acknowledged this and
+      # it is still open (community discussion 171423). Revisit when that is
+      # fixed; until then this is the only token GHCR takes here, and it needs
+      # no secret of ours -- packages:write on this job is the whole grant.
       - uses: docker/login-action@v4.6.0
         if: needs.version.outputs.dry_run == 'false'
         with:
