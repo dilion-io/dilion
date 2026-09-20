@@ -454,7 +454,11 @@ func (a *api) opaqueLoginFinish(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		claims, err := a.tokens.Verify(ctx, token.Token)
+		ts, err := a.tokensFor(ctx)
+		if err != nil {
+			return opaqueDB(err)
+		}
+		claims, err := ts.Verify(ctx, token.Token)
 		if err != nil {
 			return opaqueDB(err)
 		}
@@ -490,7 +494,11 @@ func (m *Mount) WithOpaqueSessionKey(ctx context.Context, bearer, keyID string, 
 	if _, err := uuid.Parse(keyID); err != nil {
 		return opaqueInvalid()
 	}
-	claims, err := a.tokens.Verify(ctx, bearer)
+	ts, err := a.tokensFor(ctx)
+	if err != nil {
+		return err
+	}
+	claims, err := ts.Verify(ctx, bearer)
 	if err != nil {
 		return opaqueInvalid()
 	}

@@ -93,8 +93,9 @@ var oidcClaimsSupported = []string{
 // answer 404 feature_disabled). They are the real routes of oauthserver.go.
 // registration_endpoint is the one exception — upstream emits it only when
 // dynamic client registration can actually be used, and so does this.
-func (a *api) wellKnownOpenID(w http.ResponseWriter, _ *http.Request) error {
-	issuer := issuerURL(a.cfg)
+func (a *api) wellKnownOpenID(w http.ResponseWriter, r *http.Request) error {
+	ts, _ := a.tokensFor(r.Context()) // nil on an unconfigured mount: defaults below
+	issuer := issuerURL(a.cfg, ts)
 
 	resp := OpenIDConfigurationResponse{
 		Issuer:                issuer,
@@ -108,7 +109,7 @@ func (a *api) wellKnownOpenID(w http.ResponseWriter, _ *http.Request) error {
 		ResponseModesSupported:            []string{"query"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 		SubjectTypesSupported:             []string{"public"},
-		IDTokenSigningAlgValuesSupported:  a.signingAlgsSupported(),
+		IDTokenSigningAlgValuesSupported:  signingAlgsSupported(ts),
 		TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post", "none"},
 		CodeChallengeMethodsSupported:     []string{"S256", "plain"},
 		ClaimsSupported:                   oidcClaimsSupported,
@@ -128,10 +129,10 @@ func (a *api) wellKnownOpenID(w http.ResponseWriter, _ *http.Request) error {
 // ES256 whenever a public key set is published, HS256 whenever the legacy secret
 // is still accepted. Never empty — a discovery document without a signing
 // algorithm is not usable, so an unconfigured mount advertises ES256.
-func (a *api) signingAlgsSupported() []string {
+func signingAlgsSupported(ts *TokenService) []string {
 	var algs []string
-	if a.tokens != nil {
-		algs = a.tokens.validMethods()
+	if ts != nil {
+		algs = ts.validMethods()
 	}
 	if len(algs) == 0 {
 		algs = []string{AlgES256}

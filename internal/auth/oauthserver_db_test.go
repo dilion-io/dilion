@@ -482,8 +482,8 @@ func TestOAuthServerAuthorizationCodeFlowIssuesVerifiableTokens(t *testing.T) {
 	if idClaims["email"] != "flow@example.com" {
 		t.Errorf("id_token email = %v", idClaims["email"])
 	}
-	if idClaims["iss"] != issuerURL(env.cfg) {
-		t.Errorf("id_token iss = %v, want %q", idClaims["iss"], issuerURL(env.cfg))
+	if idClaims["iss"] != issuerURL(env.cfg, nil) {
+		t.Errorf("id_token iss = %v, want %q", idClaims["iss"], issuerURL(env.cfg, nil))
 	}
 	if _, ok := idClaims["auth_time"]; !ok {
 		t.Error("id_token is missing auth_time")
@@ -1085,7 +1085,7 @@ func TestOAuthServerDisabledReturns404(t *testing.T) {
 
 func TestOAuthServerWellKnownMetadata(t *testing.T) {
 	env := newOAuthEnv(t, nil)
-	issuer := issuerURL(env.cfg)
+	issuer := issuerURL(env.cfg, nil)
 
 	for _, path := range []string{"/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"} {
 		doc := decodeInto[OpenIDConfigurationResponse](t,

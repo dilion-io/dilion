@@ -4,6 +4,7 @@ package ports
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -144,11 +145,14 @@ const DefaultInstanceID = "default"
 // single static instance; embedders
 // inject their own resolver via dilion.WithInstanceResolver and select the
 // instance per request with ContextWithInstance. There is NO built-in HTTP
-// routing or token↔instance binding — how an instance is chosen for a request,
-// and how credentials are bound to instances, is the embedder's responsibility.
+// routing — how an instance is chosen for a request is the embedder's
+// responsibility. Tokens, however, ARE bound to their instance: every instance
+// signs and verifies with its own JWT key material (see JWT), so an access
+// token minted for one instance is rejected by every other one, including
+// third-party verifiers such as PostgREST that trust that instance's JWKS.
 //
 // Results for the same instanceID should be stable; Dilion may cache
-// per-instance resources (engines, workers) keyed by instanceID.
+// per-instance resources (engines, workers, token services) keyed by instanceID.
 type InstanceResolver interface {
 	Pool(ctx context.Context, instanceID string) (*pgxpool.Pool, error)
 	KMS(ctx context.Context, instanceID string) (KMS, error)
@@ -160,8 +164,24 @@ type InstanceResolver interface {
 	// Writes of undefined keys are rejected and the stored hint always comes
 	// from the definition. nil = free-form fields (single-instance default).
 	PIIFields(ctx context.Context, instanceID string) ([]byte, error)
+	// JWT returns the instance's access-token key material. Every instance
+	// MUST have its own: sharing a secret or key set between instances lets a
+	// token issued by one instance pass verification at the other.
+	JWT(ctx context.Context, instanceID string) (JWTKeys, error)
 	// List enumerates known instance ids (background worker scheduling).
 	List(ctx context.Context) ([]string, error)
+}
+
+// JWTKeys is one instance's access-token key material, in the same shape as
+// the /auth/v1 environment: Keys is the GOTRUE_JWT_KEYS JSON array of private
+// JWKs (ES256 with a published JWKS), Secret the GOTRUE_JWT_SECRET HS256 secret
+// (the developer path, and the verify-only legacy key during a rotation), and
+// Issuer the `iss` claim minted into and required of this instance's tokens.
+// At least one of Keys/Secret must be set.
+type JWTKeys struct {
+	Keys   json.RawMessage
+	Secret string
+	Issuer string
 }
 
 type instanceCtxKey struct{}

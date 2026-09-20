@@ -7,20 +7,28 @@
 // ports.DefaultInstanceID, served by StaticResolver, and behave exactly as they
 // did before instances existed.
 //
-// Instance selection is entirely the embedder's business: there is no built-in
-// HTTP routing and no token↔instance binding. The embedder puts the instance id
-// on the context with ports.ContextWithInstance (typically in its own
-// middleware) and every Dilion component below resolves its resources from that
-// context through a Registry.
+// Instance selection is the embedder's business: there is no built-in HTTP
+// routing. The embedder puts the instance id on the context with
+// ports.ContextWithInstance (typically in its own middleware) and every Dilion
+// component below resolves its resources from that context through a Registry.
 //
-// Caching: constructed per-instance objects (today: the privacy Engine) are
-// cached by instance id and never invalidated. A resolver must therefore return
-// stable results for a given id — changing the pool, KMS, policy or PII field
-// definitions behind an id requires a restart.
+// Token↔instance binding, on the other hand, is Dilion's: each instance signs
+// and verifies access tokens with its own key material (InstanceResolver.JWT),
+// so a token minted for instance A fails verification at instance B — and at
+// anything else (PostgREST, a resource server) that trusts B's JWKS or secret.
+// A claim-based check could never give that guarantee, because verifiers
+// outside Dilion's middleware only look at the signature.
+//
+// Caching: constructed per-instance objects (the privacy Engine and the token
+// service) are cached by instance id and never invalidated. A resolver must
+// therefore return stable results for a given id — changing the pool, KMS,
+// keys, policy or PII field definitions behind an id requires a restart.
 package instances
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +36,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/hooks"
 	"github.com/dilion-io/dilion/internal/privacy"
 	"github.com/dilion-io/dilion/ports"
@@ -41,12 +50,14 @@ type PoolFunc func(context.Context) (*pgxpool.Pool, error)
 // ---- StaticResolver ----
 
 // StaticResolver is a ports.InstanceResolver over one fixed set of resources.
-// It backs the single-instance default: WithPool/WithDSN, WithKMS,
-// WithPolicyYAML and WithPIIFieldsYAML are wrapped under ports.DefaultInstanceID.
+// It backs the single-instance default: WithPool/WithDSN, WithKMS, the JWT
+// settings of auth.Config, WithPolicyYAML and WithPIIFieldsYAML are wrapped
+// under ports.DefaultInstanceID.
 type StaticResolver struct {
 	id     string
 	pool   *pgxpool.Pool
 	kms    ports.KMS
+	jwt    ports.JWTKeys
 	policy []byte
 	pii    []byte
 }
@@ -56,11 +67,11 @@ var _ ports.InstanceResolver = (*StaticResolver)(nil)
 // NewStaticResolver builds a resolver serving exactly one instance id. An empty
 // id defaults to ports.DefaultInstanceID. policyYAML and piiFieldsYAML may be
 // nil (built-in policies / free-form PII fields).
-func NewStaticResolver(id string, pool *pgxpool.Pool, kms ports.KMS, policyYAML, piiFieldsYAML []byte) *StaticResolver {
+func NewStaticResolver(id string, pool *pgxpool.Pool, kms ports.KMS, jwt ports.JWTKeys, policyYAML, piiFieldsYAML []byte) *StaticResolver {
 	if id == "" {
 		id = ports.DefaultInstanceID
 	}
-	return &StaticResolver{id: id, pool: pool, kms: kms, policy: policyYAML, pii: piiFieldsYAML}
+	return &StaticResolver{id: id, pool: pool, kms: kms, jwt: jwt, policy: policyYAML, pii: piiFieldsYAML}
 }
 
 // ID is the single instance id this resolver serves.
@@ -85,6 +96,13 @@ func (s *StaticResolver) KMS(_ context.Context, instanceID string) (ports.KMS, e
 		return nil, err
 	}
 	return s.kms, nil
+}
+
+func (s *StaticResolver) JWT(_ context.Context, instanceID string) (ports.JWTKeys, error) {
+	if err := s.check(instanceID); err != nil {
+		return ports.JWTKeys{}, err
+	}
+	return s.jwt, nil
 }
 
 func (s *StaticResolver) PolicyYAML(_ context.Context, instanceID string) ([]byte, error) {
@@ -114,6 +132,10 @@ var ErrUnknownInstance = errors.New("instances: unknown instance")
 // resolver instead.
 type Config struct {
 	Resolver ports.InstanceResolver
+	// AuthConfig supplies the deployment-wide token settings (TTL, audience)
+	// of every instance's token service; the key material comes from the
+	// resolver. nil means auth.DefaultConfig().
+	AuthConfig *auth.Config
 	// Hooks, Clock, Connectors and TombstoneKey are deployment-wide and shared
 	// by every instance's privacy Engine.
 	Hooks        *hooks.Registry
@@ -131,7 +153,14 @@ type Registry struct {
 
 	mu      sync.Mutex
 	engines map[string]*privacy.Engine
+	tokens  map[string]*auth.TokenService
+	// keyOwner maps a fingerprint of key material to the first instance seen
+	// with it, to warn when two instances share keys (which would let one
+	// instance's tokens pass verification at the other).
+	keyOwner map[string]string
 }
+
+var _ ports.TokenVerifier = (*Registry)(nil)
 
 // New builds a Registry over a resolver.
 func New(cfg Config) (*Registry, error) {
@@ -142,7 +171,13 @@ func New(cfg Config) (*Registry, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Registry{cfg: cfg, log: log.With("component", "instances"), engines: map[string]*privacy.Engine{}}, nil
+	return &Registry{
+		cfg:      cfg,
+		log:      log.With("component", "instances"),
+		engines:  map[string]*privacy.Engine{},
+		tokens:   map[string]*auth.TokenService{},
+		keyOwner: map[string]string{},
+	}, nil
 }
 
 // Resolver exposes the underlying resolver.
@@ -243,6 +278,57 @@ func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, e
 	}
 	r.engines[id] = e
 	return e, nil
+}
+
+// Tokens returns the token service of the instance selected on ctx,
+// constructing it on first use. Its signature is auth.TokenFunc.
+func (r *Registry) Tokens(ctx context.Context) (*auth.TokenService, error) {
+	return r.TokensFor(ctx, Current(ctx))
+}
+
+// TokensFor returns an explicit instance's token service. Services are cached
+// per instance id forever, like engines.
+func (r *Registry) TokensFor(ctx context.Context, id string) (*auth.TokenService, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ts, ok := r.tokens[id]; ok {
+		return ts, nil
+	}
+	keys, err := r.cfg.Resolver.JWT(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("instances: JWT keys for instance %q: %w", id, err)
+	}
+	ts, err := auth.NewTokenServiceWithKeys(r.cfg.AuthConfig, keys)
+	if err != nil {
+		return nil, fmt.Errorf("instances: token service for instance %q: %w", id, err)
+	}
+	fp := keyFingerprint(keys)
+	if owner, dup := r.keyOwner[fp]; dup && owner != id {
+		r.log.Warn("instances: two instances share JWT key material; "+
+			"tokens of one verify at the other", "instance", id, "other", owner)
+	} else if !dup {
+		r.keyOwner[fp] = id
+	}
+	r.tokens[id] = ts
+	return ts, nil
+}
+
+// Verify checks a token against the key material of the instance selected on
+// ctx (ports.TokenVerifier for internal/api).
+func (r *Registry) Verify(ctx context.Context, token string) (*ports.Claims, error) {
+	ts, err := r.Tokens(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ts.Verify(ctx, token)
+}
+
+func keyFingerprint(k ports.JWTKeys) string {
+	h := sha256.New()
+	h.Write([]byte(k.Secret))
+	h.Write([]byte{0})
+	h.Write(k.Keys)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // PrivacyService is the api.ServiceProvider form of Engine.

@@ -223,7 +223,7 @@ func (a *api) oauthAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request
 	// OIDC: an `openid` scope earns an ID token, signed ES256 like the access
 	// token but audienced at the CLIENT, not at `authenticated`.
 	if hasScope(authorization.GetScopeList(), ScopeOpenID) {
-		idToken, err := a.signIDToken(idTokenParams{
+		idToken, err := a.signIDToken(ctx, idTokenParams{
 			User:     grantUser,
 			ClientID: client.ID,
 			Nonce:    deref(authorization.Nonce),
@@ -278,8 +278,12 @@ func (a *api) grantOAuthSession(ctx context.Context, tx querier, u *User, r *htt
 // the token was issued to, `scope` the scopes it may exercise — /oauth/userinfo
 // and any resource server read them.
 func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, sessionID, clientID, scope string) (string, time.Time, error) {
+	ts, terr := a.tokensFor(ctx)
+	if terr != nil {
+		return "", time.Time{}, terr
+	}
 	now := a.now()
-	expiresAt := now.Add(a.tokens.TTL())
+	expiresAt := now.Add(ts.TTL())
 
 	claims, cerr := findAMRClaims(ctx, q, sessionID)
 	if cerr != nil {
@@ -310,7 +314,7 @@ func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, ses
 		aud = AudienceAuthenticated
 	}
 
-	token, err := a.tokens.Sign(ctx, ports.Claims{
+	token, err := ts.Sign(ctx, ports.Claims{
 		Subject:   u.ID,
 		Role:      role,
 		Email:     u.Email,
@@ -532,8 +536,12 @@ const idTokenTTL = time.Hour
 // Claims follow the granted scopes: `sub`/`aud`/`iss`/`iat`/`exp`/`auth_time`
 // always, email* with the email scope, phone_number* with the phone scope, and
 // name/picture/preferred_username/updated_at with the profile scope.
-func (a *api) signIDToken(p idTokenParams) (string, error) {
-	if a.tokens == nil || a.tokens.sign == nil {
+func (a *api) signIDToken(ctx context.Context, p idTokenParams) (string, error) {
+	ts, err := a.tokensFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	if ts.sign == nil {
 		return "", errIDTokenRequiresES256
 	}
 
@@ -555,7 +563,7 @@ func (a *api) signIDToken(p idTokenParams) (string, error) {
 			// DEVIATION: upstream emits config.JWT.Issuer, which may be empty.
 			// `iss` is REQUIRED by OIDC Core §2, so Dilion always emits the
 			// discovery document's issuer (JWT_ISSUER, else SiteURL+/auth/v1).
-			Issuer: issuerURL(a.cfg),
+			Issuer: issuerURL(a.cfg, ts),
 		},
 		AuthTime: authTime.Unix(),
 		ClientID: p.ClientID,
@@ -592,8 +600,8 @@ func (a *api) signIDToken(p idTokenParams) (string, error) {
 	}
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	tok.Header["kid"] = a.tokens.sign.kid
-	return tok.SignedString(a.tokens.sign.priv)
+	tok.Header["kid"] = ts.sign.kid
+	return tok.SignedString(ts.sign.priv)
 }
 
 // metaString reads a string out of a user's metadata map.

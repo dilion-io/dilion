@@ -22,7 +22,10 @@
 // A Dilion "instance" is a whole isolated database (auth.* + dilion_*). The
 // built-in daemon runs exactly one. Embedders that need several inject a
 // ports.InstanceResolver and select the instance per request themselves —
-// Dilion ships no routing rule and no token↔instance binding:
+// Dilion ships no routing rule. Tokens are bound to their instance by key
+// material: the resolver hands every instance its own JWT keys, so a token of
+// one instance is rejected by every other (and by any PostgREST or resource
+// server that trusts the other's JWKS):
 //
 //	srv, _ := dilion.NewServer(dilion.WithInstanceResolver(myResolver))
 //	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,15 +197,18 @@ func WithPIIFieldsYAML(b []byte) Option {
 }
 
 // WithInstanceResolver turns the server multi-instance: every request resolves
-// its database, KMS, policy and PII field definitions from r, keyed by the
-// instance id the embedder puts on the context with ports.ContextWithInstance
-// (typically in its own middleware). Dilion provides no HTTP routing and no
-// token↔instance binding — choosing the instance for a request, and binding
-// credentials to instances, is the embedder's responsibility.
+// its database, KMS, JWT keys, policy and PII field definitions from r, keyed
+// by the instance id the embedder puts on the context with
+// ports.ContextWithInstance (typically in its own middleware). Dilion provides
+// no HTTP routing — choosing the instance for a request is the embedder's
+// responsibility — but it does bind tokens to instances: each instance signs
+// and verifies with the keys r returns for it, so those keys must differ per
+// instance (a shared key is logged as a warning).
 //
 // Without this option the server is single-instance: WithPool/WithDSN,
-// WithKMS, WithPolicyYAML and WithPIIFieldsYAML are wrapped in a static
-// resolver under ports.DefaultInstanceID and nothing else changes.
+// WithKMS, the JWT settings of the auth configuration, WithPolicyYAML and
+// WithPIIFieldsYAML are wrapped in a static resolver under
+// ports.DefaultInstanceID and nothing else changes.
 //
 // A resolver must return stable results per instance id: constructed
 // per-instance objects are cached for the lifetime of the server.
@@ -246,7 +252,6 @@ type Server struct {
 	mailer    ports.Mailer
 	sms       ports.SMSSender
 	kms       ports.KMS
-	tokens    *auth.TokenService
 	instances *instances.Registry
 	authz     ports.Authorizer
 	audit     ports.AuditSink
@@ -365,14 +370,14 @@ func NewServer(opts ...Option) (*Server, error) {
 	if authCfg.SMS.Sender == nil {
 		authCfg.SMS.Sender = s.sms
 	}
-	// ES256 with a published JWKS when auth.Config.JWT.Keys carries a signing
-	// key, HS256 with the secret otherwise (internal/auth.NewTokenService).
-	tokens, err := auth.NewTokenService(authCfg)
-	if err != nil {
+	// The JWT key material is validated up front so a bad key set fails
+	// NewServer rather than the first request. Per instance, ES256 with a
+	// published JWKS when the key set carries a signing key, HS256 with the
+	// secret otherwise (internal/auth.NewTokenService).
+	if _, err := auth.NewTokenService(authCfg); err != nil {
 		s.closeOwnedPool()
 		return nil, err
 	}
-	s.tokens = tokens
 
 	// Tombstone identifiers must not be derivable without the deployment key,
 	// and must not be the KEK itself (§2.10).
@@ -388,10 +393,15 @@ func NewServer(opts ...Option) (*Server, error) {
 	resolver := cfg.resolver
 	if resolver == nil {
 		resolver = instances.NewStaticResolver(ports.DefaultInstanceID,
-			s.pool, s.kms, cfg.policyYAML, cfg.piiFieldsYAML)
+			s.pool, s.kms, ports.JWTKeys{
+				Keys:   authCfg.JWT.Keys.JSON(),
+				Secret: authCfg.JWT.Secret,
+				Issuer: authCfg.JWT.Issuer,
+			}, cfg.policyYAML, cfg.piiFieldsYAML)
 	}
 	registry, err := instances.New(instances.Config{
 		Resolver:     resolver,
+		AuthConfig:   authCfg,
 		Hooks:        s.hooks,
 		Clock:        cfg.clock,
 		Connectors:   cfg.connectors,
@@ -462,10 +472,11 @@ func (s *Server) buildRouter() *chi.Mux {
 		s.authMount = auth.Register(r, auth.Deps{
 			// Per-request database: the instance selected with
 			// ports.ContextWithInstance, or the only one.
-			Pools:  auth.PoolFunc(s.instances.Pool),
-			Tokens: s.tokens,
-			Mailer: s.mailer,
-			Hooks:  s.hooks,
+			Pools: auth.PoolFunc(s.instances.Pool),
+			// Per-request token service: the selected instance's own keys.
+			TokensFor: s.instances.Tokens,
+			Mailer:    s.mailer,
+			Hooks:     s.hooks,
 			// Site URL, allow list, rate limits, session policy, ... (§2.2).
 			Config: s.cfg.authConfig,
 			// Lets /auth/v1/admin/* accept a user token carrying `users.admin`
@@ -481,7 +492,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	humaAPI := humachi.New(r, s.humaConfig())
 	deps := api.Deps{
 		Pools:    api.PoolFunc(s.instances.Pool),
-		Verifier: s.tokens,
+		Verifier: s.instances,
 		Authz:    s.authz,
 		Audit:    s.audit,
 	}

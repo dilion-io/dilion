@@ -159,6 +159,21 @@ type JWKSet struct {
 // Len reports how many keys were configured.
 func (s JWKSet) Len() int { return len(s.Keys) }
 
+// JSON renders the set back into the GOTRUE_JWT_KEYS wire form — a JSON array
+// of the keys exactly as they were configured, in order — which is the shape
+// ports.JWTKeys.Keys carries per instance. nil for an empty set.
+func (s JWKSet) JSON() json.RawMessage {
+	if len(s.Order) == 0 {
+		return nil
+	}
+	items := make([]json.RawMessage, 0, len(s.Order))
+	for _, kid := range s.Order {
+		items = append(items, s.Keys[kid].Raw)
+	}
+	out, _ := json.Marshal(items)
+	return out
+}
+
 // SigningKey returns the single private key whose key_ops contains "sign" —
 // upstream's active `kid`. Absent when no key set is configured (HS256 mode).
 func (s JWKSet) SigningKey() (JWK, bool) {
@@ -179,7 +194,10 @@ type JWTConfig struct {
 	// AdminRoles mirrors GOTRUE_JWT_ADMIN_ROLES; roles admitted to /admin/*
 	// unconditionally (default ["service_role", "supabase_admin"]).
 	AdminRoles []string `json:"admin_roles"`
-	// Issuer mirrors GOTRUE_JWT_ISSUER; empty means no `iss` claim.
+	// Issuer mirrors GOTRUE_JWT_ISSUER; empty means no `iss` claim. When set
+	// it is minted into every token AND required by Verify (a token with a
+	// different or missing `iss` is rejected). Multi-instance deployments
+	// supply it per instance through ports.JWTKeys.
 	Issuer string `json:"issuer"`
 	// KeyID mirrors GOTRUE_JWT_KEY_ID. Advisory: the active key is the one whose
 	// key_ops contains "sign" (see JWKSet.SigningKey).
@@ -742,7 +760,7 @@ func LoadConfig() (*Config, error) {
 	c.JWT.KeyID = envString("JWT_KEY_ID", c.JWT.KeyID)
 	c.JWT.Secret = envString("JWT_SECRET", c.JWT.Secret)
 	if raw, ok := lookupEnv("JWT_KEYS"); ok && strings.TrimSpace(raw) != "" {
-		keys, err := parseJWKSet(raw)
+		keys, err := ParseJWKSet(raw)
 		if err != nil {
 			fail("JWT_KEYS: %v", err)
 		} else {
@@ -1182,7 +1200,9 @@ func compileGlob(pattern string) (*globPattern, error) {
 // ---- parsing helpers -------------------------------------------------------
 
 // parseJWKSet decodes GOTRUE_JWT_KEYS: a JSON array of private JWKs.
-func parseJWKSet(raw string) (JWKSet, error) {
+// ParseJWKSet decodes the GOTRUE_JWT_KEYS / ports.JWTKeys.Keys form: a JSON
+// array of private JWKs, each with a unique kid.
+func ParseJWKSet(raw string) (JWKSet, error) {
 	var items []json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return JWKSet{}, fmt.Errorf("expected a JSON array of JWKs: %w", err)

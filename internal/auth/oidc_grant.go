@@ -184,10 +184,9 @@ func (a *api) userFromBearer(r *http.Request) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	claims, verr := a.tokens.Verify(r.Context(), token)
+	claims, verr := a.verifyToken(r.Context(), token)
 	if verr != nil {
-		return nil, forbiddenError(ErrorCodeBadJWT,
-			"invalid JWT: unable to parse or verify signature, %v", verr)
+		return nil, verr
 	}
 	pool, perr := a.db(r.Context())
 	if perr != nil {

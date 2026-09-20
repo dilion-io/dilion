@@ -61,10 +61,16 @@ type Deps struct {
 	Pool *pgxpool.Pool
 	// Pools resolves the database per request and takes precedence over Pool.
 	// Multi-instance deployments set it to instances.Registry.Pool.
-	Pools  PoolFunc
+	Pools PoolFunc
+	// Tokens is the fixed token service of a single-instance deployment.
 	Tokens *TokenService
-	Mailer ports.Mailer
-	Hooks  *hooks.Registry
+	// TokensFor resolves the token service per request and takes precedence
+	// over Tokens. Multi-instance deployments set it to
+	// instances.Registry.Tokens, so every instance signs and verifies with
+	// its own key material.
+	TokensFor TokenFunc
+	Mailer    ports.Mailer
+	Hooks     *hooks.Registry
 
 	// Config is the /auth/v1 configuration (conf.go). It is optional: when nil
 	// DefaultConfig() is used, which keeps every embedder that predates the
@@ -95,7 +101,7 @@ type Deps struct {
 type api struct {
 	cfg    *Config
 	pools  PoolFunc
-	tokens *TokenService
+	tokens TokenFunc
 	mailer ports.Mailer
 	hooks  *hooks.Registry
 	authz  ports.Authorizer
@@ -112,6 +118,10 @@ func newAPI(d Deps) *api {
 	if pools == nil {
 		pools = StaticPool(d.Pool)
 	}
+	tokens := d.TokensFor
+	if tokens == nil {
+		tokens = StaticTokens(d.Tokens)
+	}
 	cfg := d.Config
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -123,7 +133,7 @@ func newAPI(d Deps) *api {
 	a := &api{
 		cfg:    cfg,
 		pools:  pools,
-		tokens: d.Tokens,
+		tokens: tokens,
 		mailer: d.Mailer,
 		hooks:  d.Hooks,
 		authz:  d.Authz,
@@ -288,10 +298,10 @@ func (a *api) health(w http.ResponseWriter, _ *http.Request) error {
 // leave the server, and that is the same answer upstream gives. Private key
 // material is structurally impossible to leak here: TokenService.PublicJWKS
 // returns PublicJWK values, which have no field for the private scalar `d`.
-func (a *api) jwks(w http.ResponseWriter, _ *http.Request) error {
+func (a *api) jwks(w http.ResponseWriter, r *http.Request) error {
 	keys := []PublicJWK{}
-	if a.tokens != nil {
-		keys = a.tokens.PublicJWKS()
+	if ts, err := a.tokensFor(r.Context()); err == nil {
+		keys = ts.PublicJWKS()
 	}
 	// Upstream's cache header, verbatim.
 	w.Header().Set("Cache-Control", "public, max-age=600")
@@ -376,10 +386,9 @@ func (a *api) requireAuthentication(next http.Handler) http.Handler {
 			a.writeError(r, w, err)
 			return
 		}
-		claims, verr := a.tokens.Verify(r.Context(), token)
+		claims, verr := a.verifyToken(r.Context(), token)
 		if verr != nil {
-			a.writeError(r, w, forbiddenError(ErrorCodeBadJWT,
-				"invalid JWT: unable to parse or verify signature, %v", verr))
+			a.writeError(r, w, verr)
 			return
 		}
 		if _, perr := uuid.Parse(claims.Subject); perr != nil {
@@ -427,10 +436,9 @@ func (a *api) requireAdmin(next http.Handler) http.Handler {
 			a.writeError(r, w, err)
 			return
 		}
-		claims, verr := a.tokens.Verify(r.Context(), token)
+		claims, verr := a.verifyToken(r.Context(), token)
 		if verr != nil {
-			a.writeError(r, w, forbiddenError(ErrorCodeBadJWT,
-				"invalid JWT: unable to parse or verify signature, %v", verr))
+			a.writeError(r, w, verr)
 			return
 		}
 		if claims.Role != RoleServiceRole && !a.userIsAdmin(r, claims) {
@@ -557,8 +565,12 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 // verified against it. q must be able to read that table; it is the caller's
 // transaction wherever one is open.
 func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID string) (string, time.Time, error) {
+	ts, terr := a.tokensFor(ctx)
+	if terr != nil {
+		return "", time.Time{}, terr
+	}
 	now := a.now()
-	expiresAt := now.Add(a.tokens.TTL())
+	expiresAt := now.Add(ts.TTL())
 
 	extra := map[string]any{
 		"phone":         u.Phone,
@@ -639,7 +651,7 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		extra = out.Claims
 	}
 
-	token, err := a.tokens.Sign(ctx, ports.Claims{
+	token, err := ts.Sign(ctx, ports.Claims{
 		Subject:   u.ID,
 		Role:      role,
 		Email:     u.Email,
@@ -697,10 +709,14 @@ func (a *api) buildSessionResponse(ctx context.Context, q querier, u *User, sess
 	if err != nil {
 		return nil, err
 	}
+	ts, err := a.tokensFor(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return &AccessTokenResponse{
 		Token:        accessToken,
 		TokenType:    "bearer",
-		ExpiresIn:    int(a.tokens.TTL().Seconds()),
+		ExpiresIn:    int(ts.TTL().Seconds()),
 		ExpiresAt:    expiresAt.Unix(),
 		RefreshToken: refresh,
 		User:         u,
@@ -748,4 +764,50 @@ func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 		return internalServerError("Database error committing transaction").withInternal(err)
 	}
 	return nil
+}
+
+// ---- per-request token service ---------------------------------------------
+
+// TokenFunc resolves the token service of the instance selected on ctx. It is
+// the token-side twin of PoolFunc: multi-instance deployments hand in
+// instances.Registry.Tokens, single-instance ones StaticTokens.
+type TokenFunc func(context.Context) (*TokenService, error)
+
+// StaticTokens is the TokenFunc of a single-instance mount. A nil service is
+// allowed (read-only test mounts); tokensFor then reports it as an error.
+func StaticTokens(ts *TokenService) TokenFunc {
+	return func(context.Context) (*TokenService, error) {
+		if ts == nil {
+			return nil, errors.New("auth: no token service configured")
+		}
+		return ts, nil
+	}
+}
+
+// tokensFor resolves the token service for ctx. A resolution failure is an
+// internal error (misconfigured instance), never a bad-JWT 403: the token was
+// not even looked at.
+func (a *api) tokensFor(ctx context.Context) (*TokenService, error) {
+	ts, err := a.tokens(ctx)
+	if err != nil {
+		return nil, internalServerError("Token service unavailable").withInternal(err)
+	}
+	return ts, nil
+}
+
+// verifyToken verifies a bearer token against the token service of the
+// instance on ctx. The instance's key material is what binds the token to it:
+// a token minted by another instance fails the signature check here exactly as
+// it fails at any third-party verifier trusting this instance's keys.
+func (a *api) verifyToken(ctx context.Context, token string) (*ports.Claims, error) {
+	ts, err := a.tokensFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	claims, verr := ts.Verify(ctx, token)
+	if verr != nil {
+		return nil, forbiddenError(ErrorCodeBadJWT,
+			"invalid JWT: unable to parse or verify signature, %v", verr)
+	}
+	return claims, nil
 }

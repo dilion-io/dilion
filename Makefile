@@ -57,6 +57,8 @@ test-db: up build vet ## 전체 테스트 (DB 통합 포함, -race). GOTEST_JSON
 	$(GOTEST_RUN) DILION_TEST_DB='$(DSN_BASE)/dilion_test_b' go test $(GOTEST_FLAGS) ./internal/auth/... $(GOTEST_PIPE)
 	$(GOTEST_RUN) DILION_TEST_DB=1 DILION_TEST_DB_DSN='$(DSN_BASE)/dilion_test_c' go test $(GOTEST_FLAGS) ./internal/privacy/... $(GOTEST_PIPE)
 	$(GOTEST_RUN) DILION_TEST_DB=1 go test $(GOTEST_FLAGS) ./internal/api/... ./internal/iam/... ./internal/audit/... $(GOTEST_PIPE)
+	$(GOTEST_RUN) DILION_TEST_DB=1 DILION_TEST_DB_DSN_H1='$(DSN_BASE)/dilion_test_h1' \
+		DILION_TEST_DB_DSN_H2='$(DSN_BASE)/dilion_test_h2' go test $(GOTEST_FLAGS) . $(GOTEST_PIPE)
 
 openapi: ## web/openapi.yaml 재생성 (huma → OpenAPI 3.1)
 	go run ./cmd/openapi

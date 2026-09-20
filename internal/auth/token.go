@@ -209,6 +209,32 @@ func NewTokenService(cfg *Config) (*TokenService, error) {
 	return s, nil
 }
 
+// NewTokenServiceWithKeys builds the token service of ONE instance: cfg
+// supplies the deployment-wide settings (TTL, audience) and keys the instance's
+// own key set, secret and issuer (ports.InstanceResolver.JWT). This is what
+// binds a token to its instance — two instances with different key material
+// cannot verify each other's tokens, whoever does the verifying.
+func NewTokenServiceWithKeys(cfg *Config, keys ports.JWTKeys) (*TokenService, error) {
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+	c := *cfg
+	c.JWT.Secret = keys.Secret
+	c.JWT.Issuer = keys.Issuer
+	c.JWT.Keys = JWKSet{}
+	if len(keys.Keys) > 0 {
+		set, err := ParseJWKSet(string(keys.Keys))
+		if err != nil {
+			return nil, fmt.Errorf("auth: JWT keys: %w", err)
+		}
+		c.JWT.Keys = set
+	}
+	if c.JWT.Keys.Len() == 0 && c.JWT.Secret == "" {
+		return nil, errors.New("auth: JWT keys: neither a key set nor a secret is configured")
+	}
+	return NewTokenService(&c)
+}
+
 // NewTokenServiceHS is the symmetric-only constructor: HS256 with the given
 // secret and every other setting at its default. It is the compatibility
 // shortcut for embedders and tests that predate the key-set configuration.
@@ -303,6 +329,10 @@ func (s *TokenService) Algorithm() string {
 	}
 	return ""
 }
+
+// Issuer is the `iss` claim this service mints and requires; empty when no
+// issuer is configured (then no `iss` is minted or checked).
+func (s *TokenService) Issuer() string { return s.issuer }
 
 // KeyID reports the `kid` of the active signing key, empty in HS256 mode.
 func (s *TokenService) KeyID() string {
@@ -423,17 +453,22 @@ func (s *TokenService) Sign(_ context.Context, c ports.Claims) (string, error) {
 // key set, HS256 against the legacy secret. An ES256 token naming a `kid` is
 // checked against that key alone; without a `kid` every configured key is tried,
 // which is what keeps a rotation working for tokens minted before the new key
-// existed. Every non-canonical claim is returned in Claims.Extra.
+// existed. When an issuer is configured the token must carry exactly that
+// `iss`. Every non-canonical claim is returned in Claims.Extra.
 func (s *TokenService) Verify(_ context.Context, token string) (*ports.Claims, error) {
 	methods := s.validMethods()
 	if len(methods) == 0 {
 		return nil, errors.New("auth: token service has no verification key")
 	}
 
-	parser := jwt.NewParser(
+	opts := []jwt.ParserOption{
 		jwt.WithValidMethods(methods),
 		jwt.WithTimeFunc(s.clock.Now),
-	)
+	}
+	if s.issuer != "" {
+		opts = append(opts, jwt.WithIssuer(s.issuer))
+	}
+	parser := jwt.NewParser(opts...)
 
 	var (
 		parsed  *jwt.Token
@@ -555,7 +590,10 @@ func peekHeader(token string) (alg, kid string) {
 // issuerURL is the issuer advertised by OIDC discovery: the configured
 // GOTRUE_JWT_ISSUER, or SiteURL + /auth/v1 — the Dilion equivalent of upstream's
 // API_EXTERNAL_URL + /auth/v1 default. The result never ends in a slash.
-func issuerURL(cfg *Config) string {
+func issuerURL(cfg *Config, tokens *TokenService) string {
+	if tokens != nil && tokens.issuer != "" {
+		return tokens.issuer
+	}
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}

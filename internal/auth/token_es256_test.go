@@ -54,7 +54,7 @@ func configWithKeys(t *testing.T, secret string, jwks ...string) *Config {
 	cfg := DefaultConfig()
 	cfg.JWT.Secret = secret
 	if len(jwks) > 0 {
-		set, err := parseJWKSet("[" + strings.Join(jwks, ",") + "]")
+		set, err := ParseJWKSet("[" + strings.Join(jwks, ",") + "]")
 		if err != nil {
 			t.Fatalf("parseJWKSet: %v", err)
 		}
@@ -532,5 +532,82 @@ func TestGenkeyOutputLoadsAsConfig(t *testing.T) {
 	}
 	if _, err := ts.Verify(context.Background(), token); err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// Two instances built from the same deployment config but their own key
+// material cannot verify each other's tokens — with a secret, with a key set,
+// and across the two. This is the property that binds a token to its instance
+// at every verifier, PostgREST included.
+func TestTokenServiceWithKeysBindsTokenToInstance(t *testing.T) {
+	base := DefaultConfig()
+	jwkA, _ := newTestJWK(t, "a-key", "sign", "verify")
+	jwkB, _ := newTestJWK(t, "b-key", "sign", "verify")
+	services := map[string]*TokenService{}
+	for name, keys := range map[string]ports.JWTKeys{
+		"secret-a": {Secret: "a-secret-a-secret-a-secret-a-sec", Issuer: "https://a.example/auth/v1"},
+		"secret-b": {Secret: "b-secret-b-secret-b-secret-b-sec", Issuer: "https://b.example/auth/v1"},
+		"keys-a":   {Keys: json.RawMessage("[" + jwkA + "]")},
+		"keys-b":   {Keys: json.RawMessage("[" + jwkB + "]")},
+	} {
+		ts, err := NewTokenServiceWithKeys(base, keys)
+		if err != nil {
+			t.Fatalf("%s: NewTokenServiceWithKeys: %v", name, err)
+		}
+		services[name] = ts
+	}
+	for issuer, ts := range services {
+		token, err := ts.Sign(context.Background(), ports.Claims{Subject: "u1"})
+		if err != nil {
+			t.Fatalf("%s: Sign: %v", issuer, err)
+		}
+		for verifier, vs := range services {
+			_, err := vs.Verify(context.Background(), token)
+			if issuer == verifier && err != nil {
+				t.Errorf("%s: own token rejected: %v", issuer, err)
+			}
+			if issuer != verifier && err == nil {
+				t.Errorf("token of %s verified by %s", issuer, verifier)
+			}
+		}
+	}
+	if _, err := NewTokenServiceWithKeys(base, ports.JWTKeys{}); err == nil {
+		t.Error("NewTokenServiceWithKeys with no key material succeeded")
+	}
+}
+
+// With an issuer configured, Verify requires that exact `iss`: a token of a
+// sibling instance that happens to share key material still fails.
+func TestTokenVerifyRequiresConfiguredIssuer(t *testing.T) {
+	secret := string(testSecret())
+	a, err := NewTokenServiceWithKeys(nil, ports.JWTKeys{Secret: secret, Issuer: "https://a.example/auth/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewTokenServiceWithKeys(nil, ports.JWTKeys{Secret: secret, Issuer: "https://b.example/auth/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noIss := NewTokenServiceHS([]byte(secret))
+
+	token, err := a.Sign(context.Background(), ports.Claims{Subject: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Verify(context.Background(), token); err != nil {
+		t.Fatalf("own token rejected: %v", err)
+	}
+	if _, err := b.Verify(context.Background(), token); err == nil {
+		t.Error("token with iss=a verified by the service requiring iss=b")
+	}
+	bare, err := noIss.Sign(context.Background(), ports.Claims{Subject: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Verify(context.Background(), bare); err == nil {
+		t.Error("token without iss verified by a service requiring one")
+	}
+	if _, err := noIss.Verify(context.Background(), token); err != nil {
+		t.Errorf("service without an issuer rejected a token carrying one: %v", err)
 	}
 }

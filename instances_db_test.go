@@ -46,6 +46,7 @@ var h1PIIFields = []byte("pii-fields:\n  email: {hint: EMAIL}\n  full_name: {hin
 type twoInstances struct {
 	pools map[string]*pgxpool.Pool
 	kms   map[string]ports.KMS
+	jwt   map[string]ports.JWTKeys
 	pii   map[string][]byte
 }
 
@@ -62,6 +63,10 @@ func (r *twoInstances) Pool(_ context.Context, id string) (*pgxpool.Pool, error)
 
 func (r *twoInstances) KMS(_ context.Context, id string) (ports.KMS, error) {
 	return r.kms[id], r.get(id)
+}
+
+func (r *twoInstances) JWT(_ context.Context, id string) (ports.JWTKeys, error) {
+	return r.jwt[id], r.get(id)
 }
 
 func (r *twoInstances) PolicyYAML(_ context.Context, id string) ([]byte, error) {
@@ -106,6 +111,12 @@ func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 		kms: map[string]ports.KMS{
 			"h1": kmslocal.New(h1, key),
 			"h2": kmslocal.New(h2, key),
+		},
+		// Each instance signs with its own secret: that is what binds a
+		// token to its instance (TestTokenIsBoundToInstance).
+		jwt: map[string]ports.JWTKeys{
+			"h1": {Secret: "h1-secret-h1-secret-h1-secret-h1", Issuer: "https://h1.example/auth/v1"},
+			"h2": {Secret: "h2-secret-h2-secret-h2-secret-h2", Issuer: "https://h2.example/auth/v1"},
 		},
 		pii: map[string][]byte{"h1": h1PIIFields}, // h2: free-form
 	}
@@ -316,17 +327,22 @@ func TestHTTPRequestFollowsContextInstance(t *testing.T) {
 		t.Fatalf("h1 UpdateProfile: %v", err)
 	}
 
-	token, err := srv.tokens.Sign(context.Background(), ports.Claims{
-		Subject:   "svc-1",
-		Role:      "service_role",
-		Audience:  "authenticated",
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-
+	// Each request carries a token minted by the instance it targets: tokens
+	// are bound to their instance by key material (TestTokenIsBoundToInstance).
 	get := func(instance string) *httptest.ResponseRecorder {
+		tokens, err := srv.instances.TokensFor(context.Background(), instance)
+		if err != nil {
+			t.Fatalf("tokens %s: %v", instance, err)
+		}
+		token, err := tokens.Sign(context.Background(), ports.Claims{
+			Subject:   "svc-1",
+			Role:      "service_role",
+			Audience:  "authenticated",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("sign %s: %v", instance, err)
+		}
 		req := httptest.NewRequest(http.MethodGet, "/privacy/v1/users/"+userID+"/profile", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		req = req.WithContext(ports.ContextWithInstance(req.Context(), instance))
@@ -356,4 +372,85 @@ func TestHTTPRequestFollowsContextInstance(t *testing.T) {
 	if rec := get("h2"); rec.Code != http.StatusNotFound {
 		t.Fatalf("h2 status = %d, want 404 (%s)", rec.Code, rec.Body.String())
 	}
+}
+
+// A token is bound to the instance that minted it by that instance's key
+// material, not by a claim: the same user UUID exists in both databases, yet
+// h1's token is rejected at h2's /auth/v1/user. The same signature check is
+// what any PostgREST trusting h2's keys performs, so the guarantee holds
+// outside Dilion's middleware too.
+func TestTokenIsBoundToInstance(t *testing.T) {
+	srv, h1, h2 := twoInstanceServer(t)
+	userID := uuid.NewString()
+	ctx1, ctx2 := instanceCtx(t, "h1"), instanceCtx(t, "h2")
+	t.Cleanup(func() {
+		for _, p := range []*pgxpool.Pool{h1, h2} {
+			_, _ = p.Exec(context.Background(), `delete from auth.users where id = $1::uuid`, userID)
+		}
+	})
+	for name, pool := range map[string]*pgxpool.Pool{"h1": h1, "h2": h2} {
+		if _, err := pool.Exec(context.Background(),
+			`insert into auth.users (id, aud, role, email) values ($1::uuid,'authenticated','authenticated',$2)`,
+			userID, "same@example.com"); err != nil {
+			t.Fatalf("%s insert user: %v", name, err)
+		}
+	}
+
+	t1, err := srv.instances.TokensFor(ctx1, "h1")
+	if err != nil {
+		t.Fatalf("tokens h1: %v", err)
+	}
+	token, err := t1.Sign(ctx1, ports.Claims{Subject: userID, Role: "authenticated", Email: "same@example.com"})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	get := func(path, instance string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req = req.WithContext(ports.ContextWithInstance(req.Context(), instance))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("/auth/v1/user", "h1"); rec.Code != http.StatusOK {
+		t.Fatalf("h1 /auth/v1/user = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	rec := get("/auth/v1/user", "h2")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("h2 /auth/v1/user = %d, want 403 — h1's token was accepted by h2 (%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Code string `json:"error_code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != "bad_jwt" {
+		t.Errorf("h2 error_code = %q (%v), want bad_jwt: %s", body.Code, err, rec.Body.String())
+	}
+	// Dilion's own API verifies through the same per-instance keys.
+	if rec := get("/privacy/v1/me/consents", "h1"); rec.Code != http.StatusOK {
+		t.Errorf("h1 /privacy/v1/me/consents = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := get("/privacy/v1/me/consents", "h2"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("h2 /privacy/v1/me/consents = %d, want 401 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Discovery is per instance too: each advertises its own issuer.
+	issuers := map[string]string{}
+	for _, id := range []string{"h1", "h2"} {
+		rec := get("/auth/v1/.well-known/openid-configuration", id)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s discovery = %d", id, rec.Code)
+		}
+		var doc struct {
+			Issuer string `json:"issuer"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatalf("%s discovery body: %v", id, err)
+		}
+		issuers[id] = doc.Issuer
+	}
+	if issuers["h1"] != "https://h1.example/auth/v1" || issuers["h2"] != "https://h2.example/auth/v1" {
+		t.Errorf("issuers = %v, want each instance's own", issuers)
+	}
+	_ = ctx2
 }
