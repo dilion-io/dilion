@@ -225,6 +225,8 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm
+        run: npm install -g npm@^11.15.0
       - name: Install pinned pnpm
         run: npm install --global pnpm@10.27.0
       - uses: actions/setup-go@v7.0.0
@@ -282,9 +284,9 @@ jobs:
           DRY_RUN: ${{ needs.version.outputs.dry_run }}
         run: |
           if [ "$DRY_RUN" = true ]; then
-            npm publish --access public --tag "$NPM_TAG" --dry-run
+            npm stage publish --access public --tag "$NPM_TAG" --dry-run
           else
-            npm publish --access public --tag "$NPM_TAG" --provenance
+            npm stage publish --access public --tag "$NPM_TAG" --provenance
           fi
 
       - name: Summary
