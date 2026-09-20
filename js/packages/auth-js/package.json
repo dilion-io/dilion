@@ -1,6 +1,6 @@
 {
   "name": "@dilion-io/auth-js",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Supabase-compatible auth client with Dilion OPAQUE extensions",
   "type": "module",
   "license": "Apache-2.0",
