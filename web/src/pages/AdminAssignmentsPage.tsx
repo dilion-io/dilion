@@ -11,6 +11,7 @@ import {
   type RoleAssignmentPage,
 } from '../api/client'
 import { PAGE_SIZE, usePagedList } from '../lib/usePagedList'
+import { ActorCell, ExpandActorToggle } from '../components/ActorCell'
 import { ProblemAlert } from '../components/ProblemAlert'
 import { PermissionHint } from '../components/PermissionHint'
 import { Pager } from '../components/Pager'
@@ -28,6 +29,7 @@ export function AdminAssignmentsPage() {
   const [actorFilter, setActorFilter] = useState('')
   const [actorDraft, setActorDraft] = useState('')
   const [includeRevoked, setIncludeRevoked] = useState(true)
+  const [expandActor, setExpandActor] = useState(false)
 
   const [actorId, setActorId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -63,13 +65,14 @@ export function AdminAssignmentsPage() {
         ...(cursor ? { cursor } : {}),
         ...(actorFilter ? { actor_id: actorFilter } : {}),
         ...(includeRevoked ? { include_revoked: true } : {}),
+        ...(expandActor ? { expand: 'actor' as const } : {}),
       })
     },
-    [roleId, actorFilter, includeRevoked],
+    [roleId, actorFilter, includeRevoked, expandActor],
   )
   const assignments = usePagedList<RoleAssignment>(
     load,
-    `${roleId}|${actorFilter}|${String(includeRevoked)}`,
+    `${roleId}|${actorFilter}|${String(includeRevoked)}|${String(expandActor)}`,
   )
 
   const role = roles.find((r) => r.id === roleId) ?? null
@@ -120,11 +123,13 @@ export function AdminAssignmentsPage() {
               <code>GET /iam/v1/roles/{'{roleId}'}/assignments</code> — who holds this role. Grants
               are never hard-deleted: revoking stamps <code>revoked_at</code> /{' '}
               <code>revoked_by</code> so the history stays auditable (
-              <code>include_revoked=true</code>).
+              <code>include_revoked=true</code>). <code>expand=actor</code> adds whether each
+              actor can still use its grant — a revoked assignment and a banned operator are
+              different things, and the ledger alone only shows the first.
             </p>
           </div>
         </div>
-        <PermissionHint permission="audit.read" />
+        <PermissionHint permission={expandActor ? ['audit.read', 'users.read'] : 'audit.read'} />
 
         {rolesProblem && <ProblemAlert problem={rolesProblem} />}
 
@@ -163,6 +168,7 @@ export function AdminAssignmentsPage() {
             />
             <span>include revoked</span>
           </label>
+          <ExpandActorToggle expanded={expandActor} onChange={setExpandActor} />
         </div>
 
         {role && (
@@ -186,6 +192,7 @@ export function AdminAssignmentsPage() {
               <tr>
                 <th>#</th>
                 <th>Actor</th>
+                {expandActor && <th>Actor state</th>}
                 <th>Granted by</th>
                 <th>Granted at</th>
                 <th>Revoked by</th>
@@ -203,6 +210,11 @@ export function AdminAssignmentsPage() {
                     <td>
                       <code className="small">{a.actor_id}</code>
                     </td>
+                    {expandActor && (
+                      <td>
+                        <ActorCell actor={a.actor} />
+                      </td>
+                    )}
                     <td className="small">
                       <code>{a.granted_by ?? '—'}</code>
                     </td>
@@ -233,7 +245,7 @@ export function AdminAssignmentsPage() {
               })}
               {assignments.items.length === 0 && !assignments.loading && (
                 <tr>
-                  <td colSpan={8} className="muted">
+                  <td colSpan={expandActor ? 9 : 8} className="muted">
                     No assignments for this role.
                   </td>
                 </tr>

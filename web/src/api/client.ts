@@ -31,6 +31,7 @@ export type ProfileField = components['schemas']['ProfileField']
 export type ProfileView = Profile['view']
 /** Masking hint: decides how a value is projected in the MASKED view. */
 export type ProfileFieldHint = ProfileField['hint']
+export type ProfileBatch = components['schemas']['ProfileBatch']
 export type RevealUserProfileBody = components['schemas']['RevealUserProfileBody']
 export type UpdateUserProfileBody = components['schemas']['UpdateUserProfileBody']
 
@@ -56,6 +57,13 @@ export type PermissionPage = components['schemas']['PermissionPage']
 export type CreatePermissionBody = components['schemas']['CreatePermissionBody']
 export type PermissionHolder = components['schemas']['PermissionHolder']
 export type PermissionHolderPage = components['schemas']['PermissionHolderPage']
+/**
+ * The operational view of an actor, attached to a grant by `expand=actor`. It
+ * says whether the grant is still usable; it deliberately carries no personal
+ * data, so labelling an operator means a separate {@link listUserProfiles}.
+ */
+export type Actor = components['schemas']['Actor']
+export type ActorType = Actor['actor_type']
 export type AuditEvent = components['schemas']['AuditEvent']
 export type AuditEventPage = components['schemas']['AuditEventPage']
 export type ApiKey = components['schemas']['APIKey']
@@ -78,10 +86,20 @@ export type ListAssignmentsQuery = NonNullable<
 export type ListPermissionsQuery = NonNullable<
   paths['/iam/v1/permissions']['get']['parameters']['query']
 >
+export type ListHoldersQuery = NonNullable<
+  paths['/iam/v1/permissions/{permissionName}/holders']['get']['parameters']['query']
+>
 export type ListApiKeysQuery = NonNullable<paths['/iam/v1/api-keys']['get']['parameters']['query']>
 export type ListAuditEventsQuery = NonNullable<
   paths['/iam/v1/audit/events']['get']['parameters']['query']
 >
+
+/**
+ * Mirror of `maxBatchProfiles` (internal/api/profiles_batch.go). The server is
+ * the authority and answers 422 beyond it; this keeps callers from building a
+ * request that cannot succeed.
+ */
+export const MAX_BATCH_PROFILES = 100
 
 /** Every list endpoint answers with this envelope (docs/api-conventions.md). */
 export type CursorPage<T> = { items: T[]; next_cursor: string | null }
@@ -224,6 +242,28 @@ export async function updateUserConsent(
 export async function getUserProfile(userId: string): Promise<Profile> {
   const result = await api.GET('/privacy/v1/users/{userId}/profile', {
     params: { path: { userId } },
+  })
+  return unwrap(result)
+}
+
+/**
+ * The plural form of {@link getUserProfile}: the masked profiles of up to
+ * {@link MAX_BATCH_PROFILES} subjects in one request, for a screen that lists
+ * subjects and needs to label them. Same permission and same masking; the
+ * server records ONE `PII_MASKED_READ` naming the subjects it returned.
+ *
+ * Ids with no stored profile come back in `missing` rather than being dropped,
+ * so "no profile" stays distinguishable from "id you did not ask about".
+ * Revealing has no batch form on purpose — every reveal needs its own reason.
+ *
+ * The ids travel as one comma-separated value, which is how the parameter is
+ * declared in the spec and therefore how openapi-fetch serialises the array.
+ * The server reads only the first `user_ids=` occurrence, so do not hand-build
+ * a repeated form of this query.
+ */
+export async function listUserProfiles(userIds: readonly string[]): Promise<ProfileBatch> {
+  const result = await api.GET('/privacy/v1/profiles', {
+    params: { query: { user_ids: [...userIds] } },
   })
   return unwrap(result)
 }
@@ -409,9 +449,10 @@ export async function createPermission(body: CreatePermissionBody): Promise<Perm
 /** Recertification report: who currently holds `permissionName`, and via which role. */
 export async function listPermissionHolders(
   permissionName: string,
+  query: ListHoldersQuery = {},
 ): Promise<PermissionHolderPage> {
   const result = await api.GET('/iam/v1/permissions/{permissionName}/holders', {
-    params: { path: { permissionName } },
+    params: { path: { permissionName }, query },
   })
   return unwrap(result)
 }

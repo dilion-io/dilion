@@ -9,9 +9,11 @@ import {
 } from '../api/client'
 import { PAGE_SIZE, usePagedList } from '../lib/usePagedList'
 import { ProblemAlert } from '../components/ProblemAlert'
+import { SubjectLabelFields, SubjectLabelsButton } from '../components/SubjectProfiles'
 import { PermissionHint } from '../components/PermissionHint'
 import { Pager } from '../components/Pager'
 import { formatDateTime } from '../lib/format'
+import { useSubjectLabels } from '../lib/useSubjectLabels'
 import { navigate } from '../lib/router'
 import { stash, takeStash } from '../lib/handoff'
 
@@ -347,6 +349,9 @@ function AuditEventDetail({
   const [event, setEvent] = useState<AuditEvent | null>(null)
   const [problem, setProblem] = useState<Problem | null>(null)
   const [loading, setLoading] = useState(true)
+  // The manifest is a list of ids. Labelling them is a separate, separately
+  // audited read, so it is offered rather than performed.
+  const labels = useSubjectLabels()
 
   useEffect(() => {
     let active = true
@@ -434,32 +439,36 @@ function AuditEventDetail({
               manifest.
             </p>
           ) : (
-            <ul className="manifest">
-              {event.subject_ids.map((subjectId) => (
-                <li key={subjectId}>
-                  <code>{subjectId}</code>
-                  <div className="row row-tight">
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      type="button"
-                      onClick={() => {
-                        stash('userId', subjectId)
-                        navigate('admin-users')
-                      }}
-                    >
-                      PII profile
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      type="button"
-                      onClick={() => onFilterSubject(subjectId)}
-                    >
-                      Who else saw them
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <>
+              <SubjectLabelsButton labels={labels} subjectIds={event.subject_ids} />
+              <ul className="manifest">
+                {event.subject_ids.map((subjectId) => (
+                  <li key={subjectId}>
+                    <code>{subjectId}</code>
+                    <SubjectLabelFields label={labels.labelFor(subjectId)} />
+                    <div className="row row-tight">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        type="button"
+                        onClick={() => {
+                          stash('userId', subjectId)
+                          navigate('admin-users')
+                        }}
+                      >
+                        PII profile
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        type="button"
+                        onClick={() => onFilterSubject(subjectId)}
+                      >
+                        Who else saw them
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
 
           <details className="raw">

@@ -763,6 +763,14 @@ pre.json,
   font-size: 11.5px;
 }
 
+/* Actor expansion (expand=actor) on the grant reports -------------------- */
+.actor-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
 .row-tight {
   margin-top: 0;
   gap: 4px;

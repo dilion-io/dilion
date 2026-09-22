@@ -11,6 +11,7 @@ import {
 } from '../api/client'
 import { PAGE_SIZE, usePagedList } from '../lib/usePagedList'
 import { usePermissionCatalog } from '../lib/usePermissionCatalog'
+import { ActorCell, ExpandActorToggle } from '../components/ActorCell'
 import { ProblemAlert } from '../components/ProblemAlert'
 import { PermissionHint } from '../components/PermissionHint'
 import { Pager } from '../components/Pager'
@@ -191,6 +192,7 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
   const [holders, setHolders] = useState<PermissionHolder[] | null>(null)
   const [problem, setProblem] = useState<Problem | null>(null)
   const [loading, setLoading] = useState(false)
+  const [expandActor, setExpandActor] = useState(false)
 
   useEffect(() => {
     if (selected === '' && permissions.length > 0) setSelected(permissions[0].name)
@@ -200,7 +202,7 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
     if (!selected) return
     let active = true
     setLoading(true)
-    listPermissionHolders(selected)
+    listPermissionHolders(selected, expandActor ? { expand: 'actor' } : {})
       .then((page) => {
         if (!active) return
         setHolders(page.items)
@@ -218,7 +220,7 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
     return () => {
       active = false
     }
-  }, [selected])
+  }, [selected, expandActor])
 
   const rows = holders ?? []
 
@@ -231,7 +233,8 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
             <code>GET /iam/v1/permissions/{'{name}'}/holders</code> — every actor that currently
             holds this permission, and the role it comes from. Revoked grants are excluded and{' '}
             <code>next_cursor</code> is always <code>null</code>: an access review needs the whole
-            set, not a page of it.
+            set, not a page of it. <code>expand=actor</code> adds whether each holder can still
+            use the grant, so an access review can tell a live operator from a banned one.
           </p>
         </div>
         <label className="select">
@@ -246,7 +249,8 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
           </select>
         </label>
       </div>
-      <PermissionHint permission="audit.read" />
+      <ExpandActorToggle expanded={expandActor} onChange={setExpandActor} />
+      <PermissionHint permission={expandActor ? ['audit.read', 'users.read'] : 'audit.read'} />
 
       {problem && <ProblemAlert problem={problem} />}
 
@@ -255,6 +259,7 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
           <thead>
             <tr>
               <th>Actor</th>
+              {expandActor && <th>Actor state</th>}
               <th>Via role</th>
               <th>Role id</th>
               <th>Granted by</th>
@@ -267,6 +272,11 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
                 <td>
                   <code className="small">{h.actor_id}</code>
                 </td>
+                {expandActor && (
+                  <td>
+                    <ActorCell actor={h.actor} />
+                  </td>
+                )}
                 <td>{h.role_name}</td>
                 <td>
                   <code className="small">{h.role_id}</code>
@@ -279,7 +289,7 @@ function HoldersReport({ permissions }: { permissions: readonly Permission[] }) 
             ))}
             {rows.length === 0 && !loading && (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={expandActor ? 6 : 5} className="muted">
                   Nobody holds <code>{selected || '—'}</code>. Note that the{' '}
                   <code>service_role</code> JWT this console uses bypasses RBAC entirely, so it
                   never appears here.
