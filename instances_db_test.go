@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,11 @@ func (r *twoInstances) get(id string) error {
 	}
 	return nil
 }
+
+// unlistedInstance is served by Pool but deliberately absent from List, the way
+// a resolver publishes an instance only once its schema is in place
+// (TestMigrateInstance).
+const unlistedInstance = "h1-again"
 
 func (r *twoInstances) Pool(_ context.Context, id string) (*pgxpool.Pool, error) {
 	return r.pools[id], r.get(id)
@@ -107,7 +113,7 @@ func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 		t.Fatalf("rand: %v", err)
 	}
 	res := &twoInstances{
-		pools: map[string]*pgxpool.Pool{"h1": h1, "h2": h2},
+		pools: map[string]*pgxpool.Pool{"h1": h1, "h2": h2, unlistedInstance: h1},
 		kms: map[string]ports.KMS{
 			"h1": kmslocal.New(h1, key),
 			"h2": kmslocal.New(h2, key),
@@ -453,4 +459,41 @@ func TestTokenIsBoundToInstance(t *testing.T) {
 		t.Errorf("issuers = %v, want each instance's own", issuers)
 	}
 	_ = ctx2
+}
+
+// MigrateInstance provisions ONE instance, which is what adding an instance to
+// a running deployment needs. It reaches an instance the resolver does not list
+// yet, and it does not touch the others.
+func TestMigrateInstance(t *testing.T) {
+	srv, h1, _ := twoInstanceServer(t)
+	ctx := context.Background()
+
+	// An id the resolver serves a pool for but does not list: List returns
+	// h1 and h2 only, so Migrate would never reach it.
+	const id = unlistedInstance
+	if err := srv.MigrateInstance(ctx, id); err != nil {
+		t.Fatalf("MigrateInstance(%s): %v", id, err)
+	}
+	var exists bool
+	if err := h1.QueryRow(ctx,
+		`select to_regclass('dilion_pii.user_profiles') is not null`).Scan(&exists); err != nil {
+		t.Fatalf("to_regclass: %v", err)
+	}
+	if !exists {
+		t.Error("the instance's schema is not in place after MigrateInstance")
+	}
+
+	// Re-running is a no-op rather than an error, so provisioning can be retried.
+	if err := srv.MigrateInstance(ctx, id); err != nil {
+		t.Fatalf("second MigrateInstance: %v", err)
+	}
+
+	// An instance the resolver cannot serve fails, and names itself.
+	err := srv.MigrateInstance(ctx, "nope")
+	if err == nil {
+		t.Fatal("MigrateInstance for an unknown instance succeeded")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error = %v, want it to name the instance", err)
+	}
 }

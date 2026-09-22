@@ -544,21 +544,39 @@ func (s *Server) PoolFor(ctx context.Context) (*pgxpool.Pool, error) {
 	return s.instances.Pool(ctx)
 }
 
+// MigrateInstance applies pending schema migrations to ONE instance, which is
+// what provisioning a newly added instance needs: Migrate would otherwise walk
+// every instance the resolver lists just to reach the new one. Safe to run
+// concurrently with other processes and with Migrate itself, because the run is
+// serialised by a Postgres advisory lock on that database.
+//
+// The instance does not have to appear in List yet — only Pool has to resolve
+// it — so a resolver may publish an instance to List only once its schema is in
+// place. Background workers need no separate step either: Start re-scans the
+// instance list periodically and picks the instance up on its own.
+func (s *Server) MigrateInstance(ctx context.Context, id string) error {
+	pool, err := s.instances.PoolFor(ctx, id)
+	if err != nil {
+		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
+	}
+	if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool); err != nil {
+		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
+	}
+	return nil
+}
+
 // Migrate applies pending schema migrations to every instance the resolver
 // lists. Safe to run concurrently with other processes and on every boot: each
-// database's run is serialised by a Postgres advisory lock.
+// database's run is serialised by a Postgres advisory lock. Use MigrateInstance
+// to provision a single instance without walking the others.
 func (s *Server) Migrate(ctx context.Context) error {
 	ids, err := s.instances.List(ctx)
 	if err != nil {
 		return fmt.Errorf("dilion: list instances: %w", err)
 	}
 	for _, id := range ids {
-		pool, err := s.instances.PoolFor(ctx, id)
-		if err != nil {
-			return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
-		}
-		if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool); err != nil {
-			return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
+		if err := s.MigrateInstance(ctx, id); err != nil {
+			return err
 		}
 	}
 	return nil
