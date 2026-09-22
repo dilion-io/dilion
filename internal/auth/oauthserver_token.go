@@ -285,11 +285,11 @@ func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, ses
 	now := a.now()
 	expiresAt := now.Add(ts.TTL())
 
-	claims, cerr := findAMRClaims(ctx, q, sessionID)
+	amrClaims, cerr := findAMRClaims(ctx, q, sessionID)
 	if cerr != nil {
 		return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
 	}
-	aal, amr := computeAAL(claims)
+	aal, amr := computeAAL(amrClaims)
 
 	extra := map[string]any{
 		"phone":         u.Phone,
@@ -303,15 +303,29 @@ func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, ses
 		"scope":         scope,
 	}
 
-	extra, err := a.runHook(ctx, ports.TokenClaims, extra)
-	if err != nil {
-		return "", time.Time{}, internalServerError("Error running token claims hook").withInternal(err)
-	}
-
 	role := userTokenRole(u.Role)
 	aud := u.Aud
 	if aud == "" {
 		aud = AudienceAuthenticated
+	}
+
+	// Same full claim view and envelope the password/refresh path gives the
+	// hook (issueAccessToken). The authentication method is the session's
+	// newest AMR claim, which for an OAuth session is oauthAMRMethod.
+	claims := map[string]any{
+		"sub":   u.ID,
+		"aud":   aud,
+		"role":  role,
+		"email": u.Email,
+		"iat":   now.Unix(),
+		"exp":   expiresAt.Unix(),
+	}
+	for k, v := range extra {
+		claims[k] = v
+	}
+	claims, err := a.runTokenClaimsHook(ctx, u.ID, claims, tokenAuthMethod("", amrClaims))
+	if err != nil {
+		return "", time.Time{}, err
 	}
 
 	token, err := ts.Sign(ctx, ports.Claims{
@@ -320,7 +334,7 @@ func (a *api) issueOAuthAccessToken(ctx context.Context, q querier, u *User, ses
 		Email:     u.Email,
 		Audience:  aud,
 		ExpiresAt: expiresAt,
-		Extra:     extra,
+		Extra:     claims,
 	})
 	if err != nil {
 		return "", time.Time{}, internalServerError("Error generating access token").withInternal(err)

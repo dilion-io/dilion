@@ -97,7 +97,7 @@ type HookPoint string
 const (
 	BeforeSignup      HookPoint = "before_signup"       // validating (may reject)
 	AfterSignup       HookPoint = "after_signup"        // observing
-	TokenClaims       HookPoint = "token_claims"        // mutating (adds Claims.Extra)
+	TokenClaims       HookPoint = "token_claims"        // mutating (rewrites the access token's claims)
 	BeforeUserDelete  HookPoint = "before_user_delete"  // validating
 	AfterUserDelete   HookPoint = "after_user_delete"   // observing
 	BeforeErasureStep HookPoint = "before_erasure_step" // validating
@@ -109,6 +109,21 @@ const (
 
 // HookFunc receives a mutable payload. Validating hooks reject by returning an
 // error; mutating hooks return a replacement payload (nil = unchanged).
+//
+// TokenClaims is the one point with a fixed payload shape, shared with the
+// external custom_access_token hook so that both see the same thing:
+//
+//	{
+//	  "user_id":               "<uuid>",
+//	  "claims":                {...},   // the FULL claim view about to be signed
+//	  "authentication_method": "password" | "otp" | "oauth" | ...
+//	}
+//
+// The hook returns that envelope and its `claims` member becomes the token's
+// claims; a payload with no `claims` object fails token issuance rather than
+// silently dropping every custom claim. The reserved claims (sub, aud, exp,
+// iat, iss, role, email) are visible but not writable: signing re-asserts them,
+// so a hook cannot forge identity, role, audience or lifetime.
 type HookFunc func(ctx context.Context, payload map[string]any) (map[string]any, error)
 
 // ---- Connectors (§3.1) ----

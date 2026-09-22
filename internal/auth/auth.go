@@ -556,7 +556,8 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 // ---- session issuance -----------------------------------------------------
 
 // issueAccessToken signs the access token for a user/session pair, giving the
-// ports.TokenClaims hook a chance to inject custom claims first.
+// ports.TokenClaims hook and then the external custom_access_token hook a
+// chance to rewrite the claims.
 //
 // The `aal` and `amr` claims are NOT parameters: they are derived from the
 // session's rows in auth.mfa_amr_claims (mfa_models.go, upstream
@@ -564,7 +565,13 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 // level the session has actually reached — aal2 only after an MFA factor was
 // verified against it. q must be able to read that table; it is the caller's
 // transaction wherever one is open.
-func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID string) (string, time.Time, error) {
+//
+// authMethod is the authentication method reported to both hooks. Callers that
+// just authenticated the user pass it explicitly; "" means "derive it from the
+// session", which is the right answer for a refresh (no new authentication
+// happened, so the session's newest AMR claim still describes how it was
+// established).
+func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID, authMethod string) (string, time.Time, error) {
 	ts, terr := a.tokensFor(ctx)
 	if terr != nil {
 		return "", time.Time{}, terr
@@ -579,20 +586,15 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		"is_anonymous":  u.IsAnonymous,
 	}
 	if sessionID != "" {
-		claims, cerr := findAMRClaims(ctx, q, sessionID)
+		amrClaims, cerr := findAMRClaims(ctx, q, sessionID)
 		if cerr != nil {
 			return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
 		}
-		aal, amr := computeAAL(claims)
+		aal, amr := computeAAL(amrClaims)
 		extra["session_id"] = sessionID
 		extra["aal"] = aal
 		extra["amr"] = amr
-	}
-
-	// TokenClaims is a mutating hook point: the returned map replaces `extra`.
-	extra, err := a.runHook(ctx, ports.TokenClaims, extra)
-	if err != nil {
-		return "", time.Time{}, internalServerError("Error running token claims hook").withInternal(err)
+		authMethod = tokenAuthMethod(authMethod, amrClaims)
 	}
 
 	// auth.users represents a human session. Reserved machine roles must never
@@ -604,51 +606,54 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		aud = AudienceAuthenticated
 	}
 
-	// custom_access_token (external hook). It runs AFTER the in-process
-	// ports.TokenClaims hook. Claim precedence, in order of application:
+	// Both hooks see the SAME thing: the full claim view of the token about to
+	// be signed. Claim precedence, in order of application:
 	//
 	//  1. the base gotrue claims assembled into `extra` above
 	//     (phone, app_metadata, user_metadata, is_anonymous, and — for a session
-	//     token — session_id, aal, amr);
-	//  2. the in-process ports.TokenClaims hook, which may rewrite `extra`;
-	//  3. this external hook, which receives the FULL claim view (the reserved
-	//     JWT claims plus everything in `extra`) and whose returned `claims` map
-	//     REPLACES `extra` wholesale — upstream's semantics
-	//     (gotrueClaims = jwt.MapClaims(output.Claims));
+	//     token — session_id, aal, amr), plus the reserved JWT claims;
+	//  2. the in-process ports.TokenClaims hook, whose returned `claims` map
+	//     REPLACES the view;
+	//  3. the external custom_access_token hook, same contract — upstream's
+	//     semantics (gotrueClaims = jwt.MapClaims(output.Claims));
 	//  4. TokenService.Sign, which writes the reserved claims
 	//     (sub/aud/exp/iat/iss/role/email) on top.
 	//
 	// DEVIATION: upstream lets custom_access_token overwrite ANY claim, including
-	// role. Dilion keeps its reservedClaims protection (token.go): the external
-	// hook can add and rewrite custom claims but cannot forge identity, role,
-	// audience or lifetime — Sign always re-asserts those. The hook is invoked in
+	// role. Dilion keeps its reservedClaims protection (token.go): a hook can add
+	// and rewrite custom claims but cannot forge identity, role, audience or
+	// lifetime — Sign always re-asserts those. The external hook is invoked in
 	// the token-issuance transaction (`q`) so a pg-functions hook sees the same
 	// uncommitted state the request is building.
+	claims := map[string]any{
+		"sub":   u.ID,
+		"aud":   aud,
+		"role":  role,
+		"email": u.Email,
+		"iat":   now.Unix(),
+		"exp":   expiresAt.Unix(),
+	}
+	for k, v := range extra {
+		claims[k] = v
+	}
+
+	claims, err := a.runTokenClaimsHook(ctx, u.ID, claims, authMethod)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
 	if cfg := a.cfg.Hooks.CustomAccessToken; cfg.Enabled {
-		claims := map[string]any{
-			"sub":   u.ID,
-			"aud":   aud,
-			"role":  role,
-			"email": u.Email,
-			"iat":   now.Unix(),
-			"exp":   expiresAt.Unix(),
-		}
-		for k, v := range extra {
-			claims[k] = v
-		}
 		in := &CustomAccessTokenInput{
-			Metadata: newHookMetadata(nil, HookNameCustomAccessToken),
-			UserID:   u.ID,
-			Claims:   claims,
-			// authentication_method is not threaded into issueAccessToken;
-			// upstream fills it from the grant. Left empty (documented).
-			AuthenticationMethod: "",
+			Metadata:             newHookMetadata(nil, HookNameCustomAccessToken),
+			UserID:               u.ID,
+			Claims:               claims,
+			AuthenticationMethod: authMethod,
 		}
 		out := &CustomAccessTokenOutput{}
 		if herr := a.runExtHook(ctx, cfg, q, in, out); herr != nil {
 			return "", time.Time{}, herr
 		}
-		extra = out.Claims
+		claims = out.Claims
 	}
 
 	token, err := ts.Sign(ctx, ports.Claims{
@@ -657,12 +662,58 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		Email:     u.Email,
 		Audience:  aud,
 		ExpiresAt: expiresAt,
-		Extra:     extra,
+		Extra:     claims,
 	})
 	if err != nil {
 		return "", time.Time{}, internalServerError("Error generating access token").withInternal(err)
 	}
 	return token, expiresAt, nil
+}
+
+// tokenAuthMethod picks the authentication method reported to the token hooks:
+// what the caller just authenticated with, else the session's newest AMR claim.
+// findAMRClaims orders by updated_at descending, so the head is the most recent
+// method — for a refresh that is how the session was established, and after an
+// MFA verification it is the factor that was just verified.
+func tokenAuthMethod(explicit string, claims []amrClaim) string {
+	if explicit != "" {
+		return explicit
+	}
+	if len(claims) > 0 {
+		return claims[0].Method
+	}
+	return ""
+}
+
+// runTokenClaimsHook runs the in-process ports.TokenClaims hook over the full
+// claim view, in the same envelope the external custom_access_token hook uses:
+// {user_id, claims, authentication_method}. The hook returns that envelope and
+// its `claims` member becomes the token's claims.
+//
+// A returned payload without a `claims` object is a hard error rather than a
+// silently empty token, which is exactly what CustomAccessTokenOutput does for
+// the external hook. That also makes the envelope change loud for hooks written
+// against the older flat-map payload instead of quietly dropping their claims.
+func (a *api) runTokenClaimsHook(ctx context.Context, userID string, claims map[string]any, authMethod string) (map[string]any, error) {
+	out, err := a.runHook(ctx, ports.TokenClaims, map[string]any{
+		"user_id":               userID,
+		"claims":                claims,
+		"authentication_method": authMethod,
+	})
+	if err != nil {
+		return nil, internalServerError("Error running token claims hook").withInternal(err)
+	}
+	raw, ok := out["claims"]
+	if !ok {
+		return nil, internalServerError(
+			"token claims hook returned no claims field: the payload is " +
+				"{user_id, claims, authentication_method} and the hook must return it with `claims` set")
+	}
+	next, ok := raw.(map[string]any)
+	if !ok {
+		return nil, internalServerError("token claims hook returned a claims field that is not an object")
+	}
+	return next, nil
 }
 
 // grantSession creates a session + first refresh token and returns the gotrue
@@ -697,15 +748,16 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 	u.LastSignInAt = &now
 	u.UpdatedAt = now
 
-	return a.buildSessionResponse(ctx, tx, u, sessionID, refresh)
+	return a.buildSessionResponse(ctx, tx, u, sessionID, refresh, amrMethod)
 }
 
 // buildSessionResponse renders the gotrue session envelope for an EXISTING
 // session. q is used to read the session's AMR claims; pass the open
 // transaction whenever the caller has one, so a claim written moments ago is
-// visible to the token being signed.
-func (a *api) buildSessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh string) (*AccessTokenResponse, error) {
-	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID)
+// visible to the token being signed. authMethod is passed to the token hooks;
+// "" means "derive it from the session", which is what a refresh wants.
+func (a *api) buildSessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh, authMethod string) (*AccessTokenResponse, error) {
+	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID, authMethod)
 	if err != nil {
 		return nil, err
 	}

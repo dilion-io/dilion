@@ -333,7 +333,9 @@ func (a *api) refreshTokenGrant(w http.ResponseWriter, r *http.Request) error {
 		// was built from, so its AAL — aal2 after an MFA verification —
 		// survives rotation unchanged, and drops back to aal1 by itself once
 		// the factor behind the claim is unenrolled.
-		resp, err = a.buildSessionResponse(ctx, tx, user, sess.ID, next)
+		// No new authentication happened, so the method reported to the token
+		// hooks is derived from the session's existing AMR claims.
+		resp, err = a.buildSessionResponse(ctx, tx, user, sess.ID, next, "")
 		return err
 	}); err != nil {
 		return err
@@ -374,7 +376,7 @@ func (a *api) handleRefreshTokenReuse(ctx context.Context, tx querier, r *http.R
 			a.log.InfoContext(ctx, "auth: refresh token reused inside the reuse interval, returning the active token",
 				slog.String("user_id", rt.UserID), slog.Int64("refresh_token_id", rt.ID),
 				slog.String("client_ip", clientIP(r)))
-			return a.buildSessionResponse(ctx, tx, user, sess.ID, active.Token)
+			return a.buildSessionResponse(ctx, tx, user, sess.ID, active.Token, "")
 		}
 	}
 

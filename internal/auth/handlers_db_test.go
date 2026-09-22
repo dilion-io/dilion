@@ -361,11 +361,26 @@ func TestSignupHooks(t *testing.T) {
 	}
 }
 
-// A TokenClaims hook must be able to add custom claims to the access token.
+// A TokenClaims hook must be able to add custom claims to the access token. It
+// receives the same envelope the external custom_access_token hook does:
+// {user_id, claims, authentication_method}, with claims the FULL view of the
+// token about to be signed.
 func TestTokenClaimsHookInjectsCustomClaims(t *testing.T) {
 	env := newTestEnv(t)
+	var gotUserID, gotMethod string
+	var sawReserved bool
 	env.hooks.Register(ports.TokenClaims, func(_ context.Context, p map[string]any) (map[string]any, error) {
-		p["tenant_id"] = "acme"
+		gotUserID, _ = p["user_id"].(string)
+		gotMethod, _ = p["authentication_method"].(string)
+		claims, ok := p["claims"].(map[string]any)
+		if !ok {
+			t.Errorf("payload claims = %#v, want a map", p["claims"])
+			return p, nil
+		}
+		_, hasSub := claims["sub"]
+		_, hasEmail := claims["email"]
+		sawReserved = hasSub && hasEmail
+		claims["tenant_id"] = "acme"
 		return p, nil
 	})
 
@@ -373,6 +388,52 @@ func TestTokenClaimsHookInjectsCustomClaims(t *testing.T) {
 	claims := decodeClaims(t, session.Token)
 	if claims["tenant_id"] != "acme" {
 		t.Errorf("tenant_id claim = %v, want acme", claims["tenant_id"])
+	}
+	if session.User == nil || gotUserID != session.User.ID {
+		t.Errorf("hook user_id = %q, want the signed-up user", gotUserID)
+	}
+	if gotMethod != "password" {
+		t.Errorf("hook authentication_method = %q, want password", gotMethod)
+	}
+	if !sawReserved {
+		t.Error("hook did not receive the reserved claims in its claim view")
+	}
+}
+
+// A refresh reports how the SESSION was established, since no new
+// authentication happened, and the hook envelope survives rotation.
+func TestTokenClaimsHookAuthMethodOnRefresh(t *testing.T) {
+	env := newTestEnv(t)
+	var methods []string
+	env.hooks.Register(ports.TokenClaims, func(_ context.Context, p map[string]any) (map[string]any, error) {
+		m, _ := p["authentication_method"].(string)
+		methods = append(methods, m)
+		return p, nil
+	})
+
+	session := env.signup(t, "refresh-claims@example.com", "hunter22")
+	rec := env.do(t, http.MethodPost, "/token?grant_type=refresh_token",
+		map[string]any{"refresh_token": session.RefreshToken}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(methods) != 2 || methods[0] != "password" || methods[1] != "password" {
+		t.Errorf("authentication_method per issuance = %v, want [password password]", methods)
+	}
+}
+
+// A hook that returns the old flat payload has no `claims` object, and that
+// must fail loudly rather than mint a token with no custom claims at all.
+func TestTokenClaimsHookWithoutClaimsFieldFails(t *testing.T) {
+	env := newTestEnv(t)
+	env.hooks.Register(ports.TokenClaims, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"tenant_id": "acme"}, nil
+	})
+
+	rec := env.do(t, http.MethodPost, "/signup",
+		map[string]any{"email": "flat-hook@example.com", "password": "hunter22"}, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("signup status = %d, want 500: %s", rec.Code, rec.Body.String())
 	}
 }
 

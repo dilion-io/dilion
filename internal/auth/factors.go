@@ -593,7 +593,10 @@ func (a *api) finalizeFactorVerification(w http.ResponseWriter, r *http.Request,
 			return internalServerError("Database error loading factors").withInternal(lerr)
 		}
 
-		resp, err = a.buildSessionResponse(ctx, tx, user, mc.sessionID, next)
+		// "" derives the authentication method from the session, which is the
+		// factor verified moments ago: its AMR claim was written above and is
+		// now the session's newest.
+		resp, err = a.buildSessionResponse(ctx, tx, user, mc.sessionID, next, "")
 		return err
 	}); err != nil {
 		return err
