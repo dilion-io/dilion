@@ -41,6 +41,31 @@ export function authErrorMessage(error: unknown): string {
 }
 
 /**
+ * A WebAuthn failure that is almost always the origin, turned into the sentence
+ * that resolves it.
+ *
+ * A passkey is bound to the origin that created it, and the server only accepts
+ * the origins in `DILION_AUTH_WEBAUTHN_RP_ORIGINS`. The server cannot say which
+ * origin it wanted — telling an unauthenticated caller the RP configuration is
+ * not its job — so it answers the same opaque `webauthn_verification_failed`
+ * whatever went wrong. The page, though, knows exactly where it is running, and
+ * in dev that is the one fact that identifies the mismatch.
+ *
+ * The usual way to hit this: Vite moves to :5174 because :5173 is busy, and
+ * only passkeys notice.
+ */
+export function webauthnOriginHint(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code !== 'webauthn_verification_failed') return null
+  return (
+    `This page is served from ${window.location.origin}. A passkey only works from an origin ` +
+    `the server lists in DILION_AUTH_WEBAUTHN_RP_ORIGINS — start it with ` +
+    `DEV_WEB_ORIGIN=${window.location.origin} make dev, or serve this app from the origin it ` +
+    `already trusts.`
+  )
+}
+
+/**
  * Wipes key material the caller owns. OPAQUE hands the browser a `session_key`
  * and an `export_key`; both are secrets that must never reach storage, a log or
  * the network, and the sample zeroes them the moment it is done looking at

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { authErrorMessage, supabase, wipe } from '../lib/supabase'
+import { authErrorMessage, supabase, webauthnOriginHint, wipe } from '../lib/supabase'
 import { useAuthSettings } from '../lib/useAuthSettings'
 import { navigate } from '../lib/router'
 
@@ -43,6 +43,7 @@ export function AuthPage({ session }: { session: Session | null }) {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hint, setHint] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const { settings } = useAuthSettings()
 
@@ -50,6 +51,7 @@ export function AuthPage({ session }: { session: Session | null }) {
 
   function reset() {
     setError(null)
+    setHint(null)
     setNotice(null)
   }
 
@@ -106,7 +108,10 @@ export function AuthPage({ session }: { session: Session | null }) {
     // The discoverable-credential ceremony: no email is typed, the
     // authenticator offers whichever passkey it holds for this site.
     const { data, error } = await supabase.auth.signInWithPasskey()
-    if (error) return setError(authErrorMessage(error))
+    if (error) {
+      setHint(webauthnOriginHint(error))
+      return setError(authErrorMessage(error))
+    }
     if (!data.session) return setError('The passkey was verified but no session was issued.')
     navigate('account')
   }
@@ -263,6 +268,7 @@ export function AuthPage({ session }: { session: Session | null }) {
       {error && (
         <div className="alert alert-error" role="alert">
           {error}
+          {hint && <p className="small">{hint}</p>}
         </div>
       )}
       {notice && <div className="alert alert-info">{notice}</div>}

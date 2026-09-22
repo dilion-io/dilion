@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import type { PasskeyListItem } from '@supabase/supabase-js'
-import { authErrorMessage, supabase } from '../lib/supabase'
+import { authErrorMessage, supabase, webauthnOriginHint } from '../lib/supabase'
 import { useAuthSettings } from '../lib/useAuthSettings'
 
 export function PasskeysSection() {
@@ -21,6 +21,7 @@ export function PasskeysSection() {
   const [passkeys, setPasskeys] = useState<PasskeyListItem[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hint, setHint] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draftName, setDraftName] = useState('')
@@ -41,6 +42,7 @@ export function PasskeysSection() {
   async function run(what: () => Promise<string | null>) {
     setBusy(true)
     setError(null)
+    setHint(null)
     setNotice(null)
     try {
       const message = await what()
@@ -48,6 +50,7 @@ export function PasskeysSection() {
       await reload()
     } catch (err) {
       setError(authErrorMessage(err))
+      setHint(webauthnOriginHint(err))
     } finally {
       setBusy(false)
     }
@@ -118,6 +121,7 @@ export function PasskeysSection() {
           {error && (
             <div className="alert alert-error" role="alert">
               {error}
+              {hint && <p className="small">{hint}</p>}
             </div>
           )}
           {notice && <div className="alert alert-info">{notice}</div>}

@@ -93,9 +93,25 @@ offering a button that fails.
 
 Both features are off unless the server is configured for them. `make dev` configures both: it
 generates `.dev/opaque.key`, sets `DILION_AUTH_PASSKEY_ENABLED=true`, and declares a WebAuthn
-relying party of `localhost` with `http://localhost:5173` among its allowed origins. A passkey is
-bound to that origin, so reaching the app on a different host or port means updating
-`DILION_AUTH_WEBAUTHN_RP_ORIGINS` to match.
+relying party of `localhost` allowing `$(DEV_WEB_ORIGIN)`, which defaults to
+`http://localhost:5173`.
+
+**A passkey is bound to the origin that created it.** Serving this app from anywhere else — most
+easily by letting the dev server land on `:5174` because `:5173` was busy — makes registration
+fail with `webauthn_verification_failed` and nothing else, because the server will not tell an
+unauthenticated caller which origins it trusts. Two things keep that from happening silently:
+
+- `vite.config.ts` sets `strictPort`, so `npm run dev` refuses to start on a busy port instead of
+  quietly moving to one where passkeys cannot work.
+- When it does happen anyway, the error in the UI names the origin the page is actually served
+  from and the command that fixes it.
+
+To run on another port, move both halves together:
+
+```bash
+npm run dev -- --port 5174                          # terminal 1
+DEV_WEB_ORIGIN=http://localhost:5174 make dev       # terminal 2
+```
 
 ---
 
