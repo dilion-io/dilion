@@ -428,6 +428,8 @@ export interface paths {
          * @description Requires permission `users.read`.
          *
          *     The plural form of `getUserProfile`: always the **masked** projection (`view: MASKED`), for up to 100 subjects in one request. Recorded as a single `PII_MASKED_READ` whose subject manifest lists every profile actually returned. Use `revealUserProfile` for original values; revealing stays one subject at a time because each reveal needs its own recorded reason.
+         *
+         *     Pass the ids as a single comma-separated value (`user_ids=a,b,c`). Repeating the parameter reads only its first occurrence.
          */
         get: operations["listUserProfiles"];
         put?: never;
@@ -3590,7 +3592,7 @@ export interface operations {
     listUserProfiles: {
         parameters: {
             query?: {
-                /** @description Canonical user ids, comma separated. At most 100, duplicates collapsed. */
+                /** @description Canonical user ids in ONE comma-separated value, e.g. user_ids=a,b,c. At most 100, duplicates collapsed. Repeating the parameter does not add ids: only the first occurrence is read. */
                 user_ids?: string[] | null;
             };
             header?: never;

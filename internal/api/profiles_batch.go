@@ -42,7 +42,7 @@ type ProfileBatch struct {
 }
 
 type listProfilesInput struct {
-	UserIDs []string `query:"user_ids" doc:"Canonical user ids, comma separated. At most 100, duplicates collapsed."`
+	UserIDs []string `query:"user_ids" doc:"Canonical user ids in ONE comma-separated value, e.g. user_ids=a,b,c. At most 100, duplicates collapsed. Repeating the parameter does not add ids: only the first occurrence is read."`
 }
 
 type profileBatchOutput struct {
@@ -56,7 +56,9 @@ func (r *registrar) registerProfileBatch() {
 		"(`view: MASKED`), for up to 100 subjects in one request. Recorded as a single " +
 		"`PII_MASKED_READ` whose subject manifest lists every profile actually returned. " +
 		"Use `revealUserProfile` for original values; revealing stays one subject at a time " +
-		"because each reveal needs its own recorded reason."
+		"because each reveal needs its own recorded reason.\n\n" +
+		"Pass the ids as a single comma-separated value (`user_ids=a,b,c`). Repeating the " +
+		"parameter reads only its first occurrence."
 	huma.Register(r.api, op,
 		func(ctx context.Context, in *listProfilesInput) (*profileBatchOutput, error) {
 			ids, err := batchUserIDs(in.UserIDs)
@@ -100,8 +102,15 @@ func (r *registrar) registerProfileBatch() {
 		})
 }
 
-// splitCommas splits one query value on commas and trims the parts, so both
-// ?user_ids=a,b and ?user_ids=a&user_ids=b work. Empty parts are dropped.
+// splitCommas splits one query value on commas and trims the parts. Empty
+// parts are dropped.
+//
+// Comma separation is the ONLY form that carries several ids: the parameter is
+// serialised `explode: false` (which is what the published spec says, and what
+// a generated client therefore sends), and repeating ?user_ids= reads the first
+// occurrence and ignores the rest. The endpoint description says so, because a
+// caller that repeats the parameter would otherwise get a partial answer that
+// looks like a complete one.
 func splitCommas(v string) []string {
 	out := []string{}
 	for _, p := range strings.Split(v, ",") {
