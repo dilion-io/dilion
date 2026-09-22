@@ -372,8 +372,8 @@ custom claims 주입·사용자 정의 ErasureStep 삽입·PII reveal 감시 등
 ## 개선 제안 — 현재 구조로 어려운 부분
 
 위 시나리오들을 실제로 수행해 보며 드러난 API 공백입니다. **P1–P4와 부수 개선 3건은
-2026-08-24에 구현되었습니다** — 아래 "구현된 제안" 요약을 참조하고, P5–P8이 남은
-제안입니다.
+2026-08-24에, 배치 프로필 조회와 배정 보고서의 actor 확장은 2026-09-22에
+구현되었습니다** — 아래 "구현된 제안" 요약을 참조하고, P5–P8이 남은 제안입니다.
 
 ### 구현된 제안 (2026-08-24)
 
@@ -397,6 +397,25 @@ custom claims 주입·사용자 정의 ErasureStep 삽입·PII reveal 감시 등
 - **부수 개선** — audit events `?from=&to=` 기간 창; holds `?active=` 필터;
   `consents.write` permission 분리(migration 0304 — privacy-officer/security-admin/owner에
   자동 부여, `updateUserConsent`는 이제 이 권한을 요구).
+
+### 구현된 제안 (2026-09-22)
+
+- **배치 마스킹 프로필 조회** — `GET /privacy/v1/profiles?user_ids=a,b,c`
+  (`users.read`, 최대 100건). 주체 목록을 보여주는 화면이 이름·이메일을 채우려고
+  주체마다 요청을 보내던 것을 한 번으로 줄인다. 단수형 `getUserProfile`과 같은 권한,
+  같은 마스킹 projection, 같은 감사 action(`PII_MASKED_READ`)이며 실제로 반환된
+  주체만 subject manifest에 넣는다. 프로필이 없는 id는 `missing`에 담아 "프로필 없음"과
+  "요청하지 않은 id"를 구분한다. 원문 열람은 사유를 건별로 남겨야 하므로 `reveal`은
+  단수형 그대로 둔다.
+- **권한 배정 보고서의 actor 확장** — `GET /iam/v1/roles/{id}/assignments?expand=actor`,
+  `GET /iam/v1/permissions/{name}/holders?expand=actor`. actor의 운영 상태(종류,
+  사용 가능 여부, 생성·최근 로그인·정지·삭제·폐기 시각)를 페이지당 2회 질의로 붙인다.
+  개인정보는 넣지 않는다 — 이메일·이름이 필요하면 위의 배치 프로필을 별도로 호출한다.
+  관리 평면이 개인정보를 무관한 보고서에 인라인하지 않는다는 원칙(`P4`의 검색 결과가
+  값 없이 user_id만 반환하는 것과 같은 규칙)을 유지하기 위한 분리다. 배정 원장을 읽을
+  권한이 곧 사람의 상태를 알 권한은 아니므로 해당 operation의 권한에 더해 `users.read`를
+  요구하고, 거절은 보고서를 만들기 전에 이뤄져 `PERMISSION_DENIED`만 남는다. 확장된
+  actor 중 사용자에 해당하는 것은 `USER_LIST_READ` 접속기록에 subject manifest로 남는다.
 
 ### P5. 파기 증빙 조회 (destruction logs + connector tasks)
 

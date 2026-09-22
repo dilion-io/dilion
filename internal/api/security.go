@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -186,4 +187,38 @@ var errorStatuses = []int{
 	http.StatusConflict,
 	http.StatusUnprocessableEntity,
 	http.StatusInternalServerError,
+}
+
+// authorize checks an ADDITIONAL permission from inside a handler, for a
+// request option that widens what an operation returns beyond what its own
+// permission covers. The operation's guard has already authenticated the
+// caller and enforced its base permission; this adds a second, narrower gate
+// on top, with the same rules: a service_role token passes, an API key can
+// never exceed its own scopes, and a missing Authorizer denies. A denial is
+// recorded as PERMISSION_DENIED and returned as 403, exactly as the guard
+// would have.
+func (d Deps) authorize(ctx context.Context, perm, resource string) error {
+	ri := requestInfoFrom(ctx)
+	if ri.Actor.Type == iam.ActorTypeServiceRole {
+		return nil
+	}
+	allowed := false
+	if scopesAllow(ri.Actor, ri.Scopes, perm) && d.Authz != nil {
+		var err error
+		allowed, err = d.Authz.Can(ctx, ri.Actor, perm, resource)
+		if err != nil {
+			return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal,
+				"authorization check failed")
+		}
+	}
+	if !allowed {
+		d.emit(ctx, auditOpts{
+			Action:      audit.ActionPermissionDenied,
+			Resource:    resource + " (" + perm + ")",
+			AccessLevel: audit.AccessNA,
+		})
+		return NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied,
+			"requires permission "+perm)
+	}
+	return nil
 }

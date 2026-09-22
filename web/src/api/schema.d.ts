@@ -416,6 +416,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/privacy/v1/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get several users' masked PII profiles
+         * @description Requires permission `users.read`.
+         *
+         *     The plural form of `getUserProfile`: always the **masked** projection (`view: MASKED`), for up to 100 subjects in one request. Recorded as a single `PII_MASKED_READ` whose subject manifest lists every profile actually returned. Use `revealUserProfile` for original values; revealing stays one subject at a time because each reveal needs its own recorded reason.
+         */
+        get: operations["listUserProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/privacy/v1/requests": {
         parameters: {
             query?: never;
@@ -619,6 +641,37 @@ export interface components {
              */
             token: string;
         };
+        Actor: {
+            /** @description Whether the actor can still exercise the grant: not banned, deleted or revoked. */
+            active: boolean;
+            /**
+             * @description What the actor id names. An actor that is neither a user nor an API key reports unknown, which is a grant left behind by a deleted actor.
+             * @enum {string}
+             */
+            actor_type: "user" | "api_key" | "unknown";
+            /**
+             * Format: date-time
+             * @description Users only.
+             */
+            banned_until: string | null;
+            /** Format: date-time */
+            created_at: string | null;
+            /**
+             * Format: date-time
+             * @description Users only.
+             */
+            deleted_at: string | null;
+            /**
+             * Format: date-time
+             * @description Users only.
+             */
+            last_sign_in_at: string | null;
+            /**
+             * Format: date-time
+             * @description API keys only.
+             */
+            revoked_at: string | null;
+        };
         AudienceMember: {
             /** @description Auth email, empty string if the account has none, null when not requested. */
             email: string | null;
@@ -820,6 +873,8 @@ export interface components {
             name: string;
         };
         PermissionHolder: {
+            /** @description Operational view of the actor; present only with expand=actor. */
+            actor?: components["schemas"]["Actor"];
             actor_id: string;
             /** Format: date-time */
             granted_at: string;
@@ -929,6 +984,12 @@ export interface components {
              */
             view: "MASKED" | "FULL";
         };
+        ProfileBatch: {
+            /** @description Masked profiles, in the order the ids were given. */
+            items: components["schemas"]["Profile"][];
+            /** @description Requested ids with no stored profile. */
+            missing: string[];
+        };
         ProfileField: {
             /**
              * @description Masking hint that decides how the value is projected when masked.
@@ -962,6 +1023,8 @@ export interface components {
             permissions: string[];
         };
         RoleAssignment: {
+            /** @description Operational view of the actor; present only with expand=actor. */
+            actor?: components["schemas"]["Actor"];
             actor_id: string;
             /** Format: date-time */
             granted_at: string;
@@ -1769,7 +1832,10 @@ export interface operations {
     };
     listPermissionHolders: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission. */
+                expand?: "actor";
+            };
             header?: never;
             path: {
                 permissionName: string;
@@ -2035,6 +2101,8 @@ export interface operations {
                 actor_id?: string;
                 /** @description Include revoked assignments (권한 이력 조회). */
                 include_revoked?: boolean;
+                /** @description Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission. */
+                expand?: "actor";
             };
             header?: never;
             path: {
@@ -3452,6 +3520,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PrivacyRequest"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    listUserProfiles: {
+        parameters: {
+            query?: {
+                /** @description Canonical user ids, comma separated. At most 100, duplicates collapsed. */
+                user_ids?: string[] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileBatch"];
                 };
             };
             /** @description Bad Request */

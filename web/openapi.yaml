@@ -105,6 +105,57 @@ components:
         - revoked_at
         - last_used_at
       type: object
+    Actor:
+      additionalProperties: false
+      properties:
+        active:
+          description: "Whether the actor can still exercise the grant: not banned, deleted or revoked."
+          type: boolean
+        actor_type:
+          description: What the actor id names. An actor that is neither a user nor an API key reports unknown, which is a grant left behind by a deleted actor.
+          enum:
+            - user
+            - api_key
+            - unknown
+          type: string
+        banned_until:
+          description: Users only.
+          format: date-time
+          type:
+            - string
+            - "null"
+        created_at:
+          format: date-time
+          type:
+            - string
+            - "null"
+        deleted_at:
+          description: Users only.
+          format: date-time
+          type:
+            - string
+            - "null"
+        last_sign_in_at:
+          description: Users only.
+          format: date-time
+          type:
+            - string
+            - "null"
+        revoked_at:
+          description: API keys only.
+          format: date-time
+          type:
+            - string
+            - "null"
+      required:
+        - actor_type
+        - active
+        - created_at
+        - last_sign_in_at
+        - banned_until
+        - deleted_at
+        - revoked_at
+      type: object
     AudienceMember:
       additionalProperties: false
       properties:
@@ -577,6 +628,9 @@ components:
     PermissionHolder:
       additionalProperties: false
       properties:
+        actor:
+          $ref: "#/components/schemas/Actor"
+          description: Operational view of the actor; present only with expand=actor.
         actor_id:
           type: string
         granted_at:
@@ -772,6 +826,23 @@ components:
         - view
         - updated_at
       type: object
+    ProfileBatch:
+      additionalProperties: false
+      properties:
+        items:
+          description: Masked profiles, in the order the ids were given.
+          items:
+            $ref: "#/components/schemas/Profile"
+          type: array
+        missing:
+          description: Requested ids with no stored profile.
+          items:
+            type: string
+          type: array
+      required:
+        - items
+        - missing
+      type: object
     ProfileField:
       additionalProperties: false
       properties:
@@ -849,6 +920,9 @@ components:
     RoleAssignment:
       additionalProperties: false
       properties:
+        actor:
+          $ref: "#/components/schemas/Actor"
+          description: Operational view of the actor; present only with expand=actor.
         actor_id:
           type: string
         granted_at:
@@ -1686,6 +1760,15 @@ paths:
           schema:
             pattern: ^[a-z][a-z0-9-]*\.[a-z0-9.-]+$
             type: string
+        - description: Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission.
+          explode: false
+          in: query
+          name: expand
+          schema:
+            description: Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission.
+            enum:
+              - actor
+            type: string
       responses:
         "200":
           content:
@@ -1919,6 +2002,15 @@ paths:
           schema:
             description: Include revoked assignments (권한 이력 조회).
             type: boolean
+        - description: Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission.
+          explode: false
+          in: query
+          name: expand
+          schema:
+            description: Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission.
+            enum:
+              - actor
+            type: string
       responses:
         "200":
           content:
@@ -3127,6 +3219,79 @@ paths:
       summary: Cancel my privacy request
       tags:
         - me
+  /privacy/v1/profiles:
+    get:
+      description: |-
+        Requires permission `users.read`.
+
+        The plural form of `getUserProfile`: always the **masked** projection (`view: MASKED`), for up to 100 subjects in one request. Recorded as a single `PII_MASKED_READ` whose subject manifest lists every profile actually returned. Use `revealUserProfile` for original values; revealing stays one subject at a time because each reveal needs its own recorded reason.
+      operationId: listUserProfiles
+      parameters:
+        - description: Canonical user ids, comma separated. At most 100, duplicates collapsed.
+          explode: false
+          in: query
+          name: user_ids
+          schema:
+            description: Canonical user ids, comma separated. At most 100, duplicates collapsed.
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileBatch"
+          description: OK
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Bad Request
+        "401":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unauthorized
+        "403":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Forbidden
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Not Found
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Conflict
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+          description: Internal Server Error
+      security:
+        - bearerAuth: []
+      summary: Get several users' masked PII profiles
+      tags:
+        - privacy
   /privacy/v1/requests:
     get:
       description: Requires permission `privacy.requests.manage`.

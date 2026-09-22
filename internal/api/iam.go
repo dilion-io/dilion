@@ -58,6 +58,7 @@ type RoleAssignment struct {
 	GrantedAt time.Time  `json:"granted_at"`
 	RevokedBy *string    `json:"revoked_by" nullable:"true"`
 	RevokedAt *time.Time `json:"revoked_at" nullable:"true"`
+	Actor     *Actor     `json:"actor,omitempty" doc:"Operational view of the actor; present only with expand=actor."`
 }
 
 type CreateRoleAssignmentBody struct {
@@ -76,6 +77,25 @@ type PermissionHolder struct {
 	RoleName  string    `json:"role_name"`
 	GrantedBy *string   `json:"granted_by" nullable:"true"`
 	GrantedAt time.Time `json:"granted_at"`
+	Actor     *Actor    `json:"actor,omitempty" doc:"Operational view of the actor; present only with expand=actor."`
+}
+
+// Actor is the non-PII operational view of the actor a grant names, returned
+// with `expand=actor`. It answers "can this actor still use the grant?" without
+// a request per actor.
+//
+// It deliberately carries NO personal data: no email, no name. The management
+// plane does not inline personal data into unrelated reports, so a caller that
+// needs to show who an operator is reads the masked profile surface, which is
+// separately permissioned and separately audited.
+type Actor struct {
+	ActorType    string     `json:"actor_type" enum:"user,api_key,unknown" doc:"What the actor id names. An actor that is neither a user nor an API key reports unknown, which is a grant left behind by a deleted actor."`
+	Active       bool       `json:"active" doc:"Whether the actor can still exercise the grant: not banned, deleted or revoked."`
+	CreatedAt    *time.Time `json:"created_at" nullable:"true"`
+	LastSignInAt *time.Time `json:"last_sign_in_at" nullable:"true" doc:"Users only."`
+	BannedUntil  *time.Time `json:"banned_until" nullable:"true" doc:"Users only."`
+	DeletedAt    *time.Time `json:"deleted_at" nullable:"true" doc:"Users only."`
+	RevokedAt    *time.Time `json:"revoked_at" nullable:"true" doc:"API keys only."`
 }
 
 type PermissionHolderPage struct {
@@ -135,6 +155,20 @@ func toAssignment(in iam.Assignment) RoleAssignment {
 	}
 }
 
+// toActor renders the operational view. Active is computed here, once, so a
+// reviewer does not have to re-derive it from four nullable timestamps.
+func toActor(in iam.ActorDetail, now time.Time) *Actor {
+	return &Actor{
+		ActorType:    in.Type,
+		Active:       in.Active(now),
+		CreatedAt:    in.CreatedAt,
+		LastSignInAt: in.LastSignInAt,
+		BannedUntil:  in.BannedUntil,
+		DeletedAt:    in.DeletedAt,
+		RevokedAt:    in.RevokedAt,
+	}
+}
+
 func toHolder(in iam.Holder) PermissionHolder {
 	return PermissionHolder{
 		ActorID: in.ActorID, RoleID: in.RoleID, RoleName: in.RoleName,
@@ -179,6 +213,7 @@ type listRoleAssignmentsInput struct {
 	Cursor         string `query:"cursor"`
 	ActorID        string `query:"actor_id" doc:"Filter by actor."`
 	IncludeRevoked bool   `query:"include_revoked" doc:"Include revoked assignments (권한 이력 조회)."`
+	Expand         string `query:"expand" enum:"actor" doc:"Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission."`
 }
 
 type roleAssignmentPageOutput struct {
@@ -214,6 +249,7 @@ type permissionOutput struct {
 
 type permissionHoldersInput struct {
 	PermissionName string `path:"permissionName" pattern:"^[a-z][a-z0-9-]*\\.[a-z0-9.-]+$"`
+	Expand         string `query:"expand" enum:"actor" doc:"Set to actor to include each actor's operational view. Requires users.read in addition to this operation's permission."`
 }
 
 type permissionHolderPageOutput struct {
@@ -288,6 +324,10 @@ func (r *registrar) registerRoles() {
 	huma.Register(r.api, r.op("listRoleAssignments", http.MethodGet, "/iam/v1/roles/{roleId}/assignments",
 		"List assignments of a role", iam.PermAuditRead, "iam", http.StatusOK),
 		func(ctx context.Context, in *listRoleAssignmentsInput) (*roleAssignmentPageOutput, error) {
+			resource := "role:" + in.RoleID + " assignments"
+			if err := r.authorizeExpand(ctx, resource, in.Expand); err != nil {
+				return nil, err
+			}
 			page, err := r.keys.ListAssignments(ctx, iam.AssignmentFilter{
 				RoleID:         in.RoleID,
 				ActorID:        in.ActorID,
@@ -301,10 +341,16 @@ func (r *registrar) registerRoles() {
 			// (§5.3) stays empty.
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionIAMRead,
-				Resource:    "role:" + in.RoleID + " assignments",
+				Resource:    resource,
 				AccessLevel: audit.AccessNA,
 				ResultCount: len(items),
 			})
+			if err := r.expandActors(ctx, resource, in.Expand,
+				func(i int) string { return items[i].ActorID },
+				func(i int, a *Actor) { items[i].Actor = a },
+				len(items)); err != nil {
+				return nil, err
+			}
 			return &roleAssignmentPageOutput{Body: RoleAssignmentPage{
 				Items: items, NextCursor: page.NextCursor,
 			}}, nil
@@ -385,6 +431,10 @@ func (r *registrar) registerPermissions() {
 	huma.Register(r.api, r.op("listPermissionHolders", http.MethodGet, "/iam/v1/permissions/{permissionName}/holders",
 		"List actors currently holding a permission (recertification)", iam.PermAuditRead, "iam", http.StatusOK),
 		func(ctx context.Context, in *permissionHoldersInput) (*permissionHolderPageOutput, error) {
+			resource := "permission:" + in.PermissionName + " holders"
+			if err := r.authorizeExpand(ctx, resource, in.Expand); err != nil {
+				return nil, err
+			}
 			holders, err := r.keys.Recertification(ctx, in.PermissionName)
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
@@ -396,14 +446,81 @@ func (r *registrar) registerPermissions() {
 			// ids in it would make operators look like data subjects.
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionIAMRead,
-				Resource:    "permission:" + in.PermissionName + " holders",
+				Resource:    resource,
 				AccessLevel: audit.AccessNA,
 				ResultCount: len(items),
 			})
+			if err := r.expandActors(ctx, resource, in.Expand,
+				func(i int) string { return items[i].ActorID },
+				func(i int, a *Actor) { items[i].Actor = a },
+				len(items)); err != nil {
+				return nil, err
+			}
 			return &permissionHolderPageOutput{Body: PermissionHolderPage{
 				Items: items,
 			}}, nil
 		})
+}
+
+// expandActor names the one value of the `expand` option.
+const expandActor = "actor"
+
+// authorizeExpand gates expand=actor on users.read, on top of the permission
+// the operation already required. Whether an operator is banned, deleted or
+// dormant is a fact about a person, so authority to read the grant ledger is
+// not by itself authority to learn it.
+//
+// It runs BEFORE the report is built, so a request that will be refused does
+// no work and leaves no IAM_READ access record behind.
+func (r *registrar) authorizeExpand(ctx context.Context, resource, expand string) error {
+	if expand != expandActor {
+		return nil
+	}
+	return r.d.authorize(ctx, iam.PermUsersRead, resource)
+}
+
+// expandActors attaches the operational actor view to a page of grants when
+// the caller asked for it with expand=actor. It is a no-op otherwise, so the
+// default response, its permission and its audit event are exactly what they
+// were before the option existed.
+//
+// The actors that turn out to be users go into a USER_LIST_READ access record
+// with a subject manifest, because that read really did touch data subjects.
+// The report's own IAM_READ event stays subject-free (§5.3).
+//
+// The lookup is two queries for the whole page, which is the point: the
+// alternative was one request per actor.
+func (r *registrar) expandActors(ctx context.Context, resource, expand string,
+	actorID func(int) string, attach func(int, *Actor), n int) error {
+	if expand != expandActor {
+		return nil
+	}
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		ids = append(ids, actorID(i))
+	}
+	details, err := r.keys.ActorDetails(ctx, ids)
+	if err != nil {
+		return mapIAMError(ctx, err)
+	}
+	now := time.Now().UTC()
+	for i := 0; i < n; i++ {
+		d, ok := details[actorID(i)]
+		if !ok {
+			d = iam.ActorDetail{ActorID: actorID(i), Type: iam.ActorTypeUnknown}
+		}
+		attach(i, toActor(d, now))
+	}
+	if subjects := iam.UserActorIDs(details, ids); len(subjects) > 0 {
+		r.d.emit(ctx, auditOpts{
+			Action:      audit.ActionUserListRead,
+			Resource:    resource + " (expand=actor)",
+			AccessLevel: audit.AccessMasked,
+			ResultCount: len(subjects),
+			SubjectIDs:  subjects,
+		})
+	}
+	return nil
 }
 
 func (r *registrar) registerAPIKeys() {

@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/httpapi"
+	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -603,5 +605,96 @@ func TestListPaginationAcrossPages(t *testing.T) {
 	}
 	if second.Items[0].ID <= first.Items[1].ID {
 		t.Error("pages overlap")
+	}
+}
+
+// ActorDetails resolves both actor kinds in one call, and says so plainly when
+// an id resolves to neither — a grant left behind by a deleted actor is exactly
+// what a recertification review has to notice.
+func TestActorDetails(t *testing.T) {
+	pool := testPool(t)
+	svc := newTestService(t, pool)
+	ctx := context.Background()
+
+	// ActorDetails reads auth.users, which this package's own migration list
+	// does not create: it applies the 03xx files only. Bring the whole schema
+	// up for this one test instead of widening that list for every other.
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	banned := uuid.NewString()
+	live := uuid.NewString()
+	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`delete from auth.users where id = any($1::uuid[])`, []string{banned, live})
+	})
+	if _, err := pool.Exec(ctx, `
+		insert into auth.users (id, aud, role, email, banned_until)
+		values ($1::uuid,'authenticated','authenticated','banned@example.com',$3),
+		       ($2::uuid,'authenticated','authenticated','live@example.com',null)`,
+		banned, live, until); err != nil {
+		t.Fatalf("insert users: %v", err)
+	}
+	_, key, err := svc.CreateKey(ctx, "expand-key", []string{PermUsersRead}, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	ids := []string{live, banned, key.ID, "gone_" + uuid.NewString(), live}
+	got, err := svc.ActorDetails(ctx, ids)
+	if err != nil {
+		t.Fatalf("ActorDetails: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("details = %d entries, want 4 after collapsing the duplicate", len(got))
+	}
+
+	now := time.Now().UTC()
+	if d := got[live]; d.Type != ActorTypeUser || !d.Active(now) {
+		t.Errorf("live user = %+v, want an active user", d)
+	}
+	if d := got[banned]; d.Type != ActorTypeUser || d.Active(now) {
+		t.Errorf("banned user = %+v, want an inactive user", d)
+	} else if d.BannedUntil == nil || !d.BannedUntil.Equal(until) {
+		t.Errorf("banned_until = %v, want %v", d.BannedUntil, until)
+	}
+	if d := got[key.ID]; d.Type != ActorTypeAPIKey || !d.Active(now) {
+		t.Errorf("api key = %+v, want an active key", d)
+	}
+	for id, d := range got {
+		if d.Type == ActorTypeUnknown && d.Active(now) {
+			t.Errorf("unknown actor %q reported active", id)
+		}
+	}
+
+	// A revoked key is no longer active.
+	if _, err := svc.RevokeKey(ctx, key.ID, "root"); err != nil {
+		t.Fatalf("revoke key: %v", err)
+	}
+	got, err = svc.ActorDetails(ctx, []string{key.ID})
+	if err != nil {
+		t.Fatalf("ActorDetails after revoke: %v", err)
+	}
+	if d := got[key.ID]; d.RevokedAt == nil || d.Active(now) {
+		t.Errorf("revoked key = %+v, want inactive with revoked_at set", d)
+	}
+
+	// Only the user actors may go into an access record's subject manifest.
+	subjects := UserActorIDs(got, []string{key.ID})
+	if len(subjects) != 0 {
+		t.Errorf("subjects for an api key = %v, want none", subjects)
+	}
+	all, err := svc.ActorDetails(ctx, ids)
+	if err != nil {
+		t.Fatalf("ActorDetails: %v", err)
+	}
+	if subjects := UserActorIDs(all, ids); len(subjects) != 2 {
+		t.Errorf("subjects = %v, want the two users only", subjects)
+	}
+
+	if got, err := svc.ActorDetails(ctx, nil); err != nil || len(got) != 0 {
+		t.Errorf("ActorDetails(nil) = (%v, %v), want an empty map", got, err)
 	}
 }

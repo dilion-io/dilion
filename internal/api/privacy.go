@@ -374,6 +374,7 @@ func RegisterPrivacyAPI(api huma.API, svcs ServiceProvider, d Deps) {
 	r.registerConsents()
 	r.registerConsentSegments()
 	r.registerProfiles()
+	r.registerProfileBatch()
 	r.registerUserSearch()
 	r.registerDestinations()
 	r.registerHolds()
