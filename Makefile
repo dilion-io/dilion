@@ -6,6 +6,7 @@ PGPORT ?= 55432
 DSN_BASE := postgres://dilion:dilion@$(PGHOST):$(PGPORT)
 DEV_DSN ?= $(DSN_BASE)/dilion_dev
 MASTER_KEY_FILE := .dev/master.key
+OPAQUE_KEY_FILE := .dev/opaque.key
 DOCKER_IMAGE ?= ghcr.io/dilion-io/dilion
 DOCKER_VERSION ?= dev
 
@@ -91,10 +92,23 @@ web-check: ## codegen + typecheck/build + lint
 $(MASTER_KEY_FILE):
 	@mkdir -p .dev && head -c32 /dev/urandom | base64 > $@ && echo "generated $@"
 
-dev: up $(MASTER_KEY_FILE) ## API 서버 기동 :8787 (migrations 자동 적용)
+# OPAQUE has its own key, separate from the PII master key (docs/opaque.md).
+# Unpadded base64url is the form the configuration accepts.
+$(OPAQUE_KEY_FILE):
+	@mkdir -p .dev && head -c32 /dev/urandom | basenc --base64url | tr -d '=' > $@ \
+		&& echo "generated $@"
+
+# Passkeys need a relying party. In dev the browser is on :5173 (the Vite proxy)
+# and direct calls to :8787 also happen, so both origins are allowed; the RP id
+# is the registrable domain they share.
+dev: up $(MASTER_KEY_FILE) $(OPAQUE_KEY_FILE) ## API 서버 기동 :8787 (migrations 자동 적용, OPAQUE·passkey 켜짐)
 	DILION_DSN='$(DEV_DSN)' \
 	DILION_JWT_SECRET='devsecret-e2e' \
 	DILION_MASTER_KEY="$$(cat $(MASTER_KEY_FILE))" \
+	DILION_AUTH_OPAQUE_MASTER_KEY="$$(cat $(OPAQUE_KEY_FILE))" \
+	DILION_AUTH_PASSKEY_ENABLED='true' \
+	DILION_AUTH_WEBAUTHN_RP_ID='localhost' \
+	DILION_AUTH_WEBAUTHN_RP_ORIGINS='http://localhost:5173,http://localhost:8787' \
 	DILION_ADDR=':8787' \
 	DILION_POLICY_FILE='dev/policy.dev.yaml' \
 	go run ./cmd/dilion

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { authErrorMessage, supabase } from '../lib/supabase'
 import { UpdateUserSection } from '../components/UpdateUserSection'
+import { PasskeysSection } from '../components/PasskeysSection'
+import { OpaqueSection } from '../components/OpaqueSection'
 import { SessionToolsCard } from '../components/SessionToolsCard'
 import { ServerInfoCard } from '../components/ServerInfoCard'
 
@@ -62,6 +64,10 @@ export function AccountPage({ session }: { session: Session }) {
       </section>
 
       <UpdateUserSection user={current} onUserChanged={setUser} />
+
+      <PasskeysSection />
+
+      <OpaqueSection />
 
       <SessionToolsCard session={session} />
 

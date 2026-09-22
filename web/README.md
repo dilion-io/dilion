@@ -5,7 +5,7 @@ supported client paths:
 
 | Path | Library | Surface |
 | --- | --- | --- |
-| Auth | `@supabase/supabase-js` | `/auth/v1/*` — Supabase Auth compatible, so ordinary supabase-js code works unchanged |
+| Auth | `@dilion-io/auth-js` | `/auth/v1/*` — Supabase Auth compatible, so ordinary supabase-js code works unchanged; the wrapper only adds `auth.opaque` |
 | Management plane | `openapi-fetch` + types generated from `openapi.yaml` | `/privacy/v1/*`, `/iam/v1/*` — OpenAPI-first, fully typed |
 
 Stack: Vite + React + TypeScript, no UI framework, no router dependency (hash routing).
@@ -54,6 +54,48 @@ VITE_DILION_ANON_KEY=dev-anon-key
 If the variable is unset the app still boots: the banner turns red and the Privacy Center renders
 setup instructions instead of calling the API. The Admin console still works if you switch the
 credential selector to `SESSION` (next section).
+
+---
+
+## Three ways to sign in
+
+The auth screen offers the same account three credential types, all ending in the same ordinary
+Supabase session. They differ only in what the server gets to learn.
+
+| Method | Call | What the server receives |
+| --- | --- | --- |
+| Password grant | `auth.signUp` / `auth.signInWithPassword` | the password, verified against a stored hash |
+| OPAQUE | `auth.opaque.signUp` / `auth.opaque.signInWithPassword` | never the password, in any form (RFC 9807 aPAKE) |
+| Passkey | `auth.signInWithPasskey` | a signature over a challenge; no shared secret exists |
+
+`src/lib/supabase.ts` builds the client with `@dilion-io/auth-js`, which wraps
+`@supabase/supabase-js` and the same session manager — so persistence, refresh and every other
+auth call stay upstream's behaviour. Only `auth.opaque` is Dilion's own. Passkeys need no
+client-side flag from `@supabase/auth-js` 2.117 on.
+
+**OPAQUE** (`src/pages/AuthPage.tsx`, `src/components/OpaqueSection.tsx`). Signing up and signing
+in both run the protocol in the browser; the password is never in a request body. A successful
+login yields two 64-byte secrets the browser owns — `session_key`, which the server derived
+independently, and `export_key`, which it never sees — plus a `key_id` naming the shared key. The
+sample has nothing to encrypt, so it wipes both with `wipe()` and keeps only the id. A real app
+derives purpose-bound keys with HKDF and binds them to that id; it never stores these bytes.
+Registration is **not** authentication: `signUp` returns `session: null`, and the export key it
+returns is provisional until a real login. The account page enrols an OPAQUE credential on an
+account that already exists (`auth.opaque.register()`), which the server gates on a sign-in from
+the last five minutes and on AAL2 where MFA is enrolled.
+
+**Passkeys** (`src/components/PasskeysSection.tsx`). `auth.registerPasskey()` runs the whole
+WebAuthn ceremony; the account page lists, renames and removes credentials. Signing in
+(`auth.signInWithPasskey()`) needs no email: the credential is discoverable, so the authenticator
+identifies the user by itself. Whether this works at all is the server's decision, reported by
+`GET /auth/v1/settings` as `passkeys_enabled` — when it is off, the sample says so instead of
+offering a button that fails.
+
+Both features are off unless the server is configured for them. `make dev` configures both: it
+generates `.dev/opaque.key`, sets `DILION_AUTH_PASSKEY_ENABLED=true`, and declares a WebAuthn
+relying party of `localhost` with `http://localhost:5173` among its allowed origins. A passkey is
+bound to that origin, so reaching the app on a different host or port means updating
+`DILION_AUTH_WEBAUTHN_RP_ORIGINS` to match.
 
 ---
 
