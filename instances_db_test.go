@@ -28,7 +28,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/dilion-io/dilion/internal/kmslocal"
 	"github.com/dilion-io/dilion/internal/privacy"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
@@ -108,15 +107,17 @@ func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 	h1 := testPool(t, "DILION_TEST_DB_DSN_H1", defaultH1DSN)
 	h2 := testPool(t, "DILION_TEST_DB_DSN_H2", defaultH2DSN)
 
-	key := make([]byte, kmslocal.KeySize)
+	key := make([]byte, LocalKMSKeySize)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
 	res := &twoInstances{
 		pools: map[string]*pgxpool.Pool{"h1": h1, "h2": h2, unlistedInstance: h1},
+		// Built through the public constructor an embedder would use for its
+		// own per-instance KMS, not the internal package.
 		kms: map[string]ports.KMS{
-			"h1": kmslocal.New(h1, key),
-			"h2": kmslocal.New(h2, key),
+			"h1": mustLocalKMS(t, h1, key),
+			"h2": mustLocalKMS(t, h2, key),
 		},
 		// Each instance signs with its own secret: that is what binds a
 		// token to its instance (TestTokenIsBoundToInstance).
@@ -143,6 +144,15 @@ func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return srv, h1, h2
+}
+
+func mustLocalKMS(t *testing.T, pool *pgxpool.Pool, kek []byte) ports.KMS {
+	t.Helper()
+	k, err := NewLocalKMS(pool, kek)
+	if err != nil {
+		t.Fatalf("NewLocalKMS: %v", err)
+	}
+	return k
 }
 
 func instanceCtx(t *testing.T, id string) context.Context {
