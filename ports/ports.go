@@ -214,6 +214,57 @@ func InstanceFromContext(ctx context.Context) string {
 	return DefaultInstanceID
 }
 
+// ---- Identity federation defined in code ----
+//
+// Resolved per request and per instance, and consulted BEFORE anything stored
+// in the instance database: as a relying party, an instance signs users in
+// through external OpenID Connect providers, and ProviderSource defines those
+// providers in code. It exists for platforms that already know, in their own
+// data, which providers each tenant has, and should not have to copy that into
+// every instance database and keep it in sync.
+
+// OIDCProvider is an external OpenID Connect provider an instance signs users
+// in with, defined by embedder code rather than stored in
+// auth.custom_oauth_providers. It is reached at
+// GET /auth/v1/authorize?provider=<name> exactly like a stored one.
+type OIDCProvider struct {
+	// Issuer is the provider's issuer identifier. Its endpoints and signing
+	// keys come from Issuer + "/.well-known/openid-configuration", and every
+	// id_token must carry exactly this `iss`. Required.
+	Issuer string
+	// DiscoveryURL overrides where the metadata is fetched from, for a
+	// provider that does not publish it under the issuer. Optional.
+	DiscoveryURL string
+	// ClientID and ClientSecret are this instance's registration at the
+	// provider. The id_token audience must include ClientID. Required.
+	ClientID     string
+	ClientSecret string
+	// RedirectURI is the callback registered at the provider. Empty derives it
+	// from the request: the scheme and Host the authorize request arrived on,
+	// with the path's last segment replaced by "callback" — e.g.
+	// https://{ref}.api.example.com/auth/v1/callback. Set it when a proxy
+	// rewrites the host or path on the way in.
+	RedirectURI string
+	// Scopes requested at the provider. Empty means openid, email and profile.
+	Scopes []string
+	// LinkBySubject makes the provider's `sub` claim the local user id. A
+	// sign-in then resolves to the user whose id equals `sub` — linking the
+	// identity to that user if it exists, creating the user under that id if
+	// it does not — and never matches on email. That is only correct when the
+	// provider and this instance share one user id space, as a platform's own
+	// SSO does; `sub` must then be a UUID, and a sign-in whose `sub` is not
+	// one is refused. It also means the provider can sign in as ANY local
+	// user, which is why it is only available to providers defined in code.
+	LinkBySubject bool
+}
+
+// ProviderSource returns the code-defined provider called name for an
+// instance, or (nil, nil) when it defines none by that name — the lookup then
+// continues with the built-in providers and auth.custom_oauth_providers. An
+// error fails the request. It runs on every authorize and callback request, so
+// it should answer from memory or a cache.
+type ProviderSource func(ctx context.Context, instanceID, name string) (*OIDCProvider, error)
+
 // ---- Clock (no naked time.Now in domain logic; injectable for tests) ----
 
 type Clock interface {

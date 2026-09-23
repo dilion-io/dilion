@@ -13,6 +13,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -119,8 +120,17 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 
 	p, _, err := a.provider(ctx, fs.ProviderType, "")
 	if err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) {
+			return he
+		}
 		return badRequestError(ErrorCodeOAuthProviderNotSupported, "Unsupported provider: %+v", err).withInternal(err)
 	}
+	// The token exchange must present the redirect_uri the authorization
+	// request did. This request IS that /callback, on the same host, so it
+	// derives the same one.
+	a.applyRequestRedirectURI(p, r)
+	bySubject := providerLinksBySubject(p)
 
 	hc := a.httpClient()
 	tok, err := p.exchange(ctx, hc, code)
@@ -153,9 +163,9 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		var terr error
 		if fs.LinkingTargetID != nil {
-			user, terr = a.linkIdentityToUser(ctx, tx, r, *fs.LinkingTargetID, data, fs.ProviderType)
+			user, terr = a.linkIdentityToUser(ctx, tx, r, *fs.LinkingTargetID, data, fs.ProviderType, bySubject)
 		} else {
-			user, createdUser, terr = a.createAccountFromExternalIdentity(ctx, tx, r, data, fs.ProviderType)
+			user, createdUser, terr = a.createAccountFromExternalIdentity(ctx, tx, r, data, fs.ProviderType, bySubject)
 		}
 		if terr != nil {
 			return terr
@@ -239,6 +249,9 @@ type accountLinkingResult struct {
 	User           *User
 	Identity       *Identity
 	CandidateEmail providerEmail
+	// NewUserID is the id to create the user under, for a CreateAccount that
+	// links by subject. Empty means a fresh random id.
+	NewUserID string
 }
 
 // determineAccountLinking is upstream's models.DetermineAccountLinking, reduced
@@ -251,8 +264,10 @@ type accountLinkingResult struct {
 //	verified email matches an existing user         -> LinkAccount     (backfilling the identity)
 //	otherwise                                       -> CreateAccount
 //	several users in the same linking domain        -> MultipleAccounts (caller errors)
+//
+// bySubject replaces everything after the first line: see linkBySubject.
 func (a *api) determineAccountLinking(ctx context.Context, tx querier, emails []providerEmail,
-	aud, providerName, sub string) (accountLinkingResult, error) {
+	aud, providerName, sub string, bySubject bool) (accountLinkingResult, error) {
 
 	var verifiedEmails []string
 	var candidate providerEmail
@@ -283,6 +298,10 @@ func (a *api) determineAccountLinking(ctx context.Context, tx querier, emails []
 			Identity:       identity,
 			CandidateEmail: candidate,
 		}, nil
+	}
+
+	if bySubject {
+		return a.linkBySubject(ctx, tx, sub, candidate, aud)
 	}
 
 	if len(verifiedEmails) == 0 {
@@ -342,11 +361,60 @@ func (a *api) determineAccountLinking(ctx context.Context, tx querier, emails []
 	}, nil
 }
 
+// linkBySubject decides a sign-in through a provider whose `sub` IS the local
+// user id (ports.OIDCProvider.LinkBySubject). It runs only once no identity for
+// (provider, sub) exists yet, i.e. on the first sign-in through this provider:
+//
+//	user with id = sub exists  -> LinkAccount   (whatever its email is)
+//	no such user               -> CreateAccount (under id = sub)
+//
+// Email plays no part in choosing the user. That is the point: the provider
+// and this instance share one id space, so matching on email could only ever
+// pick the wrong account — or two — when the addresses drift apart. A new
+// account still takes the provider's email, unless another user already owns
+// that address, in which case it is created without one rather than failing
+// the sign-in or merging into the other account.
+//
+// A soft-deleted user under that id is refused rather than revived. A user
+// that was hard-deleted, including by an erasure, is created again under the
+// same id: the provider still vouches for it, and it is the provider's id.
+func (a *api) linkBySubject(ctx context.Context, tx querier, sub string, candidate providerEmail, aud string) (accountLinkingResult, error) {
+	if _, err := uuid.Parse(sub); err != nil {
+		return accountLinkingResult{}, internalServerError(
+			"Provider links users by subject, but its subject is not a user id").withInternal(err)
+	}
+	user, err := findUserByID(ctx, tx, sub)
+	if err != nil && !isNoRows(err) {
+		return accountLinkingResult{}, internalServerError("Database error finding user").withInternal(err)
+	}
+	if user != nil {
+		if user.DeletedAt != nil {
+			return accountLinkingResult{}, forbiddenError(ErrorCodeUserNotFound, "User from provider subject has been deleted")
+		}
+		return accountLinkingResult{Decision: decisionLinkAccount, User: user, CandidateEmail: candidate}, nil
+	}
+
+	if candidate.Email != "" {
+		owner, eerr := findUserByEmail(ctx, tx, candidate.Email, aud)
+		if eerr != nil && !isNoRows(eerr) {
+			return accountLinkingResult{}, internalServerError("Database error finding user").withInternal(eerr)
+		}
+		if owner != nil {
+			a.log.WarnContext(ctx, "auth: provider email already belongs to another user; creating the subject's account without it",
+				"user_id", sub, "other_user_id", owner.ID)
+			candidate.Email = ""
+		}
+	}
+	return accountLinkingResult{Decision: decisionCreateAccount, CandidateEmail: candidate, NewUserID: sub}, nil
+}
+
 // createAccountFromExternalIdentity is upstream's
 // createAccountFromExternalIdentity. It returns the resolved user and whether
 // this call CREATED it (which decides whether the AfterSignup hook fires).
+// bySubject resolves the user by the provider's `sub` rather than by email
+// (linkBySubject).
 func (a *api) createAccountFromExternalIdentity(ctx context.Context, tx pgx.Tx, r *http.Request,
-	data *userProvidedData, providerType string) (*User, bool, error) {
+	data *userProvidedData, providerType string, bySubject bool) (*User, bool, error) {
 
 	aud := requestAud(r)
 	now := a.now()
@@ -356,7 +424,7 @@ func (a *api) createAccountFromExternalIdentity(ctx context.Context, tx pgx.Tx, 
 		return nil, false, internalServerError("Error getting user id from external provider")
 	}
 
-	decision, err := a.determineAccountLinking(ctx, tx, data.Emails, aud, providerType, sub)
+	decision, err := a.determineAccountLinking(ctx, tx, data.Emails, aud, providerType, sub, bySubject)
 	if err != nil {
 		return nil, false, err
 	}
@@ -404,8 +472,12 @@ func (a *api) createAccountFromExternalIdentity(ctx context.Context, tx pgx.Tx, 
 			identityData = JSONMap(v)
 		}
 
+		id := decision.NewUserID
+		if id == "" {
+			id = uuid.NewString()
+		}
 		user, err = insertUser(ctx, tx, newUserParams{
-			ID:           uuid.NewString(),
+			ID:           id,
 			Aud:          aud,
 			Role:         RoleAuthenticated,
 			Email:        email,

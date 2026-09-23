@@ -59,6 +59,7 @@ func newFakeOIDCProviderTLS(t *testing.T) *fakeOIDCProvider {
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		p.tokenRedirectURI = r.FormValue("redirect_uri")
 		if r.FormValue("grant_type") != "authorization_code" || r.FormValue("code") == "" {
 			http.Error(w, "bad token request", http.StatusBadRequest)
 			return

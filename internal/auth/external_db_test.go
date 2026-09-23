@@ -54,6 +54,9 @@ type fakeOIDCProvider struct {
 	omitIDToken  bool
 
 	tokenRequests int
+	// tokenRedirectURI is the redirect_uri the last token request presented;
+	// OAuth requires it to equal the one the authorization request carried.
+	tokenRedirectURI string
 }
 
 func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
@@ -90,6 +93,7 @@ func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		p.tokenRequests++
 		_ = r.ParseForm()
+		p.tokenRedirectURI = r.FormValue("redirect_uri")
 		if r.FormValue("grant_type") != "authorization_code" || r.FormValue("code") == "" {
 			http.Error(w, "bad token request", http.StatusBadRequest)
 			return

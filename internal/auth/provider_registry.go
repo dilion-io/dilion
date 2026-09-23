@@ -236,9 +236,18 @@ func registeredProviders() []string {
 
 // provider resolves a provider by name, exactly as upstream's api.Provider:
 // unknown name or failed configuration validation is the caller's 400.
+//
+// Lookup order: the code-defined source (ports.ProviderSource), then the
+// built-in factories, then auth.custom_oauth_providers.
 func (a *api) provider(ctx context.Context, name, scopes string) (externalProvider, ProviderConfig, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	cfg := a.cfg.External[name]
+
+	if p, ok, err := a.codeProvider(ctx, name, scopes); err != nil {
+		return nil, cfg, err
+	} else if ok {
+		return p, cfg, nil
+	}
 
 	f, ok := providerFactories[name]
 	if !ok {

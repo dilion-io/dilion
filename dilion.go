@@ -79,6 +79,13 @@ const shutdownGrace = 15 * time.Second
 // Hook points are re-exported so embedders need not import ports directly.
 type HookPoint = ports.HookPoint
 
+// The identity-federation contracts are re-exported for the same reason; see
+// WithProviderSource.
+type (
+	OIDCProvider   = ports.OIDCProvider
+	ProviderSource = ports.ProviderSource
+)
+
 const (
 	BeforeSignup      = ports.BeforeSignup
 	AfterSignup       = ports.AfterSignup
@@ -109,6 +116,7 @@ type config struct {
 	policyYAML    []byte
 	piiFieldsYAML []byte
 	resolver      ports.InstanceResolver
+	providers     ports.ProviderSource
 	authConfig    *auth.Config
 	addr          string
 	clock         ports.Clock
@@ -214,6 +222,34 @@ func WithPIIFieldsYAML(b []byte) Option {
 // per-instance objects are cached for the lifetime of the server.
 func WithInstanceResolver(r ports.InstanceResolver) Option {
 	return func(c *config) { c.resolver = r }
+}
+
+// WithProviderSource defines external OpenID Connect providers in code, per
+// instance. A sign-in through GET /auth/v1/authorize?provider=<name> asks src
+// first — before the built-in providers and before the instance's
+// auth.custom_oauth_providers — and uses the provider it returns; (nil, nil)
+// moves on to those. This is how a platform gives every tenant instance its own
+// registration at a shared IdP without storing it in each tenant database:
+//
+//	dilion.WithProviderSource(func(ctx context.Context, instanceID, name string) (*dilion.OIDCProvider, error) {
+//		if name != "platform" {
+//			return nil, nil
+//		}
+//		t := tenants.Get(instanceID)
+//		return &dilion.OIDCProvider{
+//			Issuer:        "https://platform.example.com/auth/v1",
+//			ClientID:      t.ClientID,
+//			ClientSecret:  t.ClientSecret,
+//			LinkBySubject: true, // the platform's user ids ARE this instance's
+//		}, nil
+//	})
+//
+// With RedirectURI left empty the callback is derived from the request — the
+// host the authorize request arrived on — so one definition serves every
+// tenant host. See ports.OIDCProvider for LinkBySubject, which hands the
+// provider authority over every account in the instance.
+func WithProviderSource(src ports.ProviderSource) Option {
+	return func(c *config) { c.providers = src }
 }
 
 // WithAuthConfig pins the /auth/v1 configuration (internal/auth.Config).
@@ -484,6 +520,9 @@ func (s *Server) buildRouter() *chi.Mux {
 			Authz: s.authz,
 			// Access records for /admin/users (§5, 제8조 접속기록).
 			Audit: s.audit,
+			// Code-defined identity federation, consulted before the
+			// instance database (WithProviderSource).
+			Providers: s.cfg.providers,
 		})
 	})
 

@@ -152,9 +152,9 @@ func (a *api) idTokenGrant(w http.ResponseWriter, r *http.Request) error {
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		var terr error
 		if linkTarget != nil {
-			user, terr = a.linkIdentityToUser(ctx, tx, r, linkTarget.ID, data, res.ProviderType)
+			user, terr = a.linkIdentityToUser(ctx, tx, r, linkTarget.ID, data, res.ProviderType, false)
 		} else {
-			user, created, terr = a.createAccountFromExternalIdentity(ctx, tx, r, data, res.ProviderType)
+			user, created, terr = a.createAccountFromExternalIdentity(ctx, tx, r, data, res.ProviderType, false)
 		}
 		if terr != nil {
 			return terr

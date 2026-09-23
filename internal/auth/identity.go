@@ -203,8 +203,12 @@ func (a *api) linkIdentity(w http.ResponseWriter, r *http.Request) error {
 
 // linkIdentityToUser is upstream's linkIdentityToUser: the callback branch that
 // attaches the provider identity to the flow's linking target.
+//
+// bySubject means the provider's `sub` IS a local user id
+// (ports.OIDCProvider.LinkBySubject), so its identity can belong to that user
+// and no other: linking it to anyone else is refused.
 func (a *api) linkIdentityToUser(ctx context.Context, tx pgx.Tx, r *http.Request,
-	targetUserID string, data *userProvidedData, providerType string) (*User, error) {
+	targetUserID string, data *userProvidedData, providerType string, bySubject bool) (*User, error) {
 
 	now := a.now()
 	target, err := a.loadUserWithIdentities(ctx, tx, targetUserID)
@@ -218,6 +222,10 @@ func (a *api) linkIdentityToUser(ctx context.Context, tx pgx.Tx, r *http.Request
 	sub := data.Metadata.Subject
 	if sub == "" {
 		return nil, internalServerError("Error getting user id from external provider")
+	}
+	if bySubject && sub != target.ID {
+		return nil, unprocessableEntityError(ErrorCodeIdentityAlreadyExists,
+			"This provider's identity can only be linked to the user it names")
 	}
 
 	existing, err := findIdentityByProviderID(ctx, tx, sub, providerType)

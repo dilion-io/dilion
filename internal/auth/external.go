@@ -30,6 +30,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -250,8 +251,16 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 
 	p, _, err := a.provider(ctx, providerType, scopes)
 	if err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) {
+			return he
+		}
 		return badRequestError(ErrorCodeValidationFailed, "Unsupported provider: %+v", err).withInternal(err)
 	}
+	// A custom provider has no configured redirect URI: it gets the /callback
+	// on the host this request arrived on. Without it the authorization request
+	// carries no redirect_uri at all, which OIDC requires.
+	a.applyRequestRedirectURI(p, r)
 	if err := validatePKCEParams(codeChallengeMethod, codeChallenge); err != nil {
 		return err
 	}

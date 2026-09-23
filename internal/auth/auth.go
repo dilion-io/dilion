@@ -84,6 +84,11 @@ type Deps struct {
 	// the historical behaviour embedders may rely on.
 	Authz ports.Authorizer
 
+	// Providers defines external OIDC providers in code (ports.ProviderSource).
+	// Optional; when set it is consulted before the built-in providers and
+	// auth.custom_oauth_providers.
+	Providers ports.ProviderSource
+
 	// Audit is optional. When set, the /admin/users surface records an access
 	// event per request (안전성 확보조치 기준 제8조 접속기록, project.md §5). When nil
 	// nothing is recorded — embedders that mount this package standalone keep
@@ -107,7 +112,10 @@ type api struct {
 	authz  ports.Authorizer
 	audit  ports.AuditSink
 	log    *slog.Logger
-	clock  ports.Clock
+
+	// providers is the code-defined provider source.
+	providers ports.ProviderSource
+	clock     ports.Clock
 
 	// limiters are the named per-IP rate limiters of this mount (middleware.go).
 	limiters map[string]*rateLimiter
@@ -139,7 +147,9 @@ func newAPI(d Deps) *api {
 		authz:  d.Authz,
 		audit:  d.Audit,
 		log:    d.Logger,
-		clock:  d.Clock,
+
+		providers: d.Providers,
+		clock:     d.Clock,
 	}
 	if a.log == nil {
 		a.log = slog.Default()

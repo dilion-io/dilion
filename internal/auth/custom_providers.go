@@ -84,16 +84,39 @@ type customRuntimeProvider struct {
 	claimsAllowlist     []string
 	acceptableClientIDs []string
 	emailOptional       bool
+
+	// linkBySubject is set only for a code-defined provider with
+	// LinkBySubject (code_providers.go); a stored provider never has it.
+	linkBySubject bool
 }
 
 // redirectURISetter is implemented by providers whose redirect URI is not known
 // until request time (custom providers have no per-provider redirect column, so
 // it is derived from the incoming request's own host — see externalCallbackURL).
+// The authorize and callback handlers apply it through applyRequestRedirectURI,
+// and both must, because the token exchange has to present the SAME
+// redirect_uri the authorization request did.
 type redirectURISetter interface {
 	setRedirectURI(uri string)
 }
 
-func (p *customRuntimeProvider) setRedirectURI(uri string) { p.oauth.RedirectURL = uri }
+// setRedirectURI fills the redirect URI when none is configured. A code-defined
+// provider may carry an explicit one, which must not be overwritten by the
+// derived value.
+func (p *customRuntimeProvider) setRedirectURI(uri string) {
+	if p.oauth.RedirectURL == "" {
+		p.oauth.RedirectURL = uri
+	}
+}
+
+// applyRequestRedirectURI gives a provider that derives its redirect URI the
+// one this request implies. Built-in providers carry a configured redirect URI
+// and do not implement redirectURISetter.
+func (a *api) applyRequestRedirectURI(p externalProvider, r *http.Request) {
+	if s, ok := p.(redirectURISetter); ok {
+		s.setRedirectURI(a.externalCallbackURL(r))
+	}
+}
 
 // resolveCustomProvider looks a custom provider up by identifier and, if it is
 // enabled, builds its runtime form. It is the fallback path of api.provider for
