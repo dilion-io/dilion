@@ -88,6 +88,11 @@ type customRuntimeProvider struct {
 	// linkBySubject is set only for a code-defined provider with
 	// LinkBySubject (code_providers.go); a stored provider never has it.
 	linkBySubject bool
+
+	// pkce says whether flows use PKCE toward the provider (provider_pkce.go),
+	// and pkceVerifier is this request's verifier once one is set.
+	pkce         bool
+	pkceVerifier string
 }
 
 // redirectURISetter is implemented by providers whose redirect URI is not known
@@ -161,12 +166,16 @@ func (a *api) buildCustomProvider(ctx context.Context, cp *customOAuthProvider, 
 		claimsAllowlist:     cp.CustomClaimsAllowlist,
 		acceptableClientIDs: cp.AcceptableClientIDs,
 		emailOptional:       cp.EmailOptional,
+		pkce:                cp.PKCEEnabled,
 		oauth: oauthConfig{
 			ClientID:     cp.ClientID,
 			ClientSecret: cp.ClientSecret,
 			AuthURL:      authURL,
 			TokenURL:     tokenURL,
 			Scopes:       scopesWithDefaults(cp.Scopes, scopes),
+			// A custom provider is an arbitrary IdP; upstream lets x/oauth2
+			// detect the credential style for it, and so does this.
+			AutoDetectAuth: true,
 		},
 	}, nil
 }
@@ -216,7 +225,7 @@ func (a *api) customProviderDiscovery(ctx context.Context, issuer string, discov
 }
 
 func (p *customRuntimeProvider) authCodeURL(state string, extra url.Values) string {
-	if len(p.authorizationParams) > 0 {
+	if len(p.authorizationParams) > 0 || p.pkceVerifier != "" {
 		if extra == nil {
 			extra = url.Values{}
 		} else {
@@ -227,12 +236,22 @@ func (p *customRuntimeProvider) authCodeURL(state string, extra url.Values) stri
 				extra.Set(k, s)
 			}
 		}
+		// Set last, so a stored authorization_params entry cannot replace the
+		// challenge with one whose verifier nobody holds.
+		if p.pkceVerifier != "" {
+			extra.Set("code_challenge", pkceS256Challenge(p.pkceVerifier))
+			extra.Set("code_challenge_method", "S256")
+		}
 	}
 	return p.oauth.authCodeURL(state, extra)
 }
 
 func (p *customRuntimeProvider) exchange(ctx context.Context, hc *http.Client, code string) (*oauthToken, error) {
-	return p.oauth.exchangeCode(ctx, hc, code, nil)
+	var extra url.Values
+	if p.pkceVerifier != "" {
+		extra = url.Values{"code_verifier": {p.pkceVerifier}}
+	}
+	return p.oauth.exchangeCode(ctx, hc, code, extra)
 }
 
 func (p *customRuntimeProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {

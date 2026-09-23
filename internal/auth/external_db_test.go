@@ -57,6 +57,13 @@ type fakeOIDCProvider struct {
 	// tokenRedirectURI is the redirect_uri the last token request presented;
 	// OAuth requires it to equal the one the authorization request carried.
 	tokenRedirectURI string
+	// tokenCodeVerifier is the PKCE code_verifier the last token request
+	// carried, and tokenBasic whether its credentials came by HTTP Basic.
+	tokenCodeVerifier string
+	tokenBasic        bool
+	// rejectBasic makes the token endpoint refuse HTTP Basic credentials,
+	// like a server whose client is registered for client_secret_post.
+	rejectBasic bool
 }
 
 func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
@@ -93,7 +100,11 @@ func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		p.tokenRequests++
 		_ = r.ParseForm()
-		p.tokenRedirectURI = r.FormValue("redirect_uri")
+		p.recordTokenRequest(r)
+		if p.rejectBasic && p.tokenBasic {
+			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+			return
+		}
 		if r.FormValue("grant_type") != "authorization_code" || r.FormValue("code") == "" {
 			http.Error(w, "bad token request", http.StatusBadRequest)
 			return
@@ -122,6 +133,14 @@ func newFakeOIDCProvider(t *testing.T) *fakeOIDCProvider {
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
 	return p
+}
+
+// recordTokenRequest notes what a token request presented, for the tests to
+// check against what the authorization request sent.
+func (p *fakeOIDCProvider) recordTokenRequest(r *http.Request) {
+	p.tokenRedirectURI = r.FormValue("redirect_uri")
+	p.tokenCodeVerifier = r.FormValue("code_verifier")
+	_, _, p.tokenBasic = r.BasicAuth()
 }
 
 func (p *fakeOIDCProvider) publicJWK() map[string]any {

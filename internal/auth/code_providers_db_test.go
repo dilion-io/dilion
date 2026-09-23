@@ -52,7 +52,7 @@ func newCodeProviderEnv(t *testing.T, define func(env *codeProviderEnv, instance
 	applyExternalExtraSchema(t, pool)
 	applyOAuthServerSchema(t, pool)
 	truncateAll(t, pool)
-	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.custom_oauth_providers restart identity cascade`); err != nil {
+	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.oauth_client_states, auth.custom_oauth_providers restart identity cascade`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -395,5 +395,129 @@ func TestCodeProviderWithoutLinkBySubjectLinksByEmail(t *testing.T) {
 
 	if got := env.signIn(t, "platform"); got != owner {
 		t.Errorf("signed in as %s, want the email owner %s", got, owner)
+	}
+}
+
+// ---- PKCE and client authentication toward the provider -------------------
+
+// A code-defined provider always uses PKCE toward its IdP: the authorization
+// request carries an S256 challenge, the token request the verifier behind it,
+// and the verifier is stored server-side for exactly one exchange. Credentials
+// go by HTTP Basic, which RFC 6749 obliges every server to accept.
+func TestCodeProviderUsesPKCEAndBasicAuth(t *testing.T) {
+	env := newCodeProviderEnv(t, func(env *codeProviderEnv, _, _ string) (*ports.OIDCProvider, error) {
+		return env.platform(), nil
+	})
+
+	loc := env.authorize(t, "platform", "tenant.api.test")
+	challenge := loc.Query().Get("code_challenge")
+	if challenge == "" || loc.Query().Get("code_challenge_method") != "S256" {
+		t.Fatalf("authorization request carries no S256 challenge: %s", loc)
+	}
+	var stored int
+	if err := env.pool.QueryRow(context.Background(),
+		`select count(*) from auth.oauth_client_states where provider_type = 'platform'`).Scan(&stored); err != nil {
+		t.Fatalf("count client states: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("stored verifiers = %d, want 1", stored)
+	}
+
+	cb := env.callback(t, loc, "tenant.api.test")
+	redirect := redirectLocation(t, cb, http.StatusFound)
+	if fragmentValues(t, redirect).Get("access_token") == "" {
+		t.Fatalf("no session after callback: %s", redirect)
+	}
+	if got := pkceS256Challenge(env.oidc.tokenCodeVerifier); got != challenge {
+		t.Errorf("token request verifier does not match the challenge sent (%q vs %q)", got, challenge)
+	}
+	if !env.oidc.tokenBasic {
+		t.Error("client credentials were not sent by HTTP Basic")
+	}
+	if err := env.pool.QueryRow(context.Background(),
+		`select count(*) from auth.oauth_client_states`).Scan(&stored); err != nil {
+		t.Fatalf("count client states: %v", err)
+	}
+	if stored != 0 {
+		t.Errorf("verifier rows after the callback = %d, want 0: it must be single use", stored)
+	}
+}
+
+// A verifier serves one exchange. A flow whose verifier is gone — replayed,
+// or started before the provider required PKCE — cannot reach the provider.
+func TestCodeProviderPKCEVerifierIsSingleUse(t *testing.T) {
+	env := newCodeProviderEnv(t, func(env *codeProviderEnv, _, _ string) (*ports.OIDCProvider, error) {
+		return env.platform(), nil
+	})
+	loc := env.authorize(t, "platform", "tenant.api.test")
+	if _, err := env.pool.Exec(context.Background(), `delete from auth.oauth_client_states`); err != nil {
+		t.Fatalf("drop verifier: %v", err)
+	}
+	before := env.oidc.tokenRequests
+	cb := redirectLocation(t, env.callback(t, loc, "tenant.api.test"), http.StatusFound)
+	if fragmentValues(t, cb).Get("access_token") != "" {
+		t.Fatalf("signed in without the stored verifier: %s", cb)
+	}
+	if env.oidc.tokenRequests != before {
+		t.Error("the provider was asked to exchange a code with no verifier to send")
+	}
+}
+
+// A token endpoint that refuses HTTP Basic gets the credentials in the body on
+// a second attempt, as x/oauth2's auto-detection does for upstream — the
+// first attempt failed client authentication, so the code is still unused.
+func TestCodeProviderFallsBackToBodyCredentials(t *testing.T) {
+	env := newCodeProviderEnv(t, func(env *codeProviderEnv, _, _ string) (*ports.OIDCProvider, error) {
+		return env.platform(), nil
+	})
+	env.oidc.rejectBasic = true
+
+	loc := env.authorize(t, "platform", "tenant.api.test")
+	cb := redirectLocation(t, env.callback(t, loc, "tenant.api.test"), http.StatusFound)
+	if fragmentValues(t, cb).Get("access_token") == "" {
+		t.Fatalf("no session after a body-credentials retry: %s", cb)
+	}
+	if env.oidc.tokenRequests != 2 || env.oidc.tokenBasic {
+		t.Errorf("token requests = %d, last by Basic = %v; want a Basic attempt then a body one",
+			env.oidc.tokenRequests, env.oidc.tokenBasic)
+	}
+	if env.oidc.tokenCodeVerifier == "" {
+		t.Error("the retry dropped the PKCE verifier")
+	}
+}
+
+// A stored custom provider follows its pkce_enabled column, which defaults to
+// true — as upstream's does. Before this, the column was stored and ignored.
+func TestStoredCustomProviderHonoursPKCEFlag(t *testing.T) {
+	env := newCustomEnv(t)
+	for identifier, pkce := range map[string]bool{"custom:with-pkce": true, "custom:without-pkce": false} {
+		create := map[string]any{
+			"provider_type": "oidc", "identifier": identifier, "name": identifier,
+			"client_id": "google-client-id", "client_secret": "s",
+			"issuer": env.oidc.srv.URL, "scopes": []string{"openid", "email"},
+		}
+		if !pkce {
+			create["pkce_enabled"] = false
+		}
+		if rec := env.do(t, http.MethodPost, "/admin/custom-providers", create, env.admin); rec.Code != http.StatusCreated {
+			t.Fatalf("%s: create status = %d; body = %s", identifier, rec.Code, rec.Body.String())
+		}
+
+		loc := redirectLocation(t, env.do(t, http.MethodGet,
+			"/authorize?provider="+identifier+"&redirect_to="+url.QueryEscape("https://app.test/welcome"), nil, ""),
+			http.StatusFound)
+		challenge := loc.Query().Get("code_challenge")
+		if (challenge != "") != pkce {
+			t.Errorf("%s: challenge sent = %v, want %v", identifier, challenge != "", pkce)
+		}
+		redirectLocation(t, env.do(t, http.MethodGet,
+			"/callback?state="+url.QueryEscape(loc.Query().Get("state"))+"&code=the-code", nil, ""),
+			http.StatusFound)
+		if pkce && pkceS256Challenge(env.oidc.tokenCodeVerifier) != challenge {
+			t.Errorf("%s: verifier does not match the challenge", identifier)
+		}
+		if !pkce && env.oidc.tokenCodeVerifier != "" {
+			t.Errorf("%s: a verifier was sent with PKCE off", identifier)
+		}
 	}
 }

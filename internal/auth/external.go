@@ -115,8 +115,12 @@ type oauthFlowState struct {
 	Referrer             string
 	InviteToken          string
 	LinkingTargetID      *string
-	CreatedAt            time.Time
-	AuthCodeIssuedAt     *time.Time
+	// OAuthClientStateID names the auth.oauth_client_states row holding the
+	// PKCE verifier Dilion uses toward the PROVIDER. It is unrelated to
+	// CodeChallenge, which is the app's PKCE toward Dilion.
+	OAuthClientStateID *string
+	CreatedAt          time.Time
+	AuthCodeIssuedAt   *time.Time
 }
 
 // IsPKCE reports whether the client asked for the PKCE flow.
@@ -132,7 +136,7 @@ const oauthFlowStateColumns = `id::text, user_id::text, auth_code, authenticatio
 	code_challenge, code_challenge_method::text, provider_type,
 	coalesce(provider_access_token, ''), coalesce(provider_refresh_token, ''),
 	coalesce(referrer, ''), coalesce(invite_token, ''), linking_target_id::text,
-	created_at, auth_code_issued_at`
+	oauth_client_state_id::text, created_at, auth_code_issued_at`
 
 func scanOAuthFlowState(row pgx.Row) (*oauthFlowState, error) {
 	var (
@@ -143,7 +147,7 @@ func scanOAuthFlowState(row pgx.Row) (*oauthFlowState, error) {
 		&f.CodeChallenge, &f.CodeChallengeMethod, &f.ProviderType,
 		&f.ProviderAccessToken, &f.ProviderRefreshToken,
 		&f.Referrer, &f.InviteToken, &f.LinkingTargetID,
-		&createdAt, &f.AuthCodeIssuedAt); err != nil {
+		&f.OAuthClientStateID, &createdAt, &f.AuthCodeIssuedAt); err != nil {
 		return nil, err
 	}
 	if createdAt != nil {
@@ -160,7 +164,9 @@ type newOAuthFlowStateParams struct {
 	CodeChallengeMethod string
 	Referrer            string
 	LinkingTargetID     string
-	Now                 time.Time
+	// OAuthClientStateID links the provider-side PKCE verifier, if any.
+	OAuthClientStateID string
+	Now                time.Time
 }
 
 // createOAuthFlowState inserts the flow state of an external login.
@@ -186,21 +192,25 @@ func createOAuthFlowState(ctx context.Context, q querier, p newOAuthFlowStatePar
 	if p.LinkingTargetID != "" {
 		linkingTarget = &p.LinkingTargetID
 	}
+	var clientState *string
+	if p.OAuthClientStateID != "" {
+		clientState = &p.OAuthClientStateID
+	}
 	authCode := uuid.NewString()
 
 	return scanOAuthFlowState(q.QueryRow(ctx, `
 		insert into auth.flow_state (
 			id, auth_code, code_challenge_method, code_challenge,
 			provider_type, authentication_method, referrer, linking_target_id,
-			created_at, updated_at
+			oauth_client_state_id, created_at, updated_at
 		) values (
 			$1::uuid, $2, $3::auth.code_challenge_method, $4,
 			$5, $6, nullif($7, ''), $8::uuid,
-			$9, $9
+			$9::uuid, $10, $10
 		)
 		returning `+oauthFlowStateColumns,
 		uuid.NewString(), authCode, method, challenge,
-		p.ProviderType, authMethodOAuth, p.Referrer, linkingTarget, p.Now))
+		p.ProviderType, authMethodOAuth, p.Referrer, linkingTarget, clientState, p.Now))
 }
 
 func findOAuthFlowStateByID(ctx context.Context, q querier, id string) (*oauthFlowState, error) {
@@ -281,10 +291,6 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 
 	redirectURL := a.cfg.RedirectURLOrSiteURL(query.Get("redirect_to"), r.Referer())
 
-	pool, perr := a.db(ctx)
-	if perr != nil {
-		return perr
-	}
 	params := newOAuthFlowStateParams{
 		ProviderType:        providerType,
 		CodeChallenge:       codeChallenge,
@@ -295,12 +301,40 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 	if linkingTarget != nil {
 		params.LinkingTargetID = linkingTarget.ID
 	}
-	fs, ferr := createOAuthFlowState(ctx, pool, params)
-	if ferr != nil {
-		if he, ok := ferr.(*HTTPError); ok {
-			return he
+
+	// PKCE toward the provider (provider_pkce.go): the verifier stays here, in
+	// auth.oauth_client_states, and only its challenge goes out.
+	var verifier string
+	pp, usePKCE := providerRequiresPKCE(p)
+	if usePKCE {
+		v, verr := newPKCEVerifier()
+		if verr != nil {
+			return internalServerError("Error generating PKCE verifier").withInternal(verr)
 		}
-		return internalServerError("Error creating flow state").withInternal(ferr)
+		verifier = v
+		pp.setPKCEVerifier(verifier)
+	}
+
+	var fs *oauthFlowState
+	if err := a.inTx(ctx, func(tx pgx.Tx) error {
+		if usePKCE {
+			id, serr := insertOAuthClientState(ctx, tx, providerType, verifier, params.Now)
+			if serr != nil {
+				return internalServerError("Error storing PKCE verifier").withInternal(serr)
+			}
+			params.OAuthClientStateID = id
+		}
+		created, ferr := createOAuthFlowState(ctx, tx, params)
+		if ferr != nil {
+			if he, ok := ferr.(*HTTPError); ok {
+				return he
+			}
+			return internalServerError("Error creating flow state").withInternal(ferr)
+		}
+		fs = created
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	authURL := p.authCodeURL(fs.ID, extra)

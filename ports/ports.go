@@ -232,6 +232,12 @@ func InstanceFromContext(ctx context.Context) string {
 // in with, defined by embedder code rather than stored in
 // auth.custom_oauth_providers. It is reached at
 // GET /auth/v1/authorize?provider=<name> exactly like a stored one.
+//
+// Toward the provider the instance behaves as an OAuth 2.1 client: every
+// authorization request carries a PKCE S256 challenge, and the token request
+// authenticates by HTTP Basic, retrying once with the credentials in the body
+// if the provider refuses Basic. That is what Dilion's own OAuth server, as the
+// provider, requires.
 type OIDCProvider struct {
 	// Issuer is the provider's issuer identifier. Its endpoints and signing
 	// keys come from Issuer + "/.well-known/openid-configuration", and every

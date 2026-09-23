@@ -152,6 +152,15 @@ func (a *api) cleanupOnce(ctx context.Context) (int64, error) {
 			arg: now.Add(-a.cfg.FlowStateExpiry),
 		},
 		{
+			// PKCE verifiers toward external providers (provider_pkce.go). A
+			// callback deletes its own; these are the flows nobody finished,
+			// and a verifier is useless once its flow state has expired.
+			table: "auth.oauth_client_states",
+			sql: `delete from auth.oauth_client_states
+			      where ctid in (select ctid from auth.oauth_client_states where created_at < $1 limit ` + strconv.Itoa(cleanupBatch) + `)`,
+			arg: now.Add(-a.cfg.FlowStateExpiry),
+		},
+		{
 			table: "auth.webauthn_challenges",
 			sql: `delete from auth.webauthn_challenges
 			      where ctid in (select ctid from auth.webauthn_challenges where expires_at < $1 limit ` + strconv.Itoa(cleanupBatch) + `)`,

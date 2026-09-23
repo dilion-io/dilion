@@ -375,6 +375,18 @@ type oauthConfig struct {
 	TokenURL     string
 	RedirectURL  string
 	Scopes       []string
+
+	// AutoDetectAuth sends the client credentials by HTTP Basic first and, if
+	// the token endpoint rejects that, once more in the body: x/oauth2's
+	// AuthStyleAutoDetect, which is what upstream's custom providers get by
+	// leaving the style unset. RFC 6749 §2.3.1 obliges every server to accept
+	// Basic and calls credentials in the body NOT RECOMMENDED, so a server that
+	// registered this client for Basic — the default of Dilion's own OAuth
+	// server, which matches the method exactly — refuses the body.
+	//
+	// The zero value keeps credentials in the body only, which the built-in
+	// providers rely on (GitHub and Kakao require it).
+	AutoDetectAuth bool
 }
 
 // oauthToken is the token endpoint's response (RFC 6749 §5.1). `IDToken` is the
@@ -421,16 +433,49 @@ func (c *oauthConfig) authCodeURL(state string, extra url.Values) string {
 }
 
 // exchangeCode redeems an authorization code. `extra` lets a provider add form
-// fields (Apple sends its client-secret JWT this way).
+// fields (Apple sends its client-secret JWT this way; PKCE sends code_verifier).
+//
+// With AutoDetectAuth the credentials go by HTTP Basic first, and only a
+// response the endpoint REJECTED — not a transport failure — is retried with
+// them in the body. Retrying is safe because a server authenticates the client
+// before it looks at the code: a rejected attempt has not consumed it.
 func (c *oauthConfig) exchangeCode(ctx context.Context, hc *http.Client, code string, extra url.Values) (*oauthToken, error) {
+	if !c.AutoDetectAuth {
+		return c.exchangeCodeAuth(ctx, hc, code, extra, false)
+	}
+	tok, err := c.exchangeCodeAuth(ctx, hc, code, extra, true)
+	var rejected *tokenEndpointStatusError
+	if err == nil || !errors.As(err, &rejected) {
+		return tok, err
+	}
+	tok, berr := c.exchangeCodeAuth(ctx, hc, code, extra, false)
+	if berr != nil {
+		return nil, fmt.Errorf("with HTTP Basic: %w; with credentials in the body: %w", err, berr)
+	}
+	return tok, nil
+}
+
+// tokenEndpointStatusError is a non-2xx answer from a token endpoint: the
+// request arrived and was refused, which is what makes a retry meaningful.
+type tokenEndpointStatusError struct{ status int }
+
+func (e *tokenEndpointStatusError) Error() string {
+	return fmt.Sprintf("token endpoint returned %d", e.status)
+}
+
+// exchangeCodeAuth performs one token request, with the client credentials in
+// an HTTP Basic header or in the form body.
+func (c *oauthConfig) exchangeCodeAuth(ctx context.Context, hc *http.Client, code string, extra url.Values, basic bool) (*oauthToken, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	if c.RedirectURL != "" {
 		form.Set("redirect_uri", c.RedirectURL)
 	}
-	form.Set("client_id", c.ClientID)
-	form.Set("client_secret", c.ClientSecret)
+	if !basic {
+		form.Set("client_id", c.ClientID)
+		form.Set("client_secret", c.ClientSecret)
+	}
 	for k, vs := range extra {
 		for _, v := range vs {
 			form.Set(k, v)
@@ -440,6 +485,12 @@ func (c *oauthConfig) exchangeCode(ctx context.Context, hc *http.Client, code st
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
+	}
+	if basic {
+		// RFC 6749 §2.3.1: both halves are form-urlencoded before the Basic
+		// encoding, exactly as x/oauth2 does. For the base64url secrets Dilion
+		// and upstream issue that encoding changes nothing.
+		req.SetBasicAuth(url.QueryEscape(c.ClientID), url.QueryEscape(c.ClientSecret))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// GitHub answers form-encoded unless JSON is requested explicitly.
@@ -456,7 +507,7 @@ func (c *oauthConfig) exchangeCode(ctx context.Context, hc *http.Client, code st
 		return nil, err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("token endpoint returned %d", res.StatusCode)
+		return nil, &tokenEndpointStatusError{status: res.StatusCode}
 	}
 
 	tok := &oauthToken{raw: body}

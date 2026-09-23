@@ -132,6 +132,26 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 	a.applyRequestRedirectURI(p, r)
 	bySubject := providerLinksBySubject(p)
 
+	// Recover the verifier the authorize request stored for this flow. It is
+	// deleted as it is read, so it serves one exchange however this one ends.
+	if pp, ok := providerRequiresPKCE(p); ok {
+		if fs.OAuthClientStateID == nil {
+			return badRequestError(ErrorCodeBadOAuthState, "OAuth state carries no PKCE verifier")
+		}
+		pool, perr := a.db(ctx)
+		if perr != nil {
+			return perr
+		}
+		verifier, verr := takeOAuthClientState(ctx, pool, *fs.OAuthClientStateID, fs.ProviderType, a.now(), a.cfg.FlowStateExpiry)
+		if verr != nil {
+			if errors.Is(verr, errOAuthClientStateInvalid) {
+				return badRequestError(ErrorCodeBadOAuthState, "OAuth state not found or expired").withInternal(verr)
+			}
+			return internalServerError("Error loading PKCE verifier").withInternal(verr)
+		}
+		pp.setPKCEVerifier(verifier)
+	}
+
 	hc := a.httpClient()
 	tok, err := p.exchange(ctx, hc, code)
 	if err != nil {

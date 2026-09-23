@@ -83,6 +83,10 @@ func (a *api) buildCodeProvider(ctx context.Context, name string, spec *ports.OI
 		Scopes:       spec.Scopes,
 		Enabled:      true,
 		Issuer:       &issuer,
+		// OAuth 2.1 requires PKCE of every client, and an IdP that follows it
+		// refuses a request without a challenge. There is no reason for a
+		// provider defined in code to opt out.
+		PKCEEnabled: true,
 	}
 	if len(cp.Scopes) == 0 {
 		cp.Scopes = defaultCodeProviderScopes

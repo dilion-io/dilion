@@ -59,7 +59,7 @@ func newFakeOIDCProviderTLS(t *testing.T) *fakeOIDCProvider {
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		p.tokenRedirectURI = r.FormValue("redirect_uri")
+		p.recordTokenRequest(r)
 		if r.FormValue("grant_type") != "authorization_code" || r.FormValue("code") == "" {
 			http.Error(w, "bad token request", http.StatusBadRequest)
 			return
@@ -107,7 +107,7 @@ func newCustomEnv(t *testing.T) *customEnv {
 	applyExternalExtraSchema(t, pool) // 0112: mfa_amr_claims (sessions record their sign-in method)
 	applyOAuthServerSchema(t, pool)   // 0116: auth.custom_oauth_providers
 	truncateAll(t, pool)
-	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.custom_oauth_providers restart identity cascade`); err != nil {
+	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.oauth_client_states, auth.custom_oauth_providers restart identity cascade`); err != nil {
 		t.Fatalf("truncate custom tables: %v", err)
 	}
 
