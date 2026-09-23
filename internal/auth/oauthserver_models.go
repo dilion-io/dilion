@@ -25,6 +25,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 // ---- scopes ----------------------------------------------------------------
@@ -225,6 +227,11 @@ type oauthClient struct {
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	DeletedAt               *time.Time
+
+	// code is set for a client decided by embedder code
+	// (oauthserver_code_clients.go); its rules replace the stored columns
+	// wherever a client is judged. nil for a stored client.
+	code *ports.OAuthClient
 }
 
 func (c *oauthClient) IsPublic() bool       { return c.ClientType == OAuthClientTypePublic }

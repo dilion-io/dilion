@@ -216,11 +216,16 @@ func InstanceFromContext(ctx context.Context) string {
 
 // ---- Identity federation defined in code ----
 //
-// Resolved per request and per instance, and consulted BEFORE anything stored
-// in the instance database: as a relying party, an instance signs users in
-// through external OpenID Connect providers, and ProviderSource defines those
-// providers in code. It exists for platforms that already know, in their own
-// data, which providers each tenant has, and should not have to copy that into
+// Two directions, both resolved per request and per instance, both consulted
+// BEFORE anything stored in the instance database:
+//
+//   - As a relying party, an instance signs users in through external OpenID
+//     Connect providers. ProviderSource defines those providers in code.
+//   - As an identity provider (the OAuth 2.1 server), an instance issues codes
+//     to OAuth clients. OAuthClientResolver decides those clients in code.
+//
+// Both exist for platforms that already know, in their own data, which
+// providers and clients each tenant has, and should not have to copy that into
 // every instance database and keep it in sync.
 
 // OIDCProvider is an external OpenID Connect provider an instance signs users
@@ -264,6 +269,47 @@ type OIDCProvider struct {
 // error fails the request. It runs on every authorize and callback request, so
 // it should answer from memory or a cache.
 type ProviderSource func(ctx context.Context, instanceID, name string) (*OIDCProvider, error)
+
+// OAuthClient is an OAuth client of an instance's OAuth 2.1 server, decided by
+// embedder code rather than registered in auth.oauth_clients.
+type OAuthClient struct {
+	// ID is the client_id, and must be a UUID: client identifiers in this
+	// server ARE uuids (upstream parity), and authorizations, consents and
+	// sessions reference the client by it.
+	ID string
+	// Name, URI and LogoURI describe the client on the consent screen.
+	Name    string
+	URI     string
+	LogoURI string
+	// Public clients hold no secret and authenticate the code exchange with
+	// PKCE alone (token_endpoint_auth_method "none"). Confidential clients
+	// present a secret, by HTTP Basic or in the form body.
+	Public bool
+	// VerifySecret checks a confidential client's secret and must compare in
+	// constant time (crypto/subtle). Required unless Public; a confidential
+	// client without it can never authenticate.
+	VerifySecret func(secret string) bool
+	// RedirectURIs are the redirect targets this client may receive codes at,
+	// matched exactly — no prefix or wildcard matching, per OAuth 2.1.
+	RedirectURIs []string
+	// AllowRedirectURI, when set, decides redirect targets instead of
+	// RedirectURIs, for a client whose targets are not a fixed list (one per
+	// tenant, say). It is the only thing standing between an authorization
+	// code and an attacker's host: it must accept exactly the URIs the client
+	// owns, compared as whole strings, never by prefix or pattern.
+	AllowRedirectURI func(uri string) bool
+	// FirstParty skips the consent step. The signed-in user is still required
+	// — authorization is granted as soon as the consent page learns who they
+	// are — but they are not asked to approve, and no consent is recorded.
+	// Only for the operator's own applications.
+	FirstParty bool
+}
+
+// OAuthClientResolver returns the code-defined client with clientID for an
+// instance, or (nil, nil) when it defines none — the client is then looked up
+// in auth.oauth_clients. An error fails the request. It runs on every
+// authorize, token and consent request.
+type OAuthClientResolver func(ctx context.Context, instanceID, clientID string) (*OAuthClient, error)
 
 // ---- Clock (no naked time.Now in domain logic; injectable for tests) ----
 

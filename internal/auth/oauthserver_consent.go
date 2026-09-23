@@ -86,6 +86,7 @@ func (a *api) oauthGetAuthorization(w http.ResponseWriter, r *http.Request) erro
 
 	var (
 		authorization *oauthAuthorization
+		client        *oauthClient
 		autoApproved  bool
 	)
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
@@ -115,6 +116,23 @@ func (a *api) oauthGetAuthorization(w http.ResponseWriter, r *http.Request) erro
 			return notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
 		}
 
+		// The client is needed either way: for the consent screen's details,
+		// or to learn that it is first-party and skips that screen. A
+		// first-party client is approved whenever its owner opens the page,
+		// including a reload of a request claimed earlier, and no consent row
+		// is written — there was no consent to record.
+		if !autoApproved {
+			c, cerr := a.oauthClientByID(ctx, tx, o.ClientID)
+			if cerr != nil {
+				if isNoRows(cerr) {
+					return notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
+				}
+				return internalServerError("error finding client").withInternal(cerr)
+			}
+			client = c
+			autoApproved = c.isFirstParty()
+		}
+
 		if autoApproved {
 			if err := approveOAuthAuthorization(ctx, tx, o, a.now()); err != nil {
 				return internalServerError("Error auto-approving authorization").withInternal(err)
@@ -128,18 +146,6 @@ func (a *api) oauthGetAuthorization(w http.ResponseWriter, r *http.Request) erro
 
 	if autoApproved {
 		return sendJSON(w, http.StatusOK, ConsentResponse{RedirectURL: buildSuccessRedirectURL(authorization)})
-	}
-
-	pool, perr := a.db(ctx)
-	if perr != nil {
-		return perr
-	}
-	client, cerr := findOAuthClientByID(ctx, pool, authorization.ClientID)
-	if cerr != nil {
-		if isNoRows(cerr) {
-			return notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
-		}
-		return internalServerError("error finding client").withInternal(cerr)
 	}
 
 	return sendJSON(w, http.StatusOK, AuthorizationDetailsResponse{
@@ -273,7 +279,7 @@ func (a *api) userListOAuthGrants(w http.ResponseWriter, r *http.Request) error 
 
 	grants := make([]UserOAuthGrantResponse, 0, len(consents))
 	for _, consent := range consents {
-		client, cerr := findOAuthClientByID(ctx, pool, consent.ClientID)
+		client, cerr := a.oauthClientByID(ctx, pool, consent.ClientID)
 		if cerr != nil {
 			if isNoRows(cerr) {
 				continue

@@ -300,7 +300,7 @@ func (a *api) requireOAuthClientAuth(next http.Handler) http.Handler {
 			a.writeError(r, w, perr)
 			return
 		}
-		client, derr := findOAuthClientByID(r.Context(), pool, creds.ClientID)
+		client, derr := a.oauthClientByID(r.Context(), pool, creds.ClientID)
 		if derr != nil {
 			if isNoRows(derr) {
 				a.writeError(r, w, badRequestError(ErrorCodeInvalidCredentials, "Invalid client credentials"))
@@ -392,6 +392,12 @@ func determineClientType(explicitClientType, authMethod string) string {
 // did not register for — a confidential client registered for
 // client_secret_basic may not authenticate with a body parameter.
 func validateClientAuthMethod(client *oauthClient, usedMethod string) error {
+	if client.code != nil {
+		if !client.codeAuthMethodAllowed(usedMethod) {
+			return fmt.Errorf("invalid authentication method: '%s' is not allowed for this client", usedMethod)
+		}
+		return nil
+	}
 	if usedMethod != client.TokenEndpointAuthMethod {
 		return fmt.Errorf("invalid authentication method: client is registered for '%s' but '%s' was used",
 			client.TokenEndpointAuthMethod, usedMethod)
@@ -411,6 +417,12 @@ func validateClientAuthentication(client *oauthClient, providedSecret string) er
 	}
 	if providedSecret == "" {
 		return errors.New("confidential clients must provide client_secret")
+	}
+	if client.code != nil {
+		if !client.codeSecretValid(providedSecret) {
+			return errors.New("invalid client credentials")
+		}
+		return nil
 	}
 	if !validateClientSecret(providedSecret, client.ClientSecretHash) {
 		return errors.New("invalid client credentials")

@@ -47,6 +47,13 @@ type oauthEnv struct {
 // ES256 key set.
 func newOAuthEnv(t *testing.T, mutate func(*Config)) *oauthEnv {
 	t.Helper()
+	return newOAuthEnvWithDeps(t, mutate, nil)
+}
+
+// newOAuthEnvWithDeps is newOAuthEnv with a hook to adjust the mount's Deps
+// (a code-defined client resolver, say) before it is registered.
+func newOAuthEnvWithDeps(t *testing.T, mutate func(*Config), mutateDeps func(*Deps)) *oauthEnv {
+	t.Helper()
 
 	dsn := os.Getenv("DILION_TEST_DB")
 	if dsn == "" {
@@ -97,7 +104,7 @@ func newOAuthEnv(t *testing.T, mutate func(*Config)) *oauthEnv {
 		cfg:   cfg,
 	}
 	env.router = chi.NewRouter()
-	Register(env.router, Deps{
+	deps := Deps{
 		Pool:   pool,
 		Tokens: tokens,
 		Mailer: env.mailer,
@@ -105,7 +112,11 @@ func newOAuthEnv(t *testing.T, mutate func(*Config)) *oauthEnv {
 		Config: cfg,
 		Clock:  clock,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	if mutateDeps != nil {
+		mutateDeps(&deps)
+	}
+	Register(env.router, deps)
 	return env
 }
 

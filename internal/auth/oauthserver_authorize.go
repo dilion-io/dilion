@@ -95,7 +95,7 @@ func (a *api) oauthAuthorize(w http.ResponseWriter, r *http.Request) error {
 	if perr != nil {
 		return perr
 	}
-	client, cerr := findOAuthClientByID(ctx, pool, params.ClientID)
+	client, cerr := a.oauthClientByID(ctx, pool, params.ClientID)
 	if cerr != nil {
 		if isNoRows(cerr) {
 			return badRequestError(ErrorCodeOAuthClientNotFound, "invalid client_id")
@@ -134,6 +134,14 @@ func (a *api) oauthAuthorize(w http.ResponseWriter, r *http.Request) error {
 		Nonce:               nilIfEmpty(params.Nonce),
 	}
 
+	// A code-defined client needs its inert shadow row before the
+	// authorization can reference it (oauthserver_code_clients.go).
+	if err := ensureOAuthClientRow(ctx, pool, client, a.now()); err != nil {
+		a.log.ErrorContext(ctx, "auth: error preparing code-defined oauth client", "error", err.Error())
+		http.Redirect(w, r, buildErrorRedirectURL(params.RedirectURI, oAuth2ErrorServerError, "error creating authorization", params.State),
+			http.StatusFound)
+		return nil
+	}
 	stored, ierr := insertOAuthAuthorization(ctx, pool, row, a.now(), OAuthServerAuthorizationTTL)
 	if ierr != nil {
 		a.log.ErrorContext(ctx, "auth: error creating oauth authorization", "error", ierr.Error())
@@ -234,6 +242,9 @@ func validateResourceParam(resource string) error {
 
 // isRegisteredRedirectURI is exact-match redirect URI validation.
 func isRegisteredRedirectURI(client *oauthClient, redirectURI string) bool {
+	if client.code != nil {
+		return client.codeRedirectURIAllowed(redirectURI)
+	}
 	for _, registered := range client.GetRedirectURIs() {
 		if registered == redirectURI {
 			return true

@@ -80,10 +80,12 @@ const shutdownGrace = 15 * time.Second
 type HookPoint = ports.HookPoint
 
 // The identity-federation contracts are re-exported for the same reason; see
-// WithProviderSource.
+// WithProviderSource and WithOAuthClientResolver.
 type (
-	OIDCProvider   = ports.OIDCProvider
-	ProviderSource = ports.ProviderSource
+	OIDCProvider        = ports.OIDCProvider
+	ProviderSource      = ports.ProviderSource
+	OAuthClient         = ports.OAuthClient
+	OAuthClientResolver = ports.OAuthClientResolver
 )
 
 const (
@@ -117,6 +119,7 @@ type config struct {
 	piiFieldsYAML []byte
 	resolver      ports.InstanceResolver
 	providers     ports.ProviderSource
+	oauthClients  ports.OAuthClientResolver
 	authConfig    *auth.Config
 	addr          string
 	clock         ports.Clock
@@ -250,6 +253,35 @@ func WithInstanceResolver(r ports.InstanceResolver) Option {
 // provider authority over every account in the instance.
 func WithProviderSource(src ports.ProviderSource) Option {
 	return func(c *config) { c.providers = src }
+}
+
+// WithOAuthClientResolver decides the clients of each instance's OAuth 2.1
+// server in code. Every authorize, token and consent request asks fn first and
+// falls back to auth.oauth_clients only when it returns (nil, nil). A returned
+// client's redirect targets, secret and consent rule come from fn's answer,
+// never from a stored row; a FirstParty client skips the consent screen:
+//
+//	dilion.WithOAuthClientResolver(func(ctx context.Context, instanceID, clientID string) (*dilion.OAuthClient, error) {
+//		if clientID != workspaceClientID {
+//			return nil, nil
+//		}
+//		return &dilion.OAuthClient{
+//			ID:           workspaceClientID,
+//			Name:         "Workspace",
+//			VerifySecret: func(s string) bool { return subtle.ConstantTimeCompare([]byte(s), secret) == 1 },
+//			AllowRedirectURI: func(uri string) bool {
+//				ref, ok := workspaceCallbackRef(uri) // exact https://{ref}.api.example.com/auth/v1/callback
+//				return ok && workspaces.Exists(ref)
+//			},
+//			FirstParty: true,
+//		}, nil
+//	})
+//
+// The client id must be a UUID. Such a client is kept out of the admin client
+// API; see internal/auth/oauthserver_code_clients.go for how it satisfies the
+// schema's foreign keys without becoming a stored client.
+func WithOAuthClientResolver(fn ports.OAuthClientResolver) Option {
+	return func(c *config) { c.oauthClients = fn }
 }
 
 // WithAuthConfig pins the /auth/v1 configuration (internal/auth.Config).
@@ -521,8 +553,9 @@ func (s *Server) buildRouter() *chi.Mux {
 			// Access records for /admin/users (§5, 제8조 접속기록).
 			Audit: s.audit,
 			// Code-defined identity federation, consulted before the
-			// instance database (WithProviderSource).
-			Providers: s.cfg.providers,
+			// instance database (WithProviderSource, WithOAuthClientResolver).
+			Providers:    s.cfg.providers,
+			OAuthClients: s.cfg.oauthClients,
 		})
 	})
 
