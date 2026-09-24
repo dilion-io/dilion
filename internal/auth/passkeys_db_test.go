@@ -109,6 +109,9 @@ func newPasskeyEnv(t *testing.T, cfg *Config) *passkeyEnv {
 // (0100) nor the MFA harness (0112) applies.
 func applyWebAuthnSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyWebAuthnSchema") {
+		return
+	}
 	path := filepath.Join("..", "..", "migrations", "0115_auth_webauthn.sql")
 	sql, err := os.ReadFile(path)
 	if err != nil {

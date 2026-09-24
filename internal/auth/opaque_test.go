@@ -144,9 +144,7 @@ func TestOpaqueDatabaseLifecycle(t *testing.T) {
 	e := newTestEnvWithConfig(t, opaqueTestConfig())
 	ctx := context.Background()
 	// State and rate budgets deliberately outlive users; reset synthetic test state.
-	if _, err := e.pool.Exec(ctx, `truncate dilion_auth.opaque_handshakes,dilion_auth.opaque_attempts`); err != nil {
-		t.Fatal(err)
-	}
+	clearTables(t, e.pool, "dilion_auth.opaque_handshakes", "dilion_auth.opaque_attempts")
 	first := e.signup(t, "opaque@example.com", "initial-password")
 	export := opaqueRegisterTest(t, e, first.Token, "opaque-password")
 	body, key, recovered := opaqueBeginTest(t, e, "opaque@example.com", "opaque-password")
@@ -290,9 +288,7 @@ func TestOpaqueDatabaseLifecycle(t *testing.T) {
 func TestOpaqueEnrollmentAndUnknownAccounts(t *testing.T) {
 	e := newTestEnvWithConfig(t, opaqueTestConfig())
 	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `truncate dilion_auth.opaque_handshakes,dilion_auth.opaque_attempts`); err != nil {
-		t.Fatal(err)
-	}
+	clearTables(t, e.pool, "dilion_auth.opaque_handshakes", "dilion_auth.opaque_attempts")
 	first := e.signup(t, "gates@example.com", "initial-password")
 	client, _ := opaque.DefaultConfiguration().Client()
 	request, _ := client.RegistrationInit([]byte("password"))

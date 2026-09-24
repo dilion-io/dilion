@@ -18,6 +18,10 @@ import (
 // interchangeable with an upstream Supabase deployment in both directions.
 const BcryptCost = 10
 
+// hashCost is the cost HashPassword uses: BcryptCost, except in this
+// package's tests, which hash hundreds of passwords and lower it (main_test.go).
+var hashCost = BcryptCost
+
 // MinPasswordLength mirrors gotrue's default GOTRUE_PASSWORD_MIN_LENGTH.
 const MinPasswordLength = 6
 
@@ -36,7 +40,7 @@ func HashPassword(password string) (string, error) {
 	if len(password) > MaxPasswordLength {
 		return "", ErrPasswordTooLong
 	}
-	h, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
+	h, err := bcrypt.GenerateFromPassword([]byte(password), hashCost)
 	if err != nil {
 		return "", err
 	}

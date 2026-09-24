@@ -132,6 +132,9 @@ func newSSOEnv(t *testing.T) *ssoEnv {
 // tables (0112) that grantSession writes an AMR claim into, and 0113 itself.
 func applySSOSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applySSOSchema") {
+		return
+	}
 	for _, name := range []string{
 		"0111_auth_flow_state.sql",
 		"0112_auth_mfa.sql",

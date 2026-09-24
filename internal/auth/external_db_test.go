@@ -364,6 +364,9 @@ func newExternalEnv(t *testing.T, cfg *Config) *externalEnv {
 // sessions through.
 func applyExternalExtraSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyExternalExtraSchema") {
+		return
+	}
 	for _, name := range []string{"0112_auth_mfa.sql"} {
 		path := filepath.Join("..", "..", "migrations", name)
 		sql, err := os.ReadFile(path)

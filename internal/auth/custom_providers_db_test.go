@@ -107,9 +107,7 @@ func newCustomEnv(t *testing.T) *customEnv {
 	applyExternalExtraSchema(t, pool) // 0112: mfa_amr_claims (sessions record their sign-in method)
 	applyOAuthServerSchema(t, pool)   // 0116: auth.custom_oauth_providers
 	truncateAll(t, pool)
-	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.oauth_client_states, auth.custom_oauth_providers restart identity cascade`); err != nil {
-		t.Fatalf("truncate custom tables: %v", err)
-	}
+	clearTables(t, pool, "auth.flow_state", "auth.oauth_client_states", "auth.custom_oauth_providers")
 
 	cfg := DefaultConfig()
 	cfg.SiteURL = "https://app.test"

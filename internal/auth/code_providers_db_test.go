@@ -52,9 +52,7 @@ func newCodeProviderEnv(t *testing.T, define func(env *codeProviderEnv, instance
 	applyExternalExtraSchema(t, pool)
 	applyOAuthServerSchema(t, pool)
 	truncateAll(t, pool)
-	if _, err := pool.Exec(ctx, `truncate auth.flow_state, auth.oauth_client_states, auth.custom_oauth_providers restart identity cascade`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	clearTables(t, pool, "auth.flow_state", "auth.oauth_client_states", "auth.custom_oauth_providers")
 
 	cfg := DefaultConfig()
 	cfg.SiteURL = "https://app.test"

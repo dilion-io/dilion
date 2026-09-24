@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,6 +108,9 @@ func newTestEnvWithConfig(t *testing.T, cfg *Config) *testEnv {
 // dependency that fails on a genuinely fresh database (as CI proved).
 func applySchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applySchema") {
+		return
+	}
 	ctx := context.Background()
 
 	const prereqs = `
@@ -148,10 +152,71 @@ func applySchema(t *testing.T, pool *pgxpool.Pool) {
 
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`truncate auth.users, auth.sessions, auth.refresh_tokens, auth.identities,
-		          dilion_privacy.outbox, dilion_auth.hooks restart identity cascade`); err != nil {
-		t.Fatalf("truncate: %v", err)
+	clearTables(t, pool, "auth.users", "auth.sessions", "auth.refresh_tokens", "auth.identities",
+		"dilion_privacy.outbox", "dilion_auth.hooks")
+}
+
+// appliedSchemas records the schema helpers that already ran in this test
+// process. Every one of them is idempotent and every test uses the same
+// database, so running each once is enough; running them per test cost more
+// than most tests themselves.
+var appliedSchemas sync.Map
+
+// firstApply reports whether the schema helper name has not run yet in this
+// process, and marks it as run.
+func firstApply(name string) bool {
+	_, done := appliedSchemas.LoadOrStore(name, true)
+	return !done
+}
+
+// clearTables empties tables and every table that references them, directly
+// or not — what TRUNCATE ... CASCADE empties — with DELETE. A test leaves a
+// handful of rows behind, and TRUNCATE's fixed cost of swapping and syncing
+// the files of some thirty tables was most of each database test's run time;
+// deleting the rows takes milliseconds. Foreign keys are not checked while it
+// runs (session_replication_role = replica, which needs a superuser, as the
+// test database's owner is), so the order does not matter and no rows are
+// left behind by a restricting key.
+func clearTables(t *testing.T, pool *pgxpool.Pool, tables ...string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("clear tables: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		with recursive closure(oid) as (
+			select unnest($1::text[])::regclass::oid
+			union
+			select c.conrelid from pg_constraint c join closure on c.confrelid = closure.oid
+			where c.contype = 'f'
+		)
+		select oid::regclass::text from closure`, tables)
+	if err != nil {
+		t.Fatalf("clear tables: %v", err)
+	}
+	var all []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("clear tables: %v", err)
+		}
+		all = append(all, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("clear tables: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `set local session_replication_role = replica`); err != nil {
+		t.Fatalf("clear tables: %v", err)
+	}
+	for _, name := range all {
+		if _, err := tx.Exec(ctx, `delete from `+name); err != nil {
+			t.Fatalf("clear %s: %v", name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("clear tables: %v", err)
 	}
 }
 

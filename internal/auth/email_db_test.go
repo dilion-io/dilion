@@ -180,6 +180,9 @@ func newEmailEnv(t *testing.T, cfg *Config) *emailEnv {
 // files upstream-side too, and the shared harness only applies 0100.
 func applyEmailSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyEmailSchema") {
+		return
+	}
 	for _, name := range []string{"0110_auth_one_time_tokens.sql", "0111_auth_flow_state.sql"} {
 		path := filepath.Join("..", "..", "migrations", name)
 		sql, err := os.ReadFile(path)

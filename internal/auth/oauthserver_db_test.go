@@ -124,6 +124,9 @@ func newOAuthEnvWithDeps(t *testing.T, mutate func(*Config), mutateDeps func(*De
 // (0100 only) does not apply.
 func applyOAuthServerSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyOAuthServerSchema") {
+		return
+	}
 	path := filepath.Join("..", "..", "migrations", "0116_auth_oauth_server.sql")
 	sql, err := os.ReadFile(path)
 	if err != nil {
@@ -136,12 +139,9 @@ func applyOAuthServerSchema(t *testing.T, pool *pgxpool.Pool) {
 
 func truncateOAuthAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`truncate auth.users, auth.sessions, auth.refresh_tokens, auth.identities,
-		          auth.mfa_amr_claims, auth.oauth_clients, auth.oauth_authorizations, auth.oauth_consents,
-		          dilion_privacy.outbox restart identity cascade`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	clearTables(t, pool, "auth.users", "auth.sessions", "auth.refresh_tokens", "auth.identities",
+		"auth.mfa_amr_claims", "auth.oauth_clients", "auth.oauth_authorizations", "auth.oauth_consents",
+		"dilion_privacy.outbox")
 }
 
 // ---- request helpers -------------------------------------------------------

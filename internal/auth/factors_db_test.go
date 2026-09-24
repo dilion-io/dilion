@@ -86,6 +86,9 @@ func newMFAEnv(t *testing.T, cfg *Config) *mfaEnv {
 // does not apply.
 func applyMFASchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyMFASchema") {
+		return
+	}
 	path := filepath.Join("..", "..", "migrations", "0112_auth_mfa.sql")
 	sql, err := os.ReadFile(path)
 	if err != nil {

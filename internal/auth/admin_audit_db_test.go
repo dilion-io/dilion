@@ -42,6 +42,9 @@ func applyAuditSchema(t *testing.T, pool *pgxpool.Pool) {
 		"0301_audit_reason.sql",
 		"0114_auth_audit_log_entries.sql",
 	} {
+		if !firstApply(name) {
+			continue
+		}
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -50,10 +53,7 @@ func applyAuditSchema(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
-	if _, err := pool.Exec(ctx,
-		`truncate dilion_audit.events, dilion_audit.subjects, auth.audit_log_entries`); err != nil {
-		t.Fatalf("truncate audit tables: %v", err)
-	}
+	clearTables(t, pool, "dilion_audit.events", "dilion_audit.subjects", "auth.audit_log_entries")
 }
 
 type seedEvent struct {

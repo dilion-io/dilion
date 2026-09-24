@@ -33,6 +33,11 @@ func TestHashPasswordRoundTrip(t *testing.T) {
 
 // The cost must stay 10 so hashes remain interchangeable with upstream gotrue.
 func TestHashPasswordUsesUpstreamCost(t *testing.T) {
+	// The rest of the package runs at bcrypt.MinCost (main_test.go); this is
+	// the production cost.
+	testCost := hashCost
+	hashCost = BcryptCost
+	t.Cleanup(func() { hashCost = testCost })
 	hash, err := HashPassword("hunter22")
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)

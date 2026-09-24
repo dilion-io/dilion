@@ -307,6 +307,9 @@ func TestAdminGateWithRealAuthorizerAndRoleAssignment(t *testing.T) {
 // self-sufficient.
 func applyAuthzSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyAuthzSchema") {
+		return
+	}
 	ctx := context.Background()
 	conn, err := pool.Acquire(ctx)
 	if err != nil {

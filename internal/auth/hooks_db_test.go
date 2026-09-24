@@ -24,6 +24,9 @@ import (
 // do the same for their own features.
 func applyHookMigrations(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	if !firstApply("applyHookMigrations") {
+		return
+	}
 	for _, name := range []string{
 		"0110_auth_one_time_tokens.sql",
 		"0111_auth_flow_state.sql",
