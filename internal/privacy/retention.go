@@ -47,20 +47,63 @@ func (e *Engine) runRetentionOnce(ctx context.Context) error {
 					return err
 				}
 			case DomainAuditLog:
-				// TODO(agent D / wave 2): dilion_audit.* is owned by the audit
-				// domain; retention over access logs is not implemented yet.
-				// Recorded as an explicit compliance gap rather than silently
-				// skipped (§2.8 "런타임에 조용히 무시 금지").
-				e.log.Warn("retention gap: audit-log rule not executed (dilion_audit.* not owned by privacy)",
-					"policy", id, "period", rule.Period, "from", rule.From,
-					"action", rule.Action, "basis", rule.Basis)
+				// The access log is the instance's, not one policy's: it is
+				// swept once below, by the longest period any policy keeps it.
 			default:
 				e.log.Warn("retention gap: no executor for domain",
 					"policy", id, "domain", rule.Domain, "period", rule.Period)
 			}
 		}
 	}
-	return nil
+	return e.sweepAuditLog(ctx, ids, now, batch)
+}
+
+// sweepAuditLog deletes access events older than every policy's audit-log
+// retention. Events are shared by the whole instance, so the longest period
+// wins, and if any policy sets no audit-log retention the log is kept
+// indefinitely — deleting evidence one policy still needs is not an option.
+func (e *Engine) sweepAuditLog(ctx context.Context, ids []string, now time.Time, batch int) error {
+	// Periods are calendar durations (P3Y), so they are compared by the
+	// cutoff each yields: the earliest cutoff is the longest keep.
+	cutoff := now
+	for _, id := range ids {
+		var found bool
+		for _, rule := range e.policies.Policies[id].RetentionRules() {
+			if rule.Domain != DomainAuditLog {
+				continue
+			}
+			d, err := ParseISODuration(rule.Period)
+			if err != nil {
+				return err
+			}
+			found = true
+			if c := d.SubFrom(now); c.Before(cutoff) {
+				cutoff = c
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+	if !cutoff.Before(now) || !e.tableExists(ctx, "dilion_audit.events") {
+		return nil
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("privacy: audit retention: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		with old as (
+			select event_id from dilion_audit.events where created_at < $1
+			order by created_at limit $2
+		), subjects as (
+			delete from dilion_audit.subjects where event_id in (select event_id from old)
+		)
+		delete from dilion_audit.events where event_id in (select event_id from old)`, cutoff, batch); err != nil {
+		return fmt.Errorf("privacy: audit retention: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // sweepConsentShredDue crypto-shreds CONSENT-scope DEKs whose snapshotted

@@ -236,16 +236,21 @@ personal_data_requests(type=DELETION, status∈{REQUESTED,PROCESSING},
   → ErasureStep 순서 실행 (정책 domains로 defaultAction 오버라이드, KEEP은 스킵)
       100 credential          DELETE       (password, dilion_auth.opaque_credentials)
       200 refresh-token       DELETE
-      300 session             DELETE
+      300 session             DELETE       (+ OAuth 서버 동의·인가 기록)
       400 mfa-factor          DELETE       (TOTP, WebAuthn factor)
       500 passkey             DELETE       (auth.webauthn_credentials)
       600 oauth-identity      ANONYMIZE    (auth.identities — provider email/profile 제거 + subject 가명화)
       700 external-system     EXECUTE      (connector fan-out: webhook/SaaS API, §3.1 — receipt 수집)
-      800 audit-log           ANONYMIZE    (subject 절단, row 보존 — 접속기록 보존 의무가 있는
-                                            정책(kr 등)은 KEEP 오버라이드, retention 경과 후 처리)
+      800 audit-log           ANONYMIZE    (subject 절단 + 본인이 행한 이벤트의 IP·UA 제거, row 보존
+                                            — DELETE면 본인 이벤트 삭제. 접속기록 보존 의무가 있는
+                                            정책(kr 등)은 KEEP 오버라이드, retention 경과 후 처리:
+                                            모든 정책 중 가장 긴 기간이 지난 이벤트만 삭제하며, 보존
+                                            규칙이 없는 정책이 하나라도 있으면 삭제하지 않음)
       900 subject-key         CRYPTO_SHRED (DEFAULT 스코프 즉시 shred +
                                             CONSENT 스코프에 shred_after = now + 정책 기간 스냅샷)
-     1000 account             ANONYMIZE    (auth.users email/phone/metadata + PII Vault 절단,
+     1000 account             ANONYMIZE    (auth.users email/phone/metadata·대기 중 변경·token·
+                                            app metadata(provider 제외) + PII Vault 절단, 현재 동의
+                                            상태(consent_state) 삭제, role 할당 회수,
                                             erasure registry 기록, DELETED 마킹)
       —   consent             (step 자체가 없음 — 원장은 KEEP,
                                retention의 consent-evidence 항목이 수명 관리)

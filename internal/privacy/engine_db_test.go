@@ -66,6 +66,26 @@ create table if not exists auth.identities (
 	identity_data jsonb not null);
 alter table auth.identities add column if not exists provider_id text not null default '123';
 alter table auth.identities add column if not exists updated_at timestamptz;
+alter table auth.users add column if not exists email_change text not null default '';
+alter table auth.users add column if not exists phone_change text not null default '';
+alter table auth.users add column if not exists confirmation_token text not null default '';
+alter table auth.users add column if not exists recovery_token text not null default '';
+alter table auth.users add column if not exists email_change_token_current text not null default '';
+alter table auth.users add column if not exists email_change_token_new text not null default '';
+alter table auth.users add column if not exists phone_change_token text not null default '';
+alter table auth.users add column if not exists reauthentication_token text not null default '';
+alter table auth.users add column if not exists raw_app_meta_data jsonb not null default '{}'::jsonb;
+create schema if not exists dilion_audit;
+create table if not exists dilion_audit.events (
+	event_id text primary key,
+	actor_id text,
+	ip text,
+	user_agent text,
+	created_at timestamptz not null default now());
+create table if not exists dilion_audit.subjects (
+	event_id text not null,
+	subject_id text not null,
+	primary key (event_id, subject_id));
 create schema if not exists dilion_authz;
 create table if not exists dilion_authz.role_assignments (
 	id bigserial primary key,
@@ -135,6 +155,8 @@ func resetDB(t *testing.T, pool *pgxpool.Pool) {
 		`delete from auth.identities`,
 		`delete from dilion_auth.opaque_credentials`,
 		`delete from dilion_authz.role_assignments`,
+		`delete from dilion_audit.subjects`,
+		`delete from dilion_audit.events`,
 		`delete from auth.sessions`,
 		`delete from auth.refresh_tokens`,
 		`delete from auth.users`,
@@ -298,6 +320,11 @@ func (env *testEnv) newUser(t *testing.T) string {
 	exec(`insert into dilion_auth.opaque_credentials (user_id, record) values ($1::uuid, $2)`,
 		id, []byte("opaque-record"))
 	exec(`insert into dilion_authz.role_assignments (actor_id, role_id) values ($1, 'role_owner')`, id)
+	exec(`update auth.users set email_change = 'next@example.test', reauthentication_token = 'h',
+		raw_app_meta_data = '{"provider":"email","providers":["email"],"note":"vip"}' where id = $1::uuid`, id)
+	exec(`insert into dilion_audit.events (event_id, actor_id, ip, user_agent) values ($1, $2, '198.51.100.9', 'Firefox')`,
+		"evt_self_"+id[:8], id)
+	exec(`insert into dilion_audit.subjects (event_id, subject_id) values ($1, $2)`, "evt_other_"+id[:8], id)
 	exec(`insert into dilion_pii.user_profiles (user_id, enc_profile) values ($1::uuid, $2)`,
 		id, []byte("enc:profile"))
 	if _, err := env.kms.Encrypt(env.ctx, id, ports.KeyScopeDefault, []byte("pii")); err != nil {
@@ -578,6 +605,11 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 		{"identities_still_linked", `select count(*) from auth.identities where user_id = $1::uuid and provider_id = '123'`},
 		{"opaque_credentials", `select count(*) from dilion_auth.opaque_credentials where user_id = $1::uuid`},
 		{"active_role_assignments", `select count(*) from dilion_authz.role_assignments where actor_id = $1 and revoked_at is null`},
+		{"pending_email_change", `select count(*) from auth.users where id = $1::uuid and (email_change <> '' or reauthentication_token <> '')`},
+		{"app_metadata_beyond_providers", `select count(*) from auth.users where id = $1::uuid and raw_app_meta_data ? 'note'`},
+		{"audit_subject_rows", `select count(*) from dilion_audit.subjects where subject_id = $1`},
+		{"audit_own_event_addresses", `select count(*) from dilion_audit.events where actor_id = $1 and (ip is not null or user_agent is not null)`},
+		{"consent_state", `select count(*) from dilion_privacy.consent_state where user_id = $1::uuid`},
 	} {
 		var n int
 		if err := env.pool.QueryRow(env.ctx, q.sql, user).Scan(&n); err != nil {
@@ -1515,6 +1547,92 @@ func TestWebhookDestinationNeedsASecret(t *testing.T) {
 		if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
 			Type: DestinationWebhook, Name: "weak", Config: map[string]any{"url": "https://example.com/hook"}, Secret: secret}); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("secret %q: err = %v, want ErrInvalidInput", secret, err)
+		}
+	}
+}
+
+// The access log is swept by the longest audit-log retention any policy sets,
+// and kept whole while some policy sets none.
+func TestAuditLogRetention(t *testing.T) {
+	const everyPolicyKeepsIt = `
+compliance:
+  policies:
+    gdpr:
+      retention:
+        - domain: audit-log
+          period: P1Y
+          from: created
+          action: DELETE
+          basis: test
+`
+	seed := func(env *testEnv) {
+		t.Helper()
+		for id, age := range map[string]time.Duration{"evt_old": 7 * 365 * 24 * time.Hour, "evt_recent": 4 * 365 * 24 * time.Hour} {
+			if _, err := env.pool.Exec(env.ctx, `insert into dilion_audit.events (event_id, actor_id, created_at) values ($1, 'op', $2)`,
+				id, env.clock.Now().Add(-age)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := env.pool.Exec(env.ctx, `insert into dilion_audit.subjects (event_id, subject_id) values ($1, 's')`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	remaining := func(env *testEnv) []string {
+		t.Helper()
+		var ids []string
+		if err := env.pool.QueryRow(env.ctx, `select coalesce(array_agg(event_id order by event_id), '{}') from dilion_audit.events`).Scan(&ids); err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+
+	// The built-in gdpr policy sets no audit-log retention: nothing goes.
+	env := newTestEngine(t, "")
+	seed(env)
+	if err := env.e.runRetentionOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := remaining(env); len(got) != 2 {
+		t.Fatalf("with a policy keeping the log indefinitely, events left = %v, want both", got)
+	}
+
+	// Every policy sets one: the longest (hipaa's P6Y) decides.
+	env = newTestEngine(t, everyPolicyKeepsIt)
+	seed(env)
+	if err := env.e.runRetentionOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := remaining(env); len(got) != 1 || got[0] != "evt_recent" {
+		t.Fatalf("events left = %v, want only the one younger than six years", got)
+	}
+	var subjects int
+	_ = env.pool.QueryRow(env.ctx, `select count(*) from dilion_audit.subjects where event_id = 'evt_old'`).Scan(&subjects)
+	if subjects != 0 {
+		t.Error("the deleted event's subject rows remain")
+	}
+}
+
+// An erased person is no longer an audience, although the ledger of their
+// consents outlives them as evidence.
+func TestErasedUserLeavesConsentSegment(t *testing.T) {
+	env := newTestEngine(t, "")
+	user := env.newUser(t)
+	if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{
+		Purpose: "marketing.email", Granted: true, PolicyVersion: "v1", Source: "ui"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.e.CreateRequest(env.ctx, CreateRequestInput{UserID: user, Type: RequestDeletion, Immediate: true}); err != nil {
+		t.Fatal(err)
+	}
+	env.drain(t, 3)
+	granted := true
+	page, err := env.e.ListConsentStates(env.ctx, ConsentSegmentFilter{Purpose: "marketing.email", Granted: &granted}, httpapi.ListParams{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range page.Items {
+		if it.UserID == user {
+			t.Fatal("an erased user is still listed as consenting")
 		}
 	}
 }

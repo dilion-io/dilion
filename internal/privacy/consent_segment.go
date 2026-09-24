@@ -110,6 +110,10 @@ func (e *Engine) scanConsentSegment(ctx context.Context, f ConsentSegmentFilter,
 		select user_id::text, purpose, action, policy_version, created_at
 		from latest
 		where ($2::bool is null or (action = 'GRANT') = $2)
+		  -- An erased person's ledger outlives them as evidence; they are no
+		  -- longer an audience.
+		  and not exists (select 1 from dilion_privacy.personal_data_requests r
+		                  where r.user_id = latest.user_id and r.type = 'DELETION' and r.status = 'DONE')
 		  and ($3 = '' or (user_id::text, purpose) > ($3, $4))
 		order by user_id::text, purpose
 		limit $5`

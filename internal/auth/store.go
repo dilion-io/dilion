@@ -231,7 +231,11 @@ func softDeleteUser(ctx context.Context, q querier, u *User, now time.Time) erro
 			email_change_token_current = '',
 			email_change_token_new = '',
 			phone_change_token = '',
+			reauthentication_token = '',
 			raw_user_meta_data = '{}'::jsonb,
+			raw_app_meta_data = jsonb_strip_nulls(jsonb_build_object(
+				'provider', raw_app_meta_data->'provider',
+				'providers', raw_app_meta_data->'providers')),
 			deleted_at = $6,
 			updated_at = $6
 		where id = $1::uuid`,
@@ -253,6 +257,25 @@ func softDeleteUserIdentities(ctx context.Context, q querier, userID string, now
 	}
 	for i := range ids {
 		if err := releaseIdentity(ctx, q, &ids[i], now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// softDeleteUserCredentials removes what a soft-deleted account could still
+// be reached or described by: its MFA factors (a TOTP secret, a phone), its
+// passkeys, its outstanding one-time tokens (which name its address), and the
+// OAuth server's record of which applications it authorized.
+func softDeleteUserCredentials(ctx context.Context, q querier, userID string) error {
+	for _, stmt := range []string{
+		`delete from auth.mfa_factors where user_id = $1::uuid`,
+		`delete from auth.webauthn_credentials where user_id = $1::uuid`,
+		`delete from auth.one_time_tokens where user_id = $1::uuid`,
+		`delete from auth.oauth_consents where user_id = $1::uuid`,
+		`delete from auth.oauth_authorizations where user_id = $1::uuid`,
+	} {
+		if _, err := q.Exec(ctx, stmt, userID); err != nil {
 			return err
 		}
 	}

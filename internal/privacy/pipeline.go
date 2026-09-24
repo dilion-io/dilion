@@ -327,7 +327,8 @@ func (e *Engine) stepRefreshToken(ctx context.Context, rc *runCtx, _ ErasureActi
 	return fmt.Sprintf("rows=%d", tag.RowsAffected()), false, nil
 }
 
-// 300 session.
+// 300 session — and the OAuth server's grants, which record which
+// applications the person authorized and when.
 func (e *Engine) stepSession(ctx context.Context, rc *runCtx, _ ErasureAction) (string, bool, error) {
 	if !e.tableExists(ctx, "auth.sessions") {
 		return e.skipMissing("auth.sessions")
@@ -335,6 +336,14 @@ func (e *Engine) stepSession(ctx context.Context, rc *runCtx, _ ErasureAction) (
 	tag, err := e.pool.Exec(ctx, `delete from auth.sessions where user_id::text = $1`, rc.UserID)
 	if err != nil {
 		return "", false, err
+	}
+	for _, table := range []string{"auth.oauth_consents", "auth.oauth_authorizations"} {
+		if !e.tableExists(ctx, table) {
+			continue
+		}
+		if _, err := e.pool.Exec(ctx, `delete from `+table+` where user_id = $1::uuid`, rc.UserID); err != nil {
+			return "", false, err
+		}
 	}
 	return fmt.Sprintf("rows=%d", tag.RowsAffected()), false, nil
 }
@@ -446,17 +455,39 @@ func (e *Engine) stepExternalSystem(ctx context.Context, rc *runCtx, _ ErasureAc
 	return fmt.Sprintf("tasks=%d", total), false, nil
 }
 
-// 800 audit-log — the audit tables belong to agent D.
+// 800 audit-log — the access log keeps who did what, but not more of the
+// person than that needs (§5.3): the subject manifest rows naming them go,
+// and the events they performed themselves lose their IP address and user
+// agent. The event rows stay, as the log's integrity requires. DELETE also
+// removes the events the person performed.
 func (e *Engine) stepAuditLog(ctx context.Context, rc *runCtx, action ErasureAction) (string, bool, error) {
-	// TODO(agent D / wave 2): implement subject truncation over dilion_audit.events
-	// + dilion_audit.subjects. Truncating the subject manifest must keep the
-	// access event row (§5.3). Until those tables exist this step only records
-	// the decision so the evidence chain stays complete.
-	if e.tableExists(ctx, "dilion_audit.subjects") {
-		e.log.Warn("audit-log erasure step is a placeholder; dilion_audit.* not processed",
-			"request_id", rc.RequestID, "action", action)
+	if !e.tableExists(ctx, "dilion_audit.events") || !e.tableExists(ctx, "dilion_audit.subjects") {
+		return e.skipMissing("dilion_audit.events")
 	}
-	return "TODO_AUDIT_LOG_STEP_NOT_IMPLEMENTED", false, nil
+	subjects, err := e.pool.Exec(ctx, `delete from dilion_audit.subjects where subject_id = $1`, rc.UserID)
+	if err != nil {
+		return "", false, err
+	}
+	var events int64
+	if action == ActionDelete {
+		if _, err := e.pool.Exec(ctx, `delete from dilion_audit.subjects
+			where event_id in (select event_id from dilion_audit.events where actor_id = $1)`, rc.UserID); err != nil {
+			return "", false, err
+		}
+		tag, err := e.pool.Exec(ctx, `delete from dilion_audit.events where actor_id = $1`, rc.UserID)
+		if err != nil {
+			return "", false, err
+		}
+		events = tag.RowsAffected()
+	} else {
+		tag, err := e.pool.Exec(ctx, `update dilion_audit.events set ip = null, user_agent = null
+			where actor_id = $1 and (ip is not null or user_agent is not null)`, rc.UserID)
+		if err != nil {
+			return "", false, err
+		}
+		events = tag.RowsAffected()
+	}
+	return fmt.Sprintf("subjects=%d events=%d", subjects.RowsAffected(), events), false, nil
 }
 
 // 900 subject-key — crypto-shred (§2.7): DEFAULT now, CONSENT per retention.
@@ -515,8 +546,19 @@ func (e *Engine) stepSubjectKey(ctx context.Context, rc *runCtx, _ ErasureAction
 // 1000 account — auth.users truncation, PII vault row removal and tombstone.
 func (e *Engine) stepAccount(ctx context.Context, rc *runCtx, _ ErasureAction) (string, bool, error) {
 	if e.tableExists(ctx, "auth.users") {
+		// Every column that names or reaches the person goes: pending
+		// email/phone changes hold addresses, the token columns hold hashes
+		// of them, and app metadata is free-form (only the provider names
+		// stay, which gotrue expects).
 		if _, err := e.pool.Exec(ctx, `update auth.users
 			set email = null, phone = null, raw_user_meta_data = '{}'::jsonb,
+			    email_change = '', phone_change = '',
+			    confirmation_token = '', recovery_token = '',
+			    email_change_token_current = '', email_change_token_new = '',
+			    phone_change_token = '', reauthentication_token = '',
+			    raw_app_meta_data = jsonb_strip_nulls(jsonb_build_object(
+			        'provider', raw_app_meta_data->'provider',
+			        'providers', raw_app_meta_data->'providers')),
 			    deleted_at = coalesce(deleted_at, $2)
 			where id = $1::uuid`, rc.UserID, e.now()); err != nil {
 			return "", false, err
@@ -524,6 +566,13 @@ func (e *Engine) stepAccount(ctx context.Context, rc *runCtx, _ ErasureAction) (
 	}
 	if _, err := e.pool.Exec(ctx,
 		`delete from dilion_pii.user_profiles where user_id = $1::uuid`, rc.UserID); err != nil {
+		return "", false, err
+	}
+	// The current-consent projection: an erased person is asked nothing again
+	// (the reconfirm scan reads it). The ledger itself is evidence and stays
+	// under its own retention.
+	if _, err := e.pool.Exec(ctx,
+		`delete from dilion_privacy.consent_state where user_id = $1::uuid`, rc.UserID); err != nil {
 		return "", false, err
 	}
 	// Management-plane roles are keyed by user id; an erased user keeps none.

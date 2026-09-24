@@ -557,6 +557,9 @@ func (a *api) adminDeleteUser(w http.ResponseWriter, r *http.Request) error {
 			if serr := softDeleteUserIdentities(ctx, tx, user.ID, now); serr != nil {
 				return internalServerError("Error soft deleting user identities").withInternal(serr)
 			}
+			if serr := softDeleteUserCredentials(ctx, tx, user.ID); serr != nil {
+				return internalServerError("Error removing soft deleted user's credentials").withInternal(serr)
+			}
 			return nil
 		}
 		if derr := hardDeleteUser(ctx, tx, user.ID); derr != nil {

@@ -102,3 +102,28 @@ func TestGrantSessionRefusesBannedUser(t *testing.T) {
 		t.Fatal("grantSession issued a session for a banned user")
 	}
 }
+
+// A soft-deleted account keeps its row, but not what could still sign in to
+// it or describe it: factors, passkeys, one-time tokens.
+func TestSoftDeleteRemovesCredentials(t *testing.T) {
+	env := newPasskeyEnv(t, nil)
+	session := env.signup(t, "soft-creds@dilion.test", "correct-horse-battery")
+	env.registerPasskey(t, session.Token, newVirtualAuthenticator(testRPID, testRPOrgin))
+	env.enableMFA(t, session.User.ID)
+	if rec := env.do(t, http.MethodDelete, "/admin/users/"+session.User.ID,
+		map[string]any{"should_soft_delete": true}, env.serviceRoleToken(t)); rec.Code != http.StatusOK {
+		t.Fatalf("soft delete = %d %s", rec.Code, rec.Body.String())
+	}
+	for table, q := range map[string]string{
+		"mfa_factors":          `select count(*) from auth.mfa_factors where user_id = $1::uuid`,
+		"webauthn_credentials": `select count(*) from auth.webauthn_credentials where user_id = $1::uuid`,
+	} {
+		var n int
+		if err := env.pool.QueryRow(t.Context(), q, session.User.ID).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+		if n != 0 {
+			t.Errorf("%s: %d rows survive a soft delete", table, n)
+		}
+	}
+}
