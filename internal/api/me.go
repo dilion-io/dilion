@@ -15,8 +15,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -24,6 +27,7 @@ import (
 	"github.com/dilion-io/dilion/internal/audit"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/privacy"
+	"github.com/dilion-io/dilion/ports"
 )
 
 // ---- DTOs ----
@@ -107,8 +111,52 @@ func (r *registrar) selfGuard() huma.Middlewares {
 		}
 		ri.Actor.ID = claims.Subject
 		ri.Actor.Type = iam.ActorTypeUser
+		ri.AuthenticatedAt = lastAuthenticated(claims)
 		next(huma.WithValue(ctx, ctxKey{}, ri))
 	}}
+}
+
+// lastAuthenticated is the newest sign-in recorded in the token's `amr` claim.
+// Each entry comes from the session's auth.mfa_amr_claims and a refresh does
+// not renew it, so it dates the sign-in, not the token.
+func lastAuthenticated(claims *ports.Claims) time.Time {
+	entries, _ := claims.Extra["amr"].([]any)
+	var last int64
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		var ts int64
+		switch v := m["timestamp"].(type) {
+		case float64:
+			ts = int64(v)
+		case int64:
+			ts = v
+		case json.Number:
+			ts, _ = v.Int64()
+		}
+		if ts > last {
+			last = ts
+		}
+	}
+	if last == 0 {
+		return time.Time{}
+	}
+	return time.Unix(last, 0)
+}
+
+// requireRecentSignIn guards deleting one's own account: a stolen or
+// forgotten session must not be enough, so the sign-in behind the token has to
+// be recent.
+func (r *registrar) requireRecentSignIn(ctx context.Context) error {
+	window := r.d.DeletionReauthWindow
+	if window <= 0 {
+		return nil
+	}
+	at := requestInfoFrom(ctx).AuthenticatedAt
+	if !at.IsZero() && time.Since(at) <= window {
+		return nil
+	}
+	return NewProblem(http.StatusForbidden, httpapi.CodeReauthenticationNeeded,
+		fmt.Sprintf("deleting your account needs a sign-in within the last %s; sign in again and retry", window))
 }
 
 // selfOp mirrors registrar.op for the ownership-authorized surface.
@@ -139,6 +187,11 @@ func (r *registrar) registerMe() {
 				return nil, err
 			}
 			sub := requestInfoFrom(ctx).Actor.ID
+			if privacy.RequestType(in.Body.Type) == privacy.RequestDeletion {
+				if err := r.requireRecentSignIn(ctx); err != nil {
+					return nil, err
+				}
+			}
 			out, err := svc.CreateRequest(ctx, privacy.CreateRequestInput{
 				UserID:         sub,
 				Type:           privacy.RequestType(in.Body.Type),

@@ -379,3 +379,21 @@ func TestHookSecretsRejectedAtLoad(t *testing.T) {
 		t.Fatalf("LoadConfig error = %v, want one naming HOOK_SEND_EMAIL_SECRETS", err)
 	}
 }
+
+func TestDeletionReauthWindowFromEnv(t *testing.T) {
+	if c := DefaultConfig(); c.Security.DeletionReauthWindow != DefaultDeletionReauthWindow {
+		t.Errorf("default = %s, want %s", c.Security.DeletionReauthWindow, DefaultDeletionReauthWindow)
+	}
+	t.Setenv("DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW", "5m")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if c.Security.DeletionReauthWindow != 5*time.Minute {
+		t.Errorf("window = %s, want 5m", c.Security.DeletionReauthWindow)
+	}
+	t.Setenv("DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW", "-1m")
+	if _, err := LoadConfig(); err == nil {
+		t.Error("a negative window was accepted")
+	}
+}

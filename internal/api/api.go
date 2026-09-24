@@ -40,6 +40,12 @@ type Deps struct {
 	Verifier ports.TokenVerifier
 	Authz    ports.Authorizer
 	Audit    ports.AuditSink
+
+	// DeletionReauthWindow is how recent a user's sign-in must be for them to
+	// request their own deletion through /privacy/v1/me/requests; 0 turns the
+	// check off. The server fills it from auth's
+	// Security.DeletionReauthWindow.
+	DeletionReauthWindow time.Duration
 }
 
 // pools returns the effective pool provider (Pools, else a static Pool).
@@ -111,6 +117,9 @@ type requestInfo struct {
 	RequestID string
 	IP        string
 	UserAgent string
+	// AuthenticatedAt is when the self-service caller last signed in: the
+	// newest `amr` timestamp of their token. Zero when the token has none.
+	AuthenticatedAt time.Time
 }
 
 func requestInfoFrom(ctx context.Context) *requestInfo {

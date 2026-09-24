@@ -164,6 +164,7 @@ const PROBLEM_CODES: ReadonlyArray<Problem['code']> = [
   'legal_hold_active',
   'policy_violation',
   'rate_limited',
+  'reauthentication_needed',
   'internal',
 ]
 
@@ -305,6 +306,33 @@ export async function createPrivacyRequest(
   idempotencyKey: string,
 ): Promise<PrivacyRequest> {
   const result = await api.POST('/privacy/v1/requests', {
+    params: { header: { 'Idempotency-Key': idempotencyKey } },
+    body,
+  })
+  return unwrap(result)
+}
+
+/**
+ * `POST /privacy/v1/me/requests` — the self-service surface, sent with the
+ * signed-in user's own access token rather than the management credential.
+ * Deleting one's account there needs a recent sign-in: an older one answers
+ * `403 reauthentication_needed`.
+ */
+export async function createMyPrivacyRequest(
+  accessToken: string,
+  body: components['schemas']['CreateMeRequestBody'],
+  idempotencyKey: string,
+): Promise<PrivacyRequest> {
+  // Not the shared client: its middleware would put the management
+  // credential back in place of the user's token.
+  const asUser = createClient<paths>({ baseUrl: '' })
+  asUser.use({
+    onRequest({ request }) {
+      request.headers.set('Authorization', `Bearer ${accessToken}`)
+      return request
+    },
+  })
+  const result = await asUser.POST('/privacy/v1/me/requests', {
     params: { header: { 'Idempotency-Key': idempotencyKey } },
     body,
   })

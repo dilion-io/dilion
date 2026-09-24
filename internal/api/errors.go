@@ -29,7 +29,7 @@ type Problem struct {
 	Status   int                 `json:"status,omitempty" doc:"HTTP status code."`
 	Detail   string              `json:"detail,omitempty" doc:"Human-readable explanation specific to this occurrence."`
 	Instance string              `json:"instance,omitempty" format:"uri" doc:"URI reference identifying this specific occurrence."`
-	Code     string              `json:"code" enum:"validation_failed,unauthenticated,permission_denied,not_found,conflict,idempotency_conflict,legal_hold_active,policy_violation,rate_limited,internal" doc:"Machine-readable error code."`
+	Code     string              `json:"code" enum:"validation_failed,unauthenticated,permission_denied,not_found,conflict,idempotency_conflict,legal_hold_active,policy_violation,rate_limited,reauthentication_needed,internal" doc:"Machine-readable error code."`
 	Errors   []*huma.ErrorDetail `json:"errors,omitempty" nullable:"false" doc:"Optional list of individual error details."`
 }
 

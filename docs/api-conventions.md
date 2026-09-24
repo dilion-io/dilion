@@ -58,7 +58,7 @@ frontend codegen(openapi.yaml 기반)에 영향을 주는 모든 규칙. `/auth/
   "code": "permission_denied", "errors": [ ... ] }
 ```
 
-- `code`: 기계 판독용 snake_case 문자열 (frontend 분기 기준). 목록: `validation_failed`, `unauthenticated`, `permission_denied`, `not_found`, `conflict`, `idempotency_conflict`, `legal_hold_active`, `policy_violation`, `rate_limited`, `internal`.
+- `code`: 기계 판독용 snake_case 문자열 (frontend 분기 기준). 목록: `validation_failed`, `unauthenticated`, `permission_denied`, `not_found`, `conflict`, `idempotency_conflict`, `legal_hold_active`, `policy_violation`, `rate_limited`, `reauthentication_needed`, `internal`.
 - **Validation**: 422 + `errors[]` (huma `ErrorDetail`: `message`, `location`, `value`). **PII로 분류된 필드는 `value`를 echo하지 않는다.**
 - 401 `unauthenticated` / 403 `permission_denied`(detail에 필요 permission 명시, 발생 시 감사 이벤트). 존재하지 않는 리소스는 404로 응답(존재 노출 방지).
 

@@ -71,6 +71,10 @@ const (
 	// Dilion defaults to 10s because every supported client (gotrue-js and the
 	// Supabase CLI) can issue concurrent refreshes.
 	DefaultRefreshTokenReuseInterval = 10
+
+	// DefaultDeletionReauthWindow is SecurityConfig.DeletionReauthWindow's
+	// default.
+	DefaultDeletionReauthWindow = 10 * time.Minute
 )
 
 // ---- provider names --------------------------------------------------------
@@ -426,6 +430,13 @@ type SecurityConfig struct {
 	// slash. It exists so tests and air-gapped deployments can point the check
 	// at their own mirror. Empty means api.pwnedpasswords.com.
 	HIBPBaseURL string `json:"-"`
+	// DeletionReauthWindow (DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW, Dilion
+	// extension, default 10m) is how recent a user's sign-in must be for them to
+	// request their own account deletion (POST /privacy/v1/me/requests with
+	// type DELETION). Older than this, the request answers 403
+	// reauthentication_needed and the user signs in again. 0 turns the check
+	// off.
+	DeletionReauthWindow time.Duration `json:"deletion_reauth_window"`
 }
 
 // ReuseIntervalDuration returns RefreshTokenReuseInterval as a duration.
@@ -707,6 +718,7 @@ func DefaultConfig() *Config {
 		Security: SecurityConfig{
 			RefreshTokenRotationEnabled: true,
 			RefreshTokenReuseInterval:   DefaultRefreshTokenReuseInterval,
+			DeletionReauthWindow:        DefaultDeletionReauthWindow,
 			Captcha:                     CaptchaConfig{Provider: "hcaptcha", Timeout: DefaultCaptchaTimeout},
 		},
 		Password: PasswordConfig{
@@ -814,6 +826,10 @@ func LoadConfig() (*Config, error) {
 
 	// Security.
 	c.Security.RefreshTokenRotationEnabled = envBool("SECURITY_REFRESH_TOKEN_ROTATION_ENABLED", c.Security.RefreshTokenRotationEnabled, fail)
+	c.Security.DeletionReauthWindow = envDuration("SECURITY_DELETION_REAUTH_WINDOW", c.Security.DeletionReauthWindow, fail)
+	if c.Security.DeletionReauthWindow < 0 {
+		fail("SECURITY_DELETION_REAUTH_WINDOW must not be negative")
+	}
 	c.Security.RefreshTokenReuseInterval = envInt("SECURITY_REFRESH_TOKEN_REUSE_INTERVAL", c.Security.RefreshTokenReuseInterval, fail)
 	c.Security.UpdatePasswordRequireReauth = envBool("SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION", c.Security.UpdatePasswordRequireReauth, fail)
 	c.Security.ManualLinkingEnabled = envBool("SECURITY_MANUAL_LINKING_ENABLED", c.Security.ManualLinkingEnabled, fail)

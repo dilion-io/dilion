@@ -568,6 +568,8 @@ func (s *Server) buildRouter() *chi.Mux {
 		Verifier: s.instances,
 		Authz:    s.authz,
 		Audit:    s.audit,
+
+		DeletionReauthWindow: s.cfg.authConfig.Security.DeletionReauthWindow,
 	}
 	api.RegisterPrivacyAPI(humaAPI, s.instances.PrivacyService, deps)
 	api.RegisterIAMAPI(humaAPI, deps)

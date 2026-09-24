@@ -319,3 +319,57 @@ func TestExportConsentAudienceEndpoint(t *testing.T) {
 		t.Errorf("subject manifest = %v", ev.SubjectIDs)
 	}
 }
+
+// Deleting one's own account needs a recent sign-in: the newest `amr`
+// timestamp of the token, which a refresh does not renew. Other self-service
+// requests do not.
+func TestMeDeletionNeedsRecentSignIn(t *testing.T) {
+	signedIn := func(ago time.Duration) map[string]any {
+		// As a verified JWT decodes it: numbers arrive as float64.
+		return map[string]any{"amr": []any{
+			map[string]any{"method": "password", "timestamp": float64(time.Now().Add(-ago).Unix())},
+		}}
+	}
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+		typ   string
+		want  int
+	}{
+		{"fresh sign-in", signedIn(time.Minute), "DELETION", http.StatusAccepted},
+		{"old sign-in", signedIn(time.Hour), "DELETION", http.StatusForbidden},
+		{"no amr", nil, "DELETION", http.StatusForbidden},
+		{"old sign-in, export", signedIn(time.Hour), "EXPORT", http.StatusAccepted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created := false
+			svc := &fakePrivacy{
+				createRequest: func(_ context.Context, in privacy.CreateRequestInput) (*privacy.Request, error) {
+					created = true
+					r := sampleRequest()
+					r.UserID, r.Type = in.UserID, in.Type
+					return r, nil
+				},
+			}
+			deps := endUserDeps(&recordingSink{})
+			deps.Verifier = fakeVerifier{claims: &ports.Claims{Subject: testUserID, Role: "authenticated", Extra: tc.extra}}
+			deps.DeletionReauthWindow = 10 * time.Minute
+			tapi := newAPI(t, svc, deps)
+
+			resp := tapi.Post("/privacy/v1/me/requests", bearer, map[string]any{"type": tc.typ})
+			if resp.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body=%s)", resp.Code, tc.want, resp.Body.String())
+			}
+			if tc.want == http.StatusForbidden {
+				var p Problem
+				_ = json.Unmarshal(resp.Body.Bytes(), &p)
+				if p.Code != httpapi.CodeReauthenticationNeeded {
+					t.Errorf("code = %q, want %s", p.Code, httpapi.CodeReauthenticationNeeded)
+				}
+				if created {
+					t.Error("a deletion request was created without a recent sign-in")
+				}
+			}
+		})
+	}
+}

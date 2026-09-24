@@ -768,6 +768,7 @@ components:
             - legal_hold_active
             - policy_violation
             - rate_limited
+            - reauthentication_needed
             - internal
           type: string
         detail:

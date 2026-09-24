@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   cancelPrivacyRequest,
-  createPrivacyRequest,
+  createMyPrivacyRequest,
   getPrivacyRequest,
   newIdempotencyKey,
   toProblem,
@@ -11,6 +11,8 @@ import {
 import { ProblemAlert } from './ProblemAlert'
 import { RequestTimeline } from './RequestTimeline'
 import { formatDateTime, formatDuration } from '../lib/format'
+import { navigate } from '../lib/router'
+import { supabase } from '../lib/supabase'
 
 const POLL_INTERVAL_MS = 2000
 const TERMINAL: ReadonlyArray<PrivacyRequest['status']> = ['DONE', 'CANCELED', 'MANUAL_REVIEW']
@@ -62,8 +64,12 @@ export function DeleteAccountSection({
     setBusy(true)
     setProblem(null)
     try {
-      const created = await createPrivacyRequest(
-        { user_id: userId, type: 'DELETION' },
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      if (!token) throw new Error('Sign in to delete your account.')
+      const created = await createMyPrivacyRequest(
+        token,
+        { type: 'DELETION' },
         idempotencyKey.current,
       )
       setRequest(created)
@@ -99,14 +105,27 @@ export function DeleteAccountSection({
     <section className="card">
       <h2>Delete my account</h2>
       <p className="muted">
-        <code>POST /privacy/v1/requests</code> with{' '}
-        <code>{'{ user_id, type: "DELETION" }'}</code> and an <code>Idempotency-Key</code> header.
+        <code>POST /privacy/v1/me/requests</code> with <code>{'{ type: "DELETION" }'}</code>,
+        your own access token and an <code>Idempotency-Key</code> header. It needs a recent
+        sign-in (<code>DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW</code>, 10 minutes by default);
+        an older one answers <code>403 reauthentication_needed</code>.
         The server answers <code>202 Accepted</code> — erasure is orchestrated asynchronously
         across every registered destination, and this page polls{' '}
         <code>GET /privacy/v1/requests/{'{id}'}</code> until it settles.
       </p>
 
       {problem && <ProblemAlert problem={problem} />}
+      {problem?.code === 'reauthentication_needed' && (
+        <div className="row">
+          <button
+            className="btn"
+            type="button"
+            onClick={() => void supabase.auth.signOut().then(() => navigate('signin'))}
+          >
+            Sign in again
+          </button>
+        </div>
+      )}
 
       {!request && (
         <>

@@ -67,5 +67,8 @@ const (
 	CodeLegalHoldActive     = "legal_hold_active"
 	CodePolicyViolation     = "policy_violation"
 	CodeRateLimited         = "rate_limited"
-	CodeInternal            = "internal"
+	// CodeReauthenticationNeeded: the action needs a sign-in more recent than
+	// the one the token carries.
+	CodeReauthenticationNeeded = "reauthentication_needed"
+	CodeInternal               = "internal"
 )
