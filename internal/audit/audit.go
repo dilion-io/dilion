@@ -70,6 +70,7 @@ const (
 	ActionRoleRevoked = "ROLE_REVOKED"
 	// Definition changes are permission changes too ("매우 민감", §5.2).
 	ActionRoleCreated       = "ROLE_CREATED"
+	ActionRoleUpdated       = "ROLE_UPDATED"
 	ActionPermissionCreated = "PERMISSION_CREATED"
 
 	ActionAPIKeyCreated = "API_KEY_CREATED"

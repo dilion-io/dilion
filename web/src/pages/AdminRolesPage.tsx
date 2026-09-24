@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import {
   createRole,
   listRoles,
+  updateRole,
   toProblem,
   type Problem,
   type Role,
@@ -31,6 +32,7 @@ export function AdminRolesPage() {
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<Problem | null>(null)
   const [created, setCreated] = useState<Role | null>(null)
+  const [editing, setEditing] = useState<Role | null>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -101,16 +103,27 @@ export function AdminRolesPage() {
                   </td>
                   <td className="small">{formatDateTime(role.created_at)}</td>
                   <td>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      type="button"
-                      onClick={() => {
-                        stash('roleId', role.id)
-                        navigate('admin-assignments')
-                      }}
-                    >
-                      Assignments
-                    </button>
+                    <div className="row">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        type="button"
+                        onClick={() => {
+                          stash('roleId', role.id)
+                          navigate('admin-assignments')
+                        }}
+                      >
+                        Assignments
+                      </button>
+                      {!role.builtin && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          type="button"
+                          onClick={() => setEditing(editing?.id === role.id ? null : role)}
+                        >
+                          {editing?.id === role.id ? 'Close' : 'Edit'}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -128,6 +141,18 @@ export function AdminRolesPage() {
         <Pager list={roles} unit="role" />
       </section>
 
+      {editing && (
+        <EditRole
+          key={editing.id}
+          role={editing}
+          catalog={catalog.permissions.map((p) => p.name)}
+          onSaved={(role) => {
+            setEditing(role)
+            roles.reload()
+          }}
+        />
+      )}
+
       <section className="card">
         <h3>Create a role</h3>
         <p className="muted">
@@ -135,7 +160,7 @@ export function AdminRolesPage() {
           <code>{'{ name, permissions[] }'}</code>. Every permission must already be registered —
           the picker below is fed by <code>GET /iam/v1/permissions</code> for exactly that reason.
         </p>
-        <PermissionHint permission="keys.manage" />
+        <PermissionHint permission="roles.manage" />
 
         {catalog.problem && <ProblemAlert problem={catalog.problem} />}
         {problem && <ProblemAlert problem={problem} />}
@@ -181,5 +206,61 @@ export function AdminRolesPage() {
         </form>
       </section>
     </>
+  )
+}
+
+function EditRole({
+  role,
+  catalog,
+  onSaved,
+}: {
+  role: Role
+  catalog: string[]
+  onSaved: (role: Role) => void
+}) {
+  const [permissions, setPermissions] = useState<string[]>(role.permissions)
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<Problem | null>(null)
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setProblem(null)
+    try {
+      onSaved(await updateRole(role.id, permissions))
+    } catch (err) {
+      setProblem(toProblem(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="card">
+      <h3>
+        Edit <strong>{role.name}</strong>
+      </h3>
+      <p className="muted">
+        <code>PATCH /iam/v1/roles/{'{roleId}'}</code> replaces the permission set. Every holder of
+        the role gains or loses what changes, so the server only accepts it from someone who holds
+        every permission in both the old and the new set.
+      </p>
+      <PermissionHint permission="roles.manage" />
+      {problem && <ProblemAlert problem={problem} />}
+      <form className="form" onSubmit={(e) => void save(e)}>
+        <MultiSelect
+          label="Permissions"
+          hint="At least one is required."
+          options={catalog.map((name) => ({ value: name }))}
+          selected={permissions}
+          onChange={setPermissions}
+        />
+        <div className="row">
+          <button className="btn" type="submit" disabled={busy || permissions.length === 0}>
+            {busy ? 'Saving…' : 'Save permissions'}
+          </button>
+        </div>
+      </form>
+    </section>
   )
 }

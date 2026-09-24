@@ -435,6 +435,15 @@ export async function createRole(body: CreateRoleBody): Promise<Role> {
   return unwrap(result)
 }
 
+/** `PATCH /iam/v1/roles/{roleId}` — replace a custom role's permissions. */
+export async function updateRole(roleId: string, permissions: string[]): Promise<Role> {
+  const result = await api.PATCH('/iam/v1/roles/{roleId}', {
+    params: { path: { roleId } },
+    body: { permissions },
+  })
+  return unwrap(result)
+}
+
 export async function listRoleAssignments(
   roleId: string,
   query: ListAssignmentsQuery,

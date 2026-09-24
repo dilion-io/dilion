@@ -30,6 +30,11 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 const (
 	DefaultLimit = 20
 	MaxLimit     = 100
+	// MaxCatalogLimit is the page limit of lists that hold configuration
+	// rather than data about people — roles, permissions, API keys — which a
+	// console loads whole to fill a picker. Lists of users, requests and
+	// events keep MaxLimit, so one call exposes at most that many records.
+	MaxCatalogLimit = 1000
 )
 
 // Page is the list envelope: {"items":[...],"next_cursor":"..."|null}.
@@ -43,14 +48,20 @@ type ListParams struct {
 	Limit  int
 	Cursor string
 	Sort   string // "field" | "-field", comma-separated
+	// Max caps Limit; zero means MaxLimit.
+	Max int
 }
 
 func (p ListParams) Norm() ListParams {
+	max := p.Max
+	if max <= 0 {
+		max = MaxLimit
+	}
 	if p.Limit <= 0 {
 		p.Limit = DefaultLimit
 	}
-	if p.Limit > MaxLimit {
-		p.Limit = MaxLimit
+	if p.Limit > max {
+		p.Limit = max
 	}
 	return p
 }

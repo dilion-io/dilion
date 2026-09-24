@@ -38,7 +38,7 @@ frontend codegen(openapi.yaml 기반)에 영향을 주는 모든 규칙. `/auth/
 
 ## Pagination / Sorting / Filtering
 
-- **Cursor 기반**: `?limit=`(기본 20, 최대 100) + `?cursor=`(opaque string).
+- **Cursor 기반**: `?limit=`(기본 20, 최대 100) + `?cursor=`(opaque string). 사람에 관한 데이터가 아닌 설정 목록(roles, permissions, api-keys)은 콘솔이 한 번에 읽을 수 있도록 최대 1000입니다.
 - 응답 envelope:
 
 ```json

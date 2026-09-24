@@ -192,6 +192,11 @@ func listParams(limit int, cursor, sort string) httpapi.ListParams {
 	return httpapi.ListParams{Limit: limit, Cursor: cursor, Sort: sort}.Norm()
 }
 
+// catalogListParams is listParams for a catalog list (httpapi.MaxCatalogLimit).
+func catalogListParams(limit int, cursor string) httpapi.ListParams {
+	return httpapi.ListParams{Limit: limit, Cursor: cursor, Max: httpapi.MaxCatalogLimit}.Norm()
+}
+
 func clientIP(remoteAddr, forwardedFor string) string {
 	if forwardedFor != "" {
 		first, _, _ := strings.Cut(forwardedFor, ",")

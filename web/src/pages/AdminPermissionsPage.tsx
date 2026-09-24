@@ -134,7 +134,7 @@ export function AdminPermissionsPage() {
           enforced server-side and pre-checked here: the name must be namespaced, and it may not
           collide with a builtin.
         </p>
-        <PermissionHint permission="keys.manage" />
+        <PermissionHint permission="roles.manage" />
 
         {catalog.problem && <ProblemAlert problem={catalog.problem} />}
         {problem && <ProblemAlert problem={problem} />}

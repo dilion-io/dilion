@@ -189,6 +189,50 @@ var errorStatuses = []int{
 	http.StatusInternalServerError,
 }
 
+// grantCeiling refuses to let the caller hand out a permission it does not
+// hold itself — in an API key's scopes, a role's definition, or a role
+// assignment. Without it, the permission to administer grants was a way to
+// every other permission: a holder of it could assign itself `owner`. The
+// check uses the same rules as the guard: service_role holds everything, and
+// an API key holds only what is both in its scopes and granted to it. The
+// refusal names every missing permission and is recorded as
+// PERMISSION_DENIED.
+func (d Deps) grantCeiling(ctx context.Context, perms []string, resource string) error {
+	ri := requestInfoFrom(ctx)
+	if ri.Actor.Type == iam.ActorTypeServiceRole {
+		return nil
+	}
+	var missing []string
+	for _, perm := range perms {
+		if slices.Contains(missing, perm) {
+			continue
+		}
+		held := false
+		if scopesAllow(ri.Actor, ri.Scopes, perm) && d.Authz != nil {
+			var err error
+			held, err = d.Authz.Can(ctx, ri.Actor, perm, resource)
+			if err != nil {
+				return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal,
+					"authorization check failed")
+			}
+		}
+		if !held {
+			missing = append(missing, perm)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	d.emit(ctx, auditOpts{
+		Action:      audit.ActionPermissionDenied,
+		Resource:    resource + " (grant ceiling: " + strings.Join(missing, ",") + ")",
+		AccessLevel: audit.AccessNA,
+	})
+	return NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied,
+		"cannot grant permissions you do not hold: "+strings.Join(missing, ", "))
+}
+
 // authorize checks an ADDITIONAL permission from inside a handler, for a
 // request option that widens what an operation returns beyond what its own
 // permission covers. The operation's guard has already authenticated the

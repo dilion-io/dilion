@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { listPermissions, toProblem, type Permission, type Problem } from '../api/client'
 import { useCredentialMode } from './credentialMode'
 
-/** `limit` maximum from docs/api-conventions.md — one page holds the catalog. */
-const CATALOG_LIMIT = 100
+/** The catalog-list `limit` maximum (httpapi.MaxCatalogLimit) — one page holds the catalog. */
+const CATALOG_LIMIT = 1000
 
 /**
  * The full permission catalog, used to populate the role-permission and API-key

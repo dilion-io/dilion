@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -26,6 +27,10 @@ type Role struct {
 type CreateRoleBody struct {
 	Name        string   `json:"name" minLength:"1" doc:"Unique role name within the project."`
 	Permissions []string `json:"permissions" nullable:"false" minItems:"1" doc:"Permissions bundled by this role. Each must already be registered."`
+}
+
+type UpdateRoleBody struct {
+	Permissions []string `json:"permissions" nullable:"false" minItems:"1" doc:"The role's new permission set, replacing the current one. Each must already be registered. Builtin roles cannot be changed."`
 }
 
 type RolePage struct {
@@ -189,8 +194,10 @@ func toAPIKey(in iam.APIKey) APIKey {
 
 // ---- inputs / outputs ----
 
-type listInput struct {
-	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+// catalogListInput lists configuration — roles, permissions, API keys — with
+// the larger catalog page limit, so a console can load it whole.
+type catalogListInput struct {
+	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"1000"`
 	Cursor string `query:"cursor"`
 }
 
@@ -200,6 +207,19 @@ type rolePageOutput struct {
 
 type createRoleInput struct {
 	Body CreateRoleBody
+}
+
+type roleIDInput struct {
+	RoleID string `path:"roleId" pattern:"^role_[0-9a-f]{32}$"`
+}
+
+type updateRoleInput struct {
+	RoleID string `path:"roleId" pattern:"^role_[0-9a-f]{32}$"`
+	Body   UpdateRoleBody
+}
+
+type roleBodyOutput struct {
+	Body Role
 }
 
 type roleOutput struct {
@@ -276,8 +296,9 @@ type apiKeyIDInput struct {
 // ---- registration ----
 
 // RegisterIAMAPI mounts /iam/v1 on the given huma API. Reads require
-// `audit.read`, mutations require `keys.manage` — both are held by the builtin
-// security-admin role.
+// `audit.read`; defining roles and permissions and granting roles require
+// `roles.manage`; issuing and revoking API keys require `keys.manage`. Every
+// grant is further capped at what the caller holds itself (grantCeiling).
 func RegisterIAMAPI(api huma.API, d Deps) {
 	installErrorModel()
 	r := newRegistrar(api, d, nil)
@@ -290,8 +311,8 @@ func RegisterIAMAPI(api huma.API, d Deps) {
 func (r *registrar) registerRoles() {
 	huma.Register(r.api, r.op("listRoles", http.MethodGet, "/iam/v1/roles",
 		"List roles", iam.PermAuditRead, "iam", http.StatusOK),
-		func(ctx context.Context, in *listInput) (*rolePageOutput, error) {
-			page, err := r.keys.ListRoles(ctx, listParams(in.Limit, in.Cursor, ""))
+		func(ctx context.Context, in *catalogListInput) (*rolePageOutput, error) {
+			page, err := r.keys.ListRoles(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
 			}
@@ -308,8 +329,11 @@ func (r *registrar) registerRoles() {
 		})
 
 	huma.Register(r.api, r.op("createRole", http.MethodPost, "/iam/v1/roles",
-		"Create a custom role", iam.PermKeysManage, "iam", http.StatusCreated),
+		"Create a custom role", iam.PermRolesManage, "iam", http.StatusCreated),
 		func(ctx context.Context, in *createRoleInput) (*roleOutput, error) {
+			if err := r.d.grantCeiling(ctx, in.Body.Permissions, "roles"); err != nil {
+				return nil, err
+			}
 			role, err := r.keys.CreateRole(ctx, in.Body.Name, in.Body.Permissions)
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
@@ -319,6 +343,44 @@ func (r *registrar) registerRoles() {
 				AccessLevel: audit.AccessNA, ResultCount: 1,
 			})
 			return &roleOutput{Location: "/iam/v1/roles/" + role.ID, Body: toRole(role)}, nil
+		})
+
+	huma.Register(r.api, r.op("getRole", http.MethodGet, "/iam/v1/roles/{roleId}",
+		"Get a role", iam.PermAuditRead, "iam", http.StatusOK),
+		func(ctx context.Context, in *roleIDInput) (*roleBodyOutput, error) {
+			role, err := r.keys.GetRole(ctx, in.RoleID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			r.d.emit(ctx, auditOpts{
+				Action: audit.ActionIAMRead, Resource: "role:" + role.ID,
+				AccessLevel: audit.AccessNA, ResultCount: 1,
+			})
+			return &roleBodyOutput{Body: toRole(role)}, nil
+		})
+
+	huma.Register(r.api, r.op("updateRole", http.MethodPatch, "/iam/v1/roles/{roleId}",
+		"Replace a custom role's permissions", iam.PermRolesManage, "iam", http.StatusOK),
+		func(ctx context.Context, in *updateRoleInput) (*roleBodyOutput, error) {
+			cur, err := r.keys.GetRole(ctx, in.RoleID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			// Removing a permission changes what the role's holders can do as
+			// much as adding one, so the caller must hold both sets.
+			if err := r.d.grantCeiling(ctx, append(slices.Clone(cur.Permissions), in.Body.Permissions...),
+				"role:"+cur.ID); err != nil {
+				return nil, err
+			}
+			role, err := r.keys.UpdateRole(ctx, in.RoleID, in.Body.Permissions)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			r.d.emit(ctx, auditOpts{
+				Action: audit.ActionRoleUpdated, Resource: "role:" + role.ID,
+				AccessLevel: audit.AccessNA, ResultCount: 1,
+			})
+			return &roleBodyOutput{Body: toRole(role)}, nil
 		})
 
 	huma.Register(r.api, r.op("listRoleAssignments", http.MethodGet, "/iam/v1/roles/{roleId}/assignments",
@@ -357,8 +419,15 @@ func (r *registrar) registerRoles() {
 		})
 
 	huma.Register(r.api, r.op("createRoleAssignment", http.MethodPost, "/iam/v1/roles/{roleId}/assignments",
-		"Grant a role to an actor", iam.PermKeysManage, "iam", http.StatusCreated),
+		"Grant a role to an actor", iam.PermRolesManage, "iam", http.StatusCreated),
 		func(ctx context.Context, in *createRoleAssignmentInput) (*roleAssignmentOutput, error) {
+			role, err := r.keys.GetRole(ctx, in.RoleID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			if err := r.d.grantCeiling(ctx, role.Permissions, "role:"+role.ID+" assignments"); err != nil {
+				return nil, err
+			}
 			a, err := r.keys.GrantRole(ctx, in.RoleID, in.Body.ActorID,
 				requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
@@ -377,8 +446,21 @@ func (r *registrar) registerRoles() {
 		})
 
 	huma.Register(r.api, r.op("revokeRoleAssignment", http.MethodDelete, "/iam/v1/assignments/{assignmentId}",
-		"Revoke a role assignment", iam.PermKeysManage, "iam", http.StatusNoContent),
+		"Revoke a role assignment", iam.PermRolesManage, "iam", http.StatusNoContent),
 		func(ctx context.Context, in *assignmentIDInput) (*struct{}, error) {
+			// Taking a role away from someone who holds more than the caller
+			// would let an administrator lock out those above it.
+			cur, err := r.keys.GetAssignment(ctx, in.AssignmentID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			role, err := r.keys.GetRole(ctx, cur.RoleID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			if err := r.d.grantCeiling(ctx, role.Permissions, "assignment:"+strconv.FormatInt(cur.ID, 10)); err != nil {
+				return nil, err
+			}
 			a, err := r.keys.RevokeAssignment(ctx, in.AssignmentID,
 				requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
@@ -397,8 +479,8 @@ func (r *registrar) registerRoles() {
 func (r *registrar) registerPermissions() {
 	huma.Register(r.api, r.op("listPermissions", http.MethodGet, "/iam/v1/permissions",
 		"List permissions", iam.PermAuditRead, "iam", http.StatusOK),
-		func(ctx context.Context, in *listInput) (*permissionPageOutput, error) {
-			page, err := r.keys.ListPermissions(ctx, listParams(in.Limit, in.Cursor, ""))
+		func(ctx context.Context, in *catalogListInput) (*permissionPageOutput, error) {
+			page, err := r.keys.ListPermissions(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
 			}
@@ -415,7 +497,7 @@ func (r *registrar) registerPermissions() {
 		})
 
 	huma.Register(r.api, r.op("createPermission", http.MethodPost, "/iam/v1/permissions",
-		"Register a custom permission", iam.PermKeysManage, "iam", http.StatusCreated),
+		"Register a custom permission", iam.PermRolesManage, "iam", http.StatusCreated),
 		func(ctx context.Context, in *createPermissionInput) (*permissionOutput, error) {
 			p, err := r.keys.CreatePermission(ctx, in.Body.Name)
 			if err != nil {
@@ -526,8 +608,8 @@ func (r *registrar) expandActors(ctx context.Context, resource, expand string,
 func (r *registrar) registerAPIKeys() {
 	huma.Register(r.api, r.op("listApiKeys", http.MethodGet, "/iam/v1/api-keys",
 		"List API keys", iam.PermAuditRead, "iam", http.StatusOK),
-		func(ctx context.Context, in *listInput) (*apiKeyPageOutput, error) {
-			page, err := r.keys.ListKeys(ctx, listParams(in.Limit, in.Cursor, ""))
+		func(ctx context.Context, in *catalogListInput) (*apiKeyPageOutput, error) {
+			page, err := r.keys.ListKeys(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
 			}
@@ -549,6 +631,9 @@ func (r *registrar) registerAPIKeys() {
 			name := ""
 			if in.Body.Name != nil {
 				name = *in.Body.Name
+			}
+			if err := r.d.grantCeiling(ctx, in.Body.Scopes, "api_keys"); err != nil {
+				return nil, err
 			}
 			token, key, err := r.keys.CreateKeyBy(ctx, name, in.Body.Scopes,
 				in.Body.ExpiresAt, requestInfoFrom(ctx).Actor.ID)

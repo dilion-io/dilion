@@ -265,7 +265,7 @@ export function AdminAssignmentsPage() {
           whatever your organisation authenticates; Dilion stores the string as given.{' '}
           <code>DELETE /iam/v1/assignments/{'{id}'}</code> revokes it.
         </p>
-        <PermissionHint permission="keys.manage" />
+        <PermissionHint permission="roles.manage" />
 
         <form className="form" onSubmit={(e) => void grant(e)}>
           <label>

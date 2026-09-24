@@ -60,7 +60,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke a role assignment
-         * @description Requires permission `keys.manage`.
+         * @description Requires permission `roles.manage`.
          */
         delete: operations["revokeRoleAssignment"];
         options?: never;
@@ -131,7 +131,7 @@ export interface paths {
         put?: never;
         /**
          * Register a custom permission
-         * @description Requires permission `keys.manage`.
+         * @description Requires permission `roles.manage`.
          */
         post: operations["createPermission"];
         delete?: never;
@@ -175,13 +175,37 @@ export interface paths {
         put?: never;
         /**
          * Create a custom role
-         * @description Requires permission `keys.manage`.
+         * @description Requires permission `roles.manage`.
          */
         post: operations["createRole"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/iam/v1/roles/{roleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a role
+         * @description Requires permission `audit.read`.
+         */
+        get: operations["getRole"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Replace a custom role's permissions
+         * @description Requires permission `roles.manage`.
+         */
+        patch: operations["updateRole"];
         trace?: never;
     };
     "/iam/v1/roles/{roleId}/assignments": {
@@ -199,7 +223,7 @@ export interface paths {
         put?: never;
         /**
          * Grant a role to an actor
-         * @description Requires permission `keys.manage`.
+         * @description Requires permission `roles.manage`.
          */
         post: operations["createRoleAssignment"];
         delete?: never;
@@ -1098,6 +1122,10 @@ export interface components {
             policy_version: string;
             /** @description Consent purpose key. */
             purpose: string;
+        };
+        UpdateRoleBody: {
+            /** @description The role's new permission set, replacing the current one. Each must already be registered. Builtin roles cannot be changed. */
+            permissions: string[];
         };
         UpdateUserProfileBody: {
             /** @description Field names to delete. */
@@ -2023,6 +2051,180 @@ export interface operations {
             201: {
                 headers: {
                     Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Role"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                roleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Role"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    updateRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                roleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRoleBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
                     [name: string]: unknown;
                 };
                 content: {

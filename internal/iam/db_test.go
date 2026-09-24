@@ -44,6 +44,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 
 	applyMigration(t, pool)
+	lockSharedTables(t, pool)
 	// Start from a clean, seed-only state.
 	if _, err := pool.Exec(ctx, `
 		truncate dilion_authz.role_assignments, dilion_authz.api_keys restart identity;
@@ -57,13 +58,14 @@ func testPool(t *testing.T) *pgxpool.Pool {
 // migrationFiles are the 03xx migrations this package's schema depends on:
 // 0300 (RBAC + audit tables), 0301 (audit reason column), 0302 (the pii.write
 // builtin permission and its role bundles), 0303 (users.admin), 0304
-// (consents.write).
+// (consents.write), 0305 (roles.manage).
 var migrationFiles = []string{
 	"../../migrations/0300_iam_audit.sql",
 	"../../migrations/0301_audit_reason.sql",
 	"../../migrations/0302_pii_write_permission.sql",
 	"../../migrations/0303_users_admin_permission.sql",
 	"../../migrations/0304_consents_write_permission.sql",
+	"../../migrations/0305_roles_manage_permission.sql",
 }
 
 // applyMigration runs them under an advisory lock: `create schema if not
@@ -90,6 +92,27 @@ func applyMigration(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("apply migration %s: %v", f, err)
 		}
 	}
+}
+
+// lockSharedTables holds, for the whole test, the advisory lock internal/api
+// and internal/audit take on this database. Those packages run at the same
+// time and read the dilion_authz tables this package empties, so without it a
+// reset here could remove an assignment in the middle of one of their tests.
+func lockSharedTables(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `select pg_advisory_lock(730002)`); err != nil {
+		conn.Release()
+		t.Fatalf("lock shared tables: %v", err)
+	}
+	t.Cleanup(func() {
+		conn.Exec(ctx, `select pg_advisory_unlock(730002)`) //nolint:errcheck
+		conn.Release()
+	})
 }
 
 func newTestService(t *testing.T, pool *pgxpool.Pool) *Service {

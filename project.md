@@ -324,10 +324,13 @@ holds.manage                # legal hold 설정/해제
 policies.manage             # 컴플라이언스 정책 변경
 destinations.manage         # webhook/connector 설정
 keys.manage                 # API key 발급/회수
+roles.manage                # role·permission 정의, role 할당/회수
 audit.read                  # 감사 로그 열람 (쓰기 permission은 존재하지 않음)
+users.admin                 # /auth/v1/admin/* (Supabase 호환 관리 표면)
 ```
 
-- 내장 role 번들: `viewer`(users.read) / `support`(+ pii.read) / `privacy-officer`(+ requests·holds·export) / `security-admin`(+ audit.read, keys) / `owner`(전부).
+- 내장 role 번들: `viewer`(users.read) / `support`(+ pii.read) / `privacy-officer`(+ requests·holds·export) / `security-admin`(+ audit.read, keys, roles) / `owner`(전부). 내장 role은 수정할 수 없고, 사용자 정의 role은 `PATCH /iam/v1/roles/{id}`로 권한을 교체할 수 있습니다.
+- **부여 상한(grant ceiling):** 누구도 자기가 가지지 않은 permission을 줄 수 없습니다. API key의 scope, role 정의(생성·수정 시 기존과 새 권한 모두), role 할당·회수가 모두 호출자가 가진 permission의 부분집합이어야 하며, 어긋나면 403과 함께 부족한 permission을 알려 줍니다. 그래서 `roles.manage`나 `keys.manage`를 가져도 그보다 강한 권한(예: `owner`)으로 올라갈 수 없고, 자기보다 강한 사람의 role을 회수할 수도 없습니다. `service_role`은 전권이므로 예외입니다.
 - **사용자 정의 permission·role:** 채택자는 자기 서비스용 permission과 role을 등록할 수 있습니다. 사용자 정의 permission은 네임스페이스가 필수(예: `myapp.orders.refund`)이며, 무접두 내장 permission과 충돌하지 않습니다. 등록된 permission은 hook·Authorizer·채택자 자체 API의 판정에 사용됩니다.
 
 **권한 이력 = 컴플라이언스 데이터:** 안전성 확보조치 기준 제5조(접근권한 부여·변경·말소 내역의 기록·보관, 인사이동 시 지체 없는 변경)에 따라 role 할당은 현재 상태가 아니라 **이력 보존형**(`role_assignments` — granted/revoked)으로 기록합니다.[^kr-safety] 권한 부여·회수는 "매우 민감" 등급 감사 이벤트(§5.2)이며, 이 이력으로 CC6.3 recertification 리포트("현재 `pii.reveal` 보유자 + 부여 근거")를 생성합니다.

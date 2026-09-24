@@ -61,7 +61,13 @@ const (
 	PermPoliciesManage        = "policies.manage"
 	PermDestinationsManage    = "destinations.manage"
 	PermKeysManage            = "keys.manage"
-	PermAuditRead             = "audit.read"
+	// PermRolesManage guards defining roles and permissions and granting or
+	// revoking role assignments. It was split from keys.manage (migration
+	// 0305) so issuing API keys and administering who holds which role are
+	// separate duties. Either way a caller can only grant what it holds
+	// itself (internal/api grantCeiling).
+	PermRolesManage = "roles.manage"
+	PermAuditRead   = "audit.read"
 	// PermUsersAdmin authorises the Supabase-compatible admin surface
 	// (/auth/v1/admin/*) for a regular user access token. Seeded by migration
 	// 0303 and bundled into the builtin `owner` role only.
@@ -69,12 +75,12 @@ const (
 )
 
 // BuiltinPermissions is the authoritative list seeded by migrations 0300
-// (all but pii.write), 0302 (pii.write), 0303 (users.admin) and 0304
-// (consents.write).
+// (all but pii.write), 0302 (pii.write), 0303 (users.admin), 0304
+// (consents.write) and 0305 (roles.manage).
 var BuiltinPermissions = []string{
 	PermUsersRead, PermPIIRead, PermPIIReveal, PermPIIWrite, PermPIIExport,
 	PermConsentsWrite, PermPrivacyRequestsManage, PermHoldsManage, PermPoliciesManage,
-	PermDestinationsManage, PermKeysManage, PermAuditRead, PermUsersAdmin,
+	PermDestinationsManage, PermKeysManage, PermRolesManage, PermAuditRead, PermUsersAdmin,
 }
 
 // Builtin role ids seeded by migration 0300.
@@ -279,23 +285,9 @@ func (s *Service) CreateRole(ctx context.Context, name string, permissions []str
 	if name == "" {
 		return Role{}, fmt.Errorf("%w: role name is required", ErrInvalid)
 	}
-	perms := dedupe(permissions)
-	if len(perms) == 0 {
-		return Role{}, fmt.Errorf("%w: role must grant at least one permission", ErrInvalid)
-	}
-	// Every permission must be registered — deny-by-default requires the set of
-	// grantable permissions to stay enumerable (§2.11).
-	var known []string
-	if err := pool.QueryRow(ctx, `
-		select coalesce(array_agg(name), '{}')
-		from dilion_authz.permissions
-		where name = any($1)`, perms).Scan(&known); err != nil {
-		return Role{}, fmt.Errorf("iam: create role: %w", err)
-	}
-	for _, p := range perms {
-		if !slices.Contains(known, p) {
-			return Role{}, fmt.Errorf("%w: unknown permission %q", ErrInvalid, p)
-		}
+	perms, err := rolePermissions(ctx, pool, permissions)
+	if err != nil {
+		return Role{}, err
 	}
 
 	r := Role{ID: httpapi.NewID("role"), Name: name, Permissions: perms}
@@ -309,6 +301,62 @@ func (s *Service) CreateRole(ctx context.Context, name string, permissions []str
 	}
 	if err != nil {
 		return Role{}, fmt.Errorf("iam: create role: %w", err)
+	}
+	return r, nil
+}
+
+// rolePermissions normalises a role's permission set: deduplicated, at least
+// one, and every one registered — deny-by-default requires the set of
+// grantable permissions to stay enumerable (§2.11).
+func rolePermissions(ctx context.Context, pool *pgxpool.Pool, permissions []string) ([]string, error) {
+	perms := dedupe(permissions)
+	if len(perms) == 0 {
+		return nil, fmt.Errorf("%w: role must grant at least one permission", ErrInvalid)
+	}
+	var known []string
+	if err := pool.QueryRow(ctx, `
+		select coalesce(array_agg(name), '{}')
+		from dilion_authz.permissions
+		where name = any($1)`, perms).Scan(&known); err != nil {
+		return nil, fmt.Errorf("iam: role permissions: %w", err)
+	}
+	for _, p := range perms {
+		if !slices.Contains(known, p) {
+			return nil, fmt.Errorf("%w: unknown permission %q", ErrInvalid, p)
+		}
+	}
+	return perms, nil
+}
+
+// UpdateRole replaces a custom role's permission set. Builtin roles are
+// immutable: their contents are what the documentation and every deployment
+// rely on (§2.11).
+func (s *Service) UpdateRole(ctx context.Context, roleID string, permissions []string) (Role, error) {
+	pool, err := s.db(ctx)
+	if err != nil {
+		return Role{}, err
+	}
+	cur, err := s.GetRole(ctx, roleID)
+	if err != nil {
+		return Role{}, err
+	}
+	if cur.Builtin {
+		return Role{}, fmt.Errorf("%w: role %q is builtin", ErrBuiltin, cur.Name)
+	}
+	perms, err := rolePermissions(ctx, pool, permissions)
+	if err != nil {
+		return Role{}, err
+	}
+	r := cur
+	err = pool.QueryRow(ctx, `
+		update dilion_authz.roles set permissions = $2
+		where id = $1 and not builtin
+		returning permissions`, roleID, perms).Scan(&r.Permissions)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Role{}, ErrNotFound
+	}
+	if err != nil {
+		return Role{}, fmt.Errorf("iam: update role: %w", err)
 	}
 	return r, nil
 }
@@ -401,6 +449,26 @@ func (s *Service) GrantRole(ctx context.Context, roleID, actorID, grantedBy stri
 		values ($1,$2,$3,$4) returning id, granted_at`,
 		actorID, roleID, a.GrantedBy, s.clock()).Scan(&a.ID, &a.GrantedAt); err != nil {
 		return Assignment{}, fmt.Errorf("iam: grant role: %w", err)
+	}
+	return a, nil
+}
+
+// GetAssignment reads one assignment, active or revoked.
+func (s *Service) GetAssignment(ctx context.Context, id int64) (Assignment, error) {
+	pool, err := s.db(ctx)
+	if err != nil {
+		return Assignment{}, err
+	}
+	var a Assignment
+	err = pool.QueryRow(ctx, `
+		select id, actor_id, role_id, granted_by, granted_at, revoked_by, revoked_at
+		from dilion_authz.role_assignments where id = $1`, id).
+		Scan(&a.ID, &a.ActorID, &a.RoleID, &a.GrantedBy, &a.GrantedAt, &a.RevokedBy, &a.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Assignment{}, ErrNotFound
+	}
+	if err != nil {
+		return Assignment{}, fmt.Errorf("iam: get assignment: %w", err)
 	}
 	return a, nil
 }
