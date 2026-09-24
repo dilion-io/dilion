@@ -64,9 +64,9 @@ compliance:
           basis: "45 CFR §164.316(b)(2)(i)"
         - domain: consent-evidence
           period: P6Y
-          from: created
+          from: erasure
           action: CRYPTO_SHRED
-          basis: "45 CFR §164.530(j)(2)"
+          basis: "45 CFR §164.530(j)(2) (작성일 또는 최종 효력일 중 나중 시점부터 6년 — 동의는 계정 파기 시 효력 종료)"
       consent:
         required-keys: [terms, privacy]
         reconfirm: {}
