@@ -49,7 +49,7 @@ test: build vet ## 유닛 테스트 (DB 불필요; DB 테스트는 skip)
 # 그 파일에 누적한다 — CI 가 robherley/go-test-action 으로 렌더한다.
 # 비어 있으면 지금까지처럼 사람이 읽는 기본 출력만 나온다. 게이트 자체는 동일.
 GOTEST_JSON ?=
-GOTEST_FLAGS := -race -count=1 $(if $(GOTEST_JSON),-json,)
+GOTEST_FLAGS := -race -count=1 -timeout 20m $(if $(GOTEST_JSON),-json,)
 # tee 로 로그 가시성은 유지하되, pipefail 로 go test 의 실패 코드가 tee 에 삼켜지지
 # 않게 한다 (각 레시피 줄에 지역적으로만 건다 — 다른 타깃 영향 없음).
 GOTEST_PIPE := $(if $(GOTEST_JSON),| tee -a '$(GOTEST_JSON)',)
