@@ -222,7 +222,9 @@ compliance:
 
 ### 2.9 파기 파이프라인 (Erasure Pipeline)
 
-탈퇴 요청은 즉시 파기가 아니라 정책의 `grace-period-days` 유예를 거칩니다. 유예 중에는 계정 비활성화 + 세션/토큰 즉시 폐기 상태이며 요청 철회가 가능합니다.[^gdpr-art12][^gdpr-art17][^pipa-21][^kr-std-guideline] 단, **정보주체가 즉시 파기를 요청하면 유예를 생략**할 수 있어야 하고(`scheduled_at = now`), 유예 만료 후에는 지체 없이(한국 정책 기준 5일 이내) 파기가 실행되도록 스케줄러 SLA를 보장합니다. 유예기간은 "철회 가능 기간"이라는 별도 보유 목적·기간으로 처리방침에 고지합니다. 본인 탈퇴 요청(`POST /privacy/v1/me/requests`, `type=DELETION`)은 **최근 로그인**을 요구합니다. 토큰의 `amr` 중 가장 최근 인증 시각이 `DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW`(기본 10분, 0이면 끔)보다 오래되면 403 `reauthentication_needed`로 거부되며, 사용자는 다시 로그인한 뒤 요청합니다. `amr` 시각은 refresh로 갱신되지 않으므로, 탈취되거나 방치된 세션만으로는 탈퇴할 수 없습니다. 파기된(또는 soft delete된) 계정은 남은 자격증명이 무엇이든 세션을 발급받지 못하며, 같은 소셜 계정으로 다시 가입하면 새 계정이 만들어집니다.
+탈퇴 요청은 즉시 파기가 아니라 정책의 `grace-period-days` 유예를 거칩니다. 유예 중에는 계정 비활성화 + 세션/토큰 즉시 폐기 상태이며 요청 철회가 가능합니다.[^gdpr-art12][^gdpr-art17][^pipa-21][^kr-std-guideline] 단, **정보주체가 즉시 파기를 요청하면 유예를 생략**할 수 있어야 하고(`scheduled_at = now`), 유예 만료 후에는 지체 없이(한국 정책 기준 5일 이내) 파기가 실행되도록 스케줄러 SLA를 보장합니다. 유예기간은 "철회 가능 기간"이라는 별도 보유 목적·기간으로 처리방침에 고지합니다. 본인 탈퇴 요청(`POST /privacy/v1/me/requests`, `type=DELETION`)은 **최근 로그인**을 요구합니다. 토큰이 가리키는 세션의 가장 최근 인증 시각(`auth.mfa_amr_claims`)이 `DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW`(기본 10분, 0이면 끔)보다 오래되면 403 `reauthentication_needed`로 거부되며, 사용자는 다시 로그인한 뒤 요청합니다. 이 시각은 refresh로 갱신되지 않으므로, 탈취되거나 방치된 세션만으로는 탈퇴할 수 없습니다. MFA를 켠 계정은 추가로 aal2 세션이 필요합니다(403 `insufficient_aal`). 이 판정은 토큰의 `aal`·`amr` claim이 아니라 DB에서 읽습니다. claim은 `TokenClaims`나 `custom_access_token` 훅이 바꿀 수 있기 때문입니다.
+
+**MFA 계정의 단계 인증(step-up):** 검증된 MFA factor가 있는 사용자는 다음 작업에 aal2 세션이 필요합니다. 이메일·전화번호·비밀번호 변경(`PUT /user`, upstream과 같은 401 `insufficient_aal`), OAuth 2.1 동의(조회·자동 승인·승인 모두, 403 — upstream에는 없는 강화), passkey·OPAQUE 자격증명 관리, 본인 탈퇴. factor가 없는 사용자는 aal2에 도달할 수 없으므로 요구하지 않습니다. 파기된(또는 soft delete된) 계정은 남은 자격증명이 무엇이든 세션을 발급받지 못하며, 같은 소셜 계정으로 다시 가입하면 새 계정이 만들어집니다.
 
 ```
 personal_data_requests(type=DELETION, status∈{REQUESTED,PROCESSING},

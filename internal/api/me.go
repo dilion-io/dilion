@@ -15,8 +15,9 @@ package api
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -25,9 +26,9 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/privacy"
-	"github.com/dilion-io/dilion/ports"
 )
 
 // ---- DTOs ----
@@ -111,52 +112,42 @@ func (r *registrar) selfGuard() huma.Middlewares {
 		}
 		ri.Actor.ID = claims.Subject
 		ri.Actor.Type = iam.ActorTypeUser
-		ri.AuthenticatedAt = lastAuthenticated(claims)
+		ri.SessionID, _ = claims.Extra["session_id"].(string)
 		next(huma.WithValue(ctx, ctxKey{}, ri))
 	}}
 }
 
-// lastAuthenticated is the newest sign-in recorded in the token's `amr` claim.
-// Each entry comes from the session's auth.mfa_amr_claims and a refresh does
-// not renew it, so it dates the sign-in, not the token.
-func lastAuthenticated(claims *ports.Claims) time.Time {
-	entries, _ := claims.Extra["amr"].([]any)
-	var last int64
-	for _, e := range entries {
-		m, _ := e.(map[string]any)
-		var ts int64
-		switch v := m["timestamp"].(type) {
-		case float64:
-			ts = int64(v)
-		case int64:
-			ts = v
-		case json.Number:
-			ts, _ = v.Int64()
-		}
-		if ts > last {
-			last = ts
-		}
+// requireDeletionAssurance guards deleting one's own account: a stolen or
+// forgotten session must not be enough. The session behind the token must
+// still exist, must have reached aal2 if the user has MFA, and — unless
+// DeletionReauthWindow is 0 — must have authenticated recently. All three are
+// read from the database (auth.LookupSessionAssurance), not from the token's
+// aal and amr claims, which a TokenClaims or custom_access_token hook can
+// rewrite.
+func (r *registrar) requireDeletionAssurance(ctx context.Context) error {
+	ri := requestInfoFrom(ctx)
+	pool, err := r.d.pools()(ctx)
+	if err != nil {
+		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
-	if last == 0 {
-		return time.Time{}
+	as, err := auth.LookupSessionAssurance(ctx, pool, ri.Actor.ID, ri.SessionID)
+	if errors.Is(err, auth.ErrSessionNotFound) {
+		return NewProblem(http.StatusForbidden, httpapi.CodeReauthenticationNeeded,
+			"this token's session has ended; sign in again and retry")
 	}
-	return time.Unix(last, 0)
-}
-
-// requireRecentSignIn guards deleting one's own account: a stolen or
-// forgotten session must not be enough, so the sign-in behind the token has to
-// be recent.
-func (r *registrar) requireRecentSignIn(ctx context.Context) error {
-	window := r.d.DeletionReauthWindow
-	if window <= 0 {
-		return nil
+	if err != nil {
+		slog.ErrorContext(ctx, "session assurance lookup failed", "error", err)
+		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
-	at := requestInfoFrom(ctx).AuthenticatedAt
-	if !at.IsZero() && time.Since(at) <= window {
-		return nil
+	if as.MFAEnabled && as.AAL != auth.AAL2 {
+		return NewProblem(http.StatusForbidden, httpapi.CodeInsufficientAAL,
+			"deleting your account needs a session verified with your second factor")
 	}
-	return NewProblem(http.StatusForbidden, httpapi.CodeReauthenticationNeeded,
-		fmt.Sprintf("deleting your account needs a sign-in within the last %s; sign in again and retry", window))
+	if window := r.d.DeletionReauthWindow; window > 0 && time.Since(as.AuthenticatedAt) > window {
+		return NewProblem(http.StatusForbidden, httpapi.CodeReauthenticationNeeded,
+			fmt.Sprintf("deleting your account needs a sign-in within the last %s; sign in again and retry", window))
+	}
+	return nil
 }
 
 // selfOp mirrors registrar.op for the ownership-authorized surface.
@@ -188,7 +179,7 @@ func (r *registrar) registerMe() {
 			}
 			sub := requestInfoFrom(ctx).Actor.ID
 			if privacy.RequestType(in.Body.Type) == privacy.RequestDeletion {
-				if err := r.requireRecentSignIn(ctx); err != nil {
+				if err := r.requireDeletionAssurance(ctx); err != nil {
 					return nil, err
 				}
 			}

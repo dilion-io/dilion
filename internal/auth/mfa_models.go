@@ -20,12 +20,15 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---- constants -------------------------------------------------------------
@@ -284,6 +287,92 @@ func computeAAL(claims []amrClaim) (string, []any) {
 		})
 	}
 	return aal, amr
+}
+
+// stepUpRequired reports whether u, who has a verified MFA factor, is acting
+// through a session that has not reached aal2 — upstream's
+// `user.HasMFAEnabled() && !session.IsAAL2()`. A user with no verified factor
+// can never reach aal2, so nothing is required of them. It fails closed: a
+// token without a session_id reads as aal1.
+//
+// Changing a credential (PUT /user), authorizing an application (OAuth
+// consent), managing passkeys and deleting the account all ask this: an MFA
+// user's second factor would mean little if a password alone could do them.
+func (a *api) stepUpRequired(ctx context.Context, q querier, u *User) (bool, error) {
+	mfa, err := hasVerifiedFactor(ctx, q, u.ID)
+	if err != nil || !mfa {
+		return false, err
+	}
+	aal, err := a.sessionAAL(ctx, q, sessionIDFrom(claimsFrom(ctx)))
+	if err != nil {
+		return false, err
+	}
+	return aal != AAL2, nil
+}
+
+func hasVerifiedFactor(ctx context.Context, q querier, userID string) (bool, error) {
+	factors, err := findFactorsByUserID(ctx, q, userID)
+	if err != nil {
+		return false, internalServerError("Database error loading factors").withInternal(err)
+	}
+	for _, f := range factors {
+		if f.IsVerified() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SessionAssurance is what one session proves about the person using it, read
+// from the database for code outside this package (the privacy API's
+// self-service surface). The access token carries the same facts as its aal
+// and amr claims, but a TokenClaims or custom_access_token hook can rewrite
+// those, so a decision that matters reads them here.
+type SessionAssurance struct {
+	// AAL is aal2 once the session verified an MFA factor, else aal1.
+	AAL string
+	// AuthenticatedAt is the newest authentication recorded for the session:
+	// its sign-in, or a later MFA verification. A refresh does not renew it.
+	AuthenticatedAt time.Time
+	// MFAEnabled reports whether the user has a verified factor, and so could
+	// reach aal2.
+	MFAEnabled bool
+}
+
+// ErrSessionNotFound is LookupSessionAssurance's answer for a session that
+// does not exist, has ended, or belongs to another user.
+var ErrSessionNotFound = errors.New("auth: session not found")
+
+// LookupSessionAssurance reads the assurance of userID's session sessionID.
+func LookupSessionAssurance(ctx context.Context, pool *pgxpool.Pool, userID, sessionID string) (SessionAssurance, error) {
+	var out SessionAssurance
+	if _, err := uuid.Parse(sessionID); err != nil {
+		return out, ErrSessionNotFound
+	}
+	s, err := findSessionByID(ctx, pool, sessionID)
+	if isNoRows(err) {
+		return out, ErrSessionNotFound
+	}
+	if err != nil {
+		return out, err
+	}
+	if s.UserID != userID || (s.NotAfter != nil && !time.Now().Before(*s.NotAfter)) {
+		return out, ErrSessionNotFound
+	}
+	claims, err := findAMRClaims(ctx, pool, sessionID)
+	if err != nil {
+		return out, err
+	}
+	out.AAL, _ = computeAAL(claims)
+	for _, c := range claims {
+		if c.UpdatedAt.After(out.AuthenticatedAt) {
+			out.AuthenticatedAt = c.UpdatedAt
+		}
+	}
+	if out.MFAEnabled, err = hasVerifiedFactor(ctx, pool, userID); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // sessionAAL reports the authenticator assurance level of one session, derived

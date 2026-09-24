@@ -144,6 +144,24 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) error {
 		return badRequestError(ErrorCodeValidationFailed, "%s", invalidChannelError)
 	}
 
+	// Upstream: with MFA enabled, changing the email, phone or password needs
+	// an aal2 session — otherwise a stolen password alone could replace the
+	// credentials the second factor protects.
+	if (params.Password != nil && *params.Password != "") || newEmail != "" || newPhone != "" {
+		pool, perr := a.db(ctx)
+		if perr != nil {
+			return perr
+		}
+		needed, serr := a.stepUpRequired(ctx, pool, user)
+		if serr != nil {
+			return serr
+		}
+		if needed {
+			return httpError(http.StatusUnauthorized, ErrorCodeInsufficientAAL,
+				"AAL2 session is required to update email or password when MFA is enabled.")
+		}
+	}
+
 	sessionID := sessionIDFrom(claims)
 
 	passwordChanged := false

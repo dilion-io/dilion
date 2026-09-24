@@ -78,6 +78,12 @@ func (a *api) oauthGetAuthorization(w http.ResponseWriter, r *http.Request) erro
 	if user == nil {
 		return forbiddenError(ErrorCodeBadJWT, "authentication required")
 	}
+	// Opening the request claims it and may approve it outright (an earlier
+	// consent, a first-party client), so it needs the same assurance as
+	// approving.
+	if err := a.requireConsentAAL(ctx, user); err != nil {
+		return err
+	}
 
 	authorizationID := chi.URLParam(r, "authorization_id")
 	if authorizationID == "" {
@@ -184,6 +190,12 @@ func (a *api) oauthConsent(w http.ResponseWriter, r *http.Request) error {
 	if body.Action != OAuthConsentActionApprove && body.Action != OAuthConsentActionDeny {
 		return badRequestError(ErrorCodeValidationFailed, "action must be 'approve' or 'deny'")
 	}
+	// Denying gives nothing away, so only approving needs the step-up.
+	if body.Action == OAuthConsentActionApprove {
+		if err := a.requireConsentAAL(ctx, user); err != nil {
+			return err
+		}
+	}
 
 	authorizationID := chi.URLParam(r, "authorization_id")
 	if authorizationID == "" {
@@ -224,6 +236,26 @@ func (a *api) oauthConsent(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return sendJSON(w, http.StatusOK, ConsentResponse{RedirectURL: redirectURL})
+}
+
+// requireConsentAAL asks an MFA user for an aal2 session before an
+// application is authorized for them. Signing in to the application hands it
+// the account, so a password alone must not be enough where a second factor
+// exists. DEVIATION: upstream's OAuth server does not check the AAL here.
+func (a *api) requireConsentAAL(ctx context.Context, user *User) error {
+	pool, err := a.db(ctx)
+	if err != nil {
+		return err
+	}
+	needed, err := a.stepUpRequired(ctx, pool, user)
+	if err != nil {
+		return err
+	}
+	if needed {
+		return forbiddenError(ErrorCodeInsufficientAAL,
+			"AAL2 session is required to authorize an application when MFA is enabled")
+	}
+	return nil
 }
 
 // lockPendingAuthorization loads an authorization FOR UPDATE and enforces the

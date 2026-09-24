@@ -108,13 +108,20 @@ export function DeleteAccountSection({
         <code>POST /privacy/v1/me/requests</code> with <code>{'{ type: "DELETION" }'}</code>,
         your own access token and an <code>Idempotency-Key</code> header. It needs a recent
         sign-in (<code>DILION_AUTH_SECURITY_DELETION_REAUTH_WINDOW</code>, 10 minutes by default);
-        an older one answers <code>403 reauthentication_needed</code>.
+        an older one answers <code>403 reauthentication_needed</code>. An account with MFA also
+        needs a session that verified its second factor (<code>403 insufficient_aal</code>).
         The server answers <code>202 Accepted</code> — erasure is orchestrated asynchronously
         across every registered destination, and this page polls{' '}
         <code>GET /privacy/v1/requests/{'{id}'}</code> until it settles.
       </p>
 
       {problem && <ProblemAlert problem={problem} />}
+      {problem?.code === 'insufficient_aal' && (
+        <p className="alert-hint">
+          Verify your second factor (<code>supabase.auth.mfa.challengeAndVerify</code>) so this
+          session reaches <code>aal2</code>, then retry.
+        </p>
+      )}
       {problem?.code === 'reauthentication_needed' && (
         <div className="row">
           <button

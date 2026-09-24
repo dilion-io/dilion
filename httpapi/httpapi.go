@@ -81,5 +81,8 @@ const (
 	// CodeReauthenticationNeeded: the action needs a sign-in more recent than
 	// the one the token carries.
 	CodeReauthenticationNeeded = "reauthentication_needed"
-	CodeInternal               = "internal"
+	// CodeInsufficientAAL: the user has MFA and the action needs a session that
+	// verified the second factor (aal2).
+	CodeInsufficientAAL = "insufficient_aal"
+	CodeInternal        = "internal"
 )

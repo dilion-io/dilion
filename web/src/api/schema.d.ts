@@ -966,7 +966,7 @@ export interface components {
              * @description Machine-readable error code.
              * @enum {string}
              */
-            code: "validation_failed" | "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "idempotency_conflict" | "legal_hold_active" | "policy_violation" | "rate_limited" | "reauthentication_needed" | "internal";
+            code: "validation_failed" | "unauthenticated" | "permission_denied" | "not_found" | "conflict" | "idempotency_conflict" | "legal_hold_active" | "policy_violation" | "rate_limited" | "reauthentication_needed" | "insufficient_aal" | "internal";
             /** @description Human-readable explanation specific to this occurrence. */
             detail?: string;
             /** @description Optional list of individual error details. */

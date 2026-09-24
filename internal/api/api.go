@@ -43,8 +43,8 @@ type Deps struct {
 
 	// DeletionReauthWindow is how recent a user's sign-in must be for them to
 	// request their own deletion through /privacy/v1/me/requests; 0 turns the
-	// check off. The server fills it from auth's
-	// Security.DeletionReauthWindow.
+	// recency check off (the session and MFA checks remain). The server fills
+	// it from auth's Security.DeletionReauthWindow.
 	DeletionReauthWindow time.Duration
 }
 
@@ -117,9 +117,9 @@ type requestInfo struct {
 	RequestID string
 	IP        string
 	UserAgent string
-	// AuthenticatedAt is when the self-service caller last signed in: the
-	// newest `amr` timestamp of their token. Zero when the token has none.
-	AuthenticatedAt time.Time
+	// SessionID is the self-service caller's session (the token's session_id
+	// claim), whose assurance deletion checks in the database.
+	SessionID string
 }
 
 func requestInfoFrom(ctx context.Context) *requestInfo {

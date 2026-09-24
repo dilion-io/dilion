@@ -124,25 +124,11 @@ func requireNotAnonymousUser(u *User) error {
 // The check fails CLOSED: a request without a session_id claim (a service-role
 // token, a hand-made JWT) reads as aal1 and is rejected once MFA is on.
 func (a *api) requirePasskeyManagementAAL(ctx context.Context, q querier, u *User) error {
-	factors, err := findFactorsByUserID(ctx, q, u.ID)
-	if err != nil {
-		return internalServerError("Database error loading factors").withInternal(err)
-	}
-	hasMFA := false
-	for _, f := range factors {
-		if f.IsVerified() {
-			hasMFA = true
-			break
-		}
-	}
-	if !hasMFA {
-		return nil
-	}
-	aal, err := a.sessionAAL(ctx, q, sessionIDFrom(claimsFrom(ctx)))
+	needed, err := a.stepUpRequired(ctx, q, u)
 	if err != nil {
 		return err
 	}
-	if aal != AAL2 {
+	if needed {
 		return forbiddenError(ErrorCodeInsufficientAAL,
 			"AAL2 session is required to manage passkeys when MFA is enabled")
 	}

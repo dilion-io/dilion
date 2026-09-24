@@ -165,6 +165,7 @@ const PROBLEM_CODES: ReadonlyArray<Problem['code']> = [
   'policy_violation',
   'rate_limited',
   'reauthentication_needed',
+  'insufficient_aal',
   'internal',
 ]
 
