@@ -1044,11 +1044,14 @@ components:
           type: boolean
         policy_version:
           description: Policy version presented to the subject.
+          maxLength: 64
           minLength: 1
           type: string
         purpose:
-          description: Consent purpose key.
+          description: Consent purpose key, e.g. marketing.email.
+          maxLength: 64
           minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._:-]*$
           type: string
         source:
           default: API
@@ -1081,11 +1084,14 @@ components:
           type: boolean
         policy_version:
           description: Policy version presented to the subject.
+          maxLength: 64
           minLength: 1
           type: string
         purpose:
-          description: Consent purpose key.
+          description: Consent purpose key, e.g. marketing.email.
+          maxLength: 64
           minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._:-]*$
           type: string
       required:
         - purpose

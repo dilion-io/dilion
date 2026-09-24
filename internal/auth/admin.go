@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -163,8 +164,20 @@ func paginationParams(r *http.Request) (page, perPage int64, err error) {
 		}
 		perPage = p
 	}
+	// Upstream takes any per_page; one request may still not read the whole
+	// user table, and (page-1)*per_page must not overflow into a negative
+	// offset.
+	if perPage > maxPerPage {
+		perPage = maxPerPage
+	}
+	if page > math.MaxInt64/perPage {
+		return 0, 0, badRequestError(ErrorCodeValidationFailed, "Bad Pagination Parameters: invalid page")
+	}
 	return page, perPage, nil
 }
+
+// maxPerPage caps per_page on the admin lists.
+const maxPerPage = 1000
 
 // addPaginationHeaders reproduces gotrue's addPaginationHeaders.
 func addPaginationHeaders(w http.ResponseWriter, r *http.Request, page, perPage, total int64) {

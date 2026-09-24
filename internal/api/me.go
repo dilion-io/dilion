@@ -45,9 +45,9 @@ type CreateMeRequestBody struct {
 // UpdateMeConsentBody appends one ledger entry for the token's subject. Source
 // is fixed to UI: a self-service change is by definition the subject acting.
 type UpdateMeConsentBody struct {
-	Purpose       string `json:"purpose" minLength:"1" doc:"Consent purpose key."`
+	Purpose       string `json:"purpose" minLength:"1" maxLength:"64" pattern:"^[a-z0-9][a-z0-9._:-]*$" doc:"Consent purpose key, e.g. marketing.email."`
 	Granted       bool   `json:"granted" doc:"true = grant, false = withdraw."`
-	PolicyVersion string `json:"policy_version" minLength:"1" doc:"Policy version presented to the subject."`
+	PolicyVersion string `json:"policy_version" minLength:"1" maxLength:"64" doc:"Policy version presented to the subject."`
 }
 
 // ---- inputs / outputs ----

@@ -1636,3 +1636,31 @@ func TestErasedUserLeavesConsentSegment(t *testing.T) {
 		}
 	}
 }
+
+// The consent ledger is append-only and outlives its subject, so what goes
+// into it is bounded.
+func TestConsentInputIsBounded(t *testing.T) {
+	env := newTestEngine(t, "")
+	user := env.newUser(t)
+	for name, ch := range map[string]ConsentChange{
+		"free-text purpose": {Purpose: "Marketing emails please", Granted: true, PolicyVersion: "v1"},
+		"long purpose":      {Purpose: strings.Repeat("a", 65), Granted: true, PolicyVersion: "v1"},
+		"long version":      {Purpose: "marketing", Granted: true, PolicyVersion: strings.Repeat("v", 65)},
+	} {
+		if _, err := env.e.UpdateConsent(env.ctx, user, ch); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+		}
+	}
+	for i := 0; i < maxPurposesPerSubject; i++ {
+		if _, err := env.pool.Exec(env.ctx, `insert into dilion_privacy.consent_state (user_id, purpose, granted, updated_at)
+			values ($1::uuid, $2, true, now())`, user, fmt.Sprintf("p%d", i)); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{Purpose: "one.more", Granted: true, PolicyVersion: "v1"}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("purpose past the cap: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{Purpose: "p0", Granted: false, PolicyVersion: "v1"}); err != nil {
+		t.Errorf("changing a purpose already held: %v", err)
+	}
+}

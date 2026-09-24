@@ -1,6 +1,7 @@
 package privacy
 
 import (
+	"regexp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -125,6 +126,16 @@ func (e *Engine) lastReconfirmNotices(ctx context.Context, userID string) (map[s
 	return out, rows.Err()
 }
 
+// consentPurposeRe bounds a consent purpose key; maxPolicyVersionLen bounds the
+// policy version recorded with it; maxPurposesPerSubject bounds how many
+// distinct purposes one subject accumulates.
+var consentPurposeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
+
+const (
+	maxPolicyVersionLen   = 64
+	maxPurposesPerSubject = 200
+)
+
 // UpdateConsent appends a GRANT/WITHDRAW event and returns the resulting state.
 // Nothing is ever updated in place — the ledger is the record (§4).
 func (e *Engine) UpdateConsent(ctx context.Context, userID string, ch ConsentChange) (*ConsentState, error) {
@@ -132,8 +143,13 @@ func (e *Engine) UpdateConsent(ctx context.Context, userID string, ch ConsentCha
 	if err != nil {
 		return nil, err
 	}
-	if ch.Purpose == "" {
-		return nil, fmt.Errorf("%w: purpose is required", ErrInvalidInput)
+	// The ledger is append-only and outlives the subject, so what goes into
+	// it is bounded: purposes are keys like marketing.email, not free text.
+	if !consentPurposeRe.MatchString(ch.Purpose) {
+		return nil, fmt.Errorf("%w: purpose must be 1-64 of a-z, 0-9, '.', '_', ':' or '-', starting with a letter or digit", ErrInvalidInput)
+	}
+	if len(ch.PolicyVersion) > maxPolicyVersionLen {
+		return nil, fmt.Errorf("%w: policy_version is longer than %d bytes", ErrInvalidInput, maxPolicyVersionLen)
 	}
 	policyID, policy, err := e.resolvePolicy(ctx, uid)
 	if err != nil {
@@ -173,6 +189,15 @@ func (e *Engine) UpdateConsent(ctx context.Context, userID string, ch ConsentCha
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2))`,
 		consentMutationLockNS, lockKey); err != nil {
 		return nil, fmt.Errorf("privacy: consent advisory lock: %w", err)
+	}
+	var known bool
+	var purposes int
+	if err := tx.QueryRow(ctx, `select coalesce(bool_or(purpose = $2), false), count(*)
+		from dilion_privacy.consent_state where user_id = $1::uuid`, uid, ch.Purpose).Scan(&known, &purposes); err != nil {
+		return nil, fmt.Errorf("privacy: consent purposes: %w", err)
+	}
+	if !known && purposes >= maxPurposesPerSubject {
+		return nil, fmt.Errorf("%w: a subject may hold at most %d consent purposes", ErrInvalidInput, maxPurposesPerSubject)
 	}
 	// Serialise the ledger's ordering as well as the projection, including
 	// equal timestamps from fixed/coarse clocks. Evidence recorded_at is the

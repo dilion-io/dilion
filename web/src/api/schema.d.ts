@@ -1100,7 +1100,7 @@ export interface components {
             granted: boolean;
             /** @description Policy version presented to the subject. */
             policy_version: string;
-            /** @description Consent purpose key. */
+            /** @description Consent purpose key, e.g. marketing.email. */
             purpose: string;
             /**
              * @description Where the change originated.
@@ -1120,7 +1120,7 @@ export interface components {
             granted: boolean;
             /** @description Policy version presented to the subject. */
             policy_version: string;
-            /** @description Consent purpose key. */
+            /** @description Consent purpose key, e.g. marketing.email. */
             purpose: string;
         };
         UpdateRoleBody: {

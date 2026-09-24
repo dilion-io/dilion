@@ -148,3 +148,18 @@ func TestRequestBodiesAreCapped(t *testing.T) {
 		t.Fatalf("2 MiB token request = %d %s, want 400 invalid_request", rec.Code, rec.Body.String())
 	}
 }
+
+// per_page is capped, and a page whose offset would overflow is refused.
+func TestAdminPaginationIsBounded(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.serviceRoleToken(t)
+	if rec := env.do(t, http.MethodGet, "/admin/users?page=9223372036854775807&per_page=50", nil, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("overflowing page = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if rec := env.do(t, http.MethodGet, "/admin/users?per_page=1000000", nil, admin); rec.Code != http.StatusOK {
+		t.Errorf("huge per_page = %d %s, want 200 (capped)", rec.Code, rec.Body.String())
+	}
+	if _, perPage, err := paginationParams(httptest.NewRequest(http.MethodGet, "/admin/users?per_page=1000000", nil)); err != nil || perPage != maxPerPage {
+		t.Errorf("per_page = %d (%v), want the cap %d", perPage, err, maxPerPage)
+	}
+}
