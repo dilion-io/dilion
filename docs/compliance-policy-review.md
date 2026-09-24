@@ -29,8 +29,9 @@ Claude Code 로그인 또는 `ANTHROPIC_API_KEY`가 필요하며 사용 요금�
   파일에서 정확히 한 번 일치하는 문자열 치환만 허용합니다. 하나라도 어긋나면 아무것도 쓰지 않습니다.
 - 수정된 파일은 `go run ./scripts/check-compliance-policies`로 서버 시작 시와 같은 정책 로더 검증을
   통과해야 하며, 실패하면 원래 파일로 되돌립니다.
-- `go test ./internal/privacy` 결과는 보고서에만 적습니다. 기존 테스트가 현재 값을 고정하고 있어
-  정당한 수정도 실패할 수 있으므로, PR에서 테스트를 함께 갱신하세요.
+- `go test ./internal/privacy` 결과는 보고서에만 적습니다. 테스트는 법적 값 대신 고정된 테스트 정책
+  (`internal/privacy/policy_fixture_test.go`)을 쓰므로 값 변경만으로는 실패하지 않습니다. 실패는
+  `TestBuiltinPoliciesAreValid` 같은 구조 검사(정책 누락, 법적 근거 누락 등)에 걸렸다는 뜻입니다.
 - 보고서의 `@멘션`은 무력화해 PR·이슈 본문이 임의의 사용자에게 알림을 보내지 않게 합니다.
 
 ## GitHub Actions 설정

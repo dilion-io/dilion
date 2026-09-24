@@ -6,16 +6,54 @@ import (
 	"testing"
 )
 
+// mustLoad loads yaml over the test policies (testPolicyYAML), so assertions
+// never depend on the legal values in builtin_policies.yaml.
 func mustLoad(t *testing.T, yaml string) *PolicySet {
 	t.Helper()
-	set, err := LoadPolicies([]byte(yaml))
+	set, err := LoadPolicies(testPolicies(t, yaml))
 	if err != nil {
 		t.Fatalf("LoadPolicies: %v", err)
 	}
 	return set
 }
 
-func TestBuiltinPoliciesLoad(t *testing.T) {
+// TestBuiltinPoliciesAreValid checks the shipped policy file for what the code
+// relies on, not for its legal values: those change with the law.
+func TestBuiltinPoliciesAreValid(t *testing.T) {
+	set, err := LoadPolicies(nil)
+	if err != nil {
+		t.Fatalf("built-in policies: %v", err)
+	}
+	if _, known := set.Resolve(set.DefaultPolicy); !known {
+		t.Fatalf("default policy %q is not defined", set.DefaultPolicy)
+	}
+	for _, id := range []string{"kr", "gdpr", "hipaa"} {
+		p, ok := set.Policies[id]
+		if !ok {
+			t.Fatalf("built-in policy %q missing", id)
+		}
+		// Every built-in policy is complete, so a user override of one section
+		// never leaves another undefined.
+		if p.Erasure == nil || p.Retention == nil || p.Consent == nil {
+			t.Errorf("built-in policy %q must define erasure, retention and consent", id)
+		}
+		for _, r := range p.RetentionRules() {
+			if r.Basis == "" {
+				t.Errorf("built-in policy %q: %s retention must cite its legal basis", id, r.Domain)
+			}
+		}
+		raw, err := p.Snapshot()
+		if err != nil {
+			t.Fatalf("snapshot %q: %v", id, err)
+		}
+		if _, err := policyFromSnapshot(raw); err != nil {
+			t.Errorf("snapshot of %q does not restore: %v", id, err)
+		}
+	}
+}
+
+// TestPoliciesLoad checks the loaded accessors against the test policies.
+func TestPoliciesLoad(t *testing.T) {
 	set := mustLoad(t, "")
 
 	if set.DefaultPolicy != "gdpr" {

@@ -37,7 +37,7 @@ func TestConcurrentProfilePatchesDoNotLoseFields(t *testing.T) {
 	defer pool.Close()
 	var engines []*Engine
 	for i := 0; i < 2; i++ {
-		e, err := NewEngine(EngineDeps{Pool: pool, KMS: newFakeKMS(pool),
+		e, err := NewEngine(EngineDeps{Pool: pool, KMS: newFakeKMS(pool), PolicyYAML: testPolicies(t, ""),
 			Clock: env.clock, TombstoneKey: []byte("test-tombstone-key")})
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +104,7 @@ func TestProfilePatchCannotResurrectCompletedErasure(t *testing.T) {
 	defer cancel()
 	kms := &pausedProfileKMS{KMS: env.kms, ready: make(chan struct{}), resume: make(chan struct{})}
 	writer, err := NewEngine(EngineDeps{Pool: env.pool, KMS: kms, Clock: env.clock,
-		TombstoneKey: []byte("test-tombstone-key")})
+		PolicyYAML: testPolicies(t, ""), TombstoneKey: []byte("test-tombstone-key")})
 	if err != nil {
 		t.Fatal(err)
 	}
