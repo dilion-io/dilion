@@ -289,7 +289,7 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	redirectURL := a.cfg.RedirectURLOrSiteURL(query.Get("redirect_to"), r.Referer())
+	redirectURL := a.site(ctx).RedirectURLOrSiteURL(query.Get("redirect_to"), r.Referer())
 
 	params := newOAuthFlowStateParams{
 		ProviderType:        providerType,
@@ -369,11 +369,11 @@ func wantsJSON(r *http.Request) bool {
 // was already validated against the allow-list at /authorize time; it is
 // re-validated here so a row written by an older/looser build cannot redirect
 // off the allow-list.
-func (a *api) externalRedirectURL(fs *oauthFlowState) string {
-	if fs != nil && fs.Referrer != "" && a.cfg.IsRedirectAllowed(fs.Referrer) {
+func (a *api) externalRedirectURL(ctx context.Context, fs *oauthFlowState) string {
+	if fs != nil && fs.Referrer != "" && a.site(ctx).IsRedirectAllowed(fs.Referrer) {
 		return fs.Referrer
 	}
-	return a.cfg.SiteURL
+	return a.site(ctx).SiteURL
 }
 
 // redirectWithError is upstream's redirectErrors: a failed OAuth flow bounces

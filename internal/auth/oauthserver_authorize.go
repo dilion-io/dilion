@@ -150,7 +150,7 @@ func (a *api) oauthAuthorize(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	consentURL := joinURLPath(a.cfg.SiteURL, OAuthServerAuthorizationPath) +
+	consentURL := joinURLPath(a.site(ctx).SiteURL, OAuthServerAuthorizationPath) +
 		"?authorization_id=" + url.QueryEscape(stored.AuthorizationID)
 	http.Redirect(w, r, consentURL, http.StatusFound)
 	return nil

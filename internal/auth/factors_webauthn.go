@@ -32,7 +32,7 @@ package auth
 // # Relying-party configuration
 //
 // The RP (RP ID, origins) is the SAME as the passkey surface: this reuses
-// a.passkeyWebAuthn() rather than building a second webauthn.WebAuthn, so RP ID
+// a.passkeyWebAuthn(ctx) rather than building a second webauthn.WebAuthn, so RP ID
 // and origins resolve from Config.Passkeys.RP* (or are derived from SiteURL —
 // see passkeyWebAuthnConfig). This does NOT require Config.Passkeys.Enabled: the
 // passkey feature gate guards the /passkeys routes, not the RP config helper.
@@ -149,7 +149,7 @@ func (a *api) challengeWebAuthnFactor(w http.ResponseWriter, r *http.Request, fa
 	if derr != nil {
 		return derr
 	}
-	rp, rerr := a.passkeyWebAuthn()
+	rp, rerr := a.passkeyWebAuthn(ctx)
 	if rerr != nil {
 		return rerr
 	}
@@ -251,7 +251,7 @@ func (a *api) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, mc *m
 		return internalServerError("Error decoding WebAuthn session").withInternal(err)
 	}
 
-	rp, rerr := a.passkeyWebAuthn()
+	rp, rerr := a.passkeyWebAuthn(ctx)
 	if rerr != nil {
 		return rerr
 	}

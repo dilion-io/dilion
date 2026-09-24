@@ -86,6 +86,8 @@ type (
 	ProviderSource      = ports.ProviderSource
 	OAuthClient         = ports.OAuthClient
 	OAuthClientResolver = ports.OAuthClientResolver
+	AuthSettings        = ports.AuthSettings
+	AuthSettingsSource  = ports.AuthSettingsSource
 )
 
 const (
@@ -121,6 +123,7 @@ type config struct {
 	resolver      ports.InstanceResolver
 	providers     ports.ProviderSource
 	oauthClients  ports.OAuthClientResolver
+	authSettings  ports.AuthSettingsSource
 	authConfig    *auth.Config
 	addr          string
 	clock         ports.Clock
@@ -254,6 +257,27 @@ func WithInstanceResolver(r ports.InstanceResolver) Option {
 // provider authority over every account in the instance.
 func WithProviderSource(src ports.ProviderSource) Option {
 	return func(c *config) { c.providers = src }
+}
+
+// WithAuthSettingsSource sets, per instance, the parts of the /auth/v1
+// configuration that name the instance's application — its site URL and
+// redirect allow list — from embedder code, the way WithProviderSource does
+// for providers. A platform that serves one workspace per instance already
+// knows each workspace's address; fn returns it, and (nil, nil) keeps the
+// server-wide DILION_AUTH_SITE_URL and URI_ALLOW_LIST.
+//
+//	dilion.WithAuthSettingsSource(func(ctx context.Context, instanceID string) (*dilion.AuthSettings, error) {
+//		ws, err := workspaces.Get(ctx, instanceID)
+//		if err != nil {
+//			return nil, err
+//		}
+//		return &dilion.AuthSettings{
+//			SiteURL:      "https://" + ws.Domain,
+//			URIAllowList: []string{"https://" + ws.Domain + "/**"},
+//		}, nil
+//	})
+func WithAuthSettingsSource(fn ports.AuthSettingsSource) Option {
+	return func(c *config) { c.authSettings = fn }
 }
 
 // WithOAuthClientResolver decides the clients of each instance's OAuth 2.1
@@ -557,6 +581,8 @@ func (s *Server) buildRouter() *chi.Mux {
 			// instance database (WithProviderSource, WithOAuthClientResolver).
 			Providers:    s.cfg.providers,
 			OAuthClients: s.cfg.oauthClients,
+			// Per-instance site URL and redirect allow list.
+			Settings: s.cfg.authSettings,
 		})
 	})
 

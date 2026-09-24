@@ -44,6 +44,7 @@ package auth
 // OIDC issuer and for the mailer's action links.
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -116,8 +117,8 @@ var samlKeyCache sync.Map // samlKeyCacheKey -> *samlKeyMaterial
 //
 // The validation messages are upstream's, verbatim: an operator reading a
 // Dilion boot failure finds the same strings gotrue would have printed.
-func (a *api) samlKeys() (*samlKeyMaterial, error) {
-	base, err := samlSPBaseURL(a.cfg)
+func (a *api) samlKeys(ctx context.Context) (*samlKeyMaterial, error) {
+	base, err := samlSPBaseURL(a.site(ctx))
 	if err != nil {
 		return nil, internalServerError("Error building the SAML Service Provider URL").withInternal(err)
 	}
@@ -192,12 +193,12 @@ func deriveSAMLKeyMaterial(privateKey, host string) (*samlKeyMaterial, error) {
 // idpInitiated is false for an SP-initiated flow (the assertion must be an
 // InResponseTo of an AuthnRequest we minted) and true only when the RelayState
 // cannot identify a request — see saml_acs.go.
-func (a *api) newSAMLServiceProvider(idp *saml.EntityDescriptor, idpInitiated bool) (*saml.ServiceProvider, error) {
-	base, err := samlSPBaseURL(a.cfg)
+func (a *api) newSAMLServiceProvider(ctx context.Context, idp *saml.EntityDescriptor, idpInitiated bool) (*saml.ServiceProvider, error) {
+	base, err := samlSPBaseURL(a.site(ctx))
 	if err != nil {
 		return nil, internalServerError("Error building the SAML Service Provider URL").withInternal(err)
 	}
-	km, err := a.samlKeys()
+	km, err := a.samlKeys(ctx)
 	if err != nil {
 		return nil, err
 	}

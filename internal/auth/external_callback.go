@@ -49,11 +49,11 @@ func (a *api) externalProviderCallback(w http.ResponseWriter, r *http.Request) e
 	if err != nil {
 		// The flow state is what names the client's redirect target, so a bad
 		// state can only bounce to SiteURL (upstream loadFlowState).
-		a.redirectExternalError(w, r, a.cfg.SiteURL, err, http.StatusSeeOther)
+		a.redirectExternalError(w, r, a.site(ctx).SiteURL, err, http.StatusSeeOther)
 		return nil
 	}
 
-	rurl := a.externalRedirectURL(fs)
+	rurl := a.externalRedirectURL(ctx, fs)
 	if err := a.finishExternalCallback(w, r, fs, rurl); err != nil {
 		a.redirectExternalError(w, r, rurl, err, http.StatusFound)
 	}
@@ -559,7 +559,7 @@ func (a *api) createAccountFromExternalIdentity(ctx context.Context, tx pgx.Tx, 
 			// commitAndFail keeps the user and identity rows that were just
 			// written, so the account exists once the address is confirmed.
 			if decision.CandidateEmail.Email != "" {
-				if _, serr := a.sendConfirmation(ctx, tx, r, user, a.cfg.SiteURL, false); serr != nil {
+				if _, serr := a.sendConfirmation(ctx, tx, r, user, a.site(ctx).SiteURL, false); serr != nil {
 					return nil, false, serr
 				}
 				return nil, false, commitAndFail(unprocessableEntityError(

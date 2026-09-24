@@ -164,12 +164,12 @@ func (a *api) requirePasskeyManagementAAL(ctx context.Context, q querier, u *Use
 // chain), a RESIDENT key is required (without it the credential is not
 // discoverable and the usernameless login ceremony cannot work), and user
 // verification is "preferred".
-func (a *api) passkeyWebAuthnConfig() *webauthn.Config {
+func (a *api) passkeyWebAuthnConfig(ctx context.Context) *webauthn.Config {
 	rpID := strings.TrimSpace(a.cfg.Passkeys.RPID)
 	origins := a.cfg.Passkeys.RPOrigins
 
 	if rpID == "" || len(origins) == 0 {
-		if site, err := url.Parse(a.cfg.SiteURL); err == nil && site.Host != "" {
+		if site, err := url.Parse(a.site(ctx).SiteURL); err == nil && site.Host != "" {
 			if rpID == "" {
 				rpID = site.Hostname()
 			}
@@ -194,8 +194,8 @@ func (a *api) passkeyWebAuthnConfig() *webauthn.Config {
 
 // passkeyWebAuthn builds the relying party (upstream getPasskeyWebAuthn). A
 // mis-configured RP is a 500, not a 4xx: the client did nothing wrong.
-func (a *api) passkeyWebAuthn() (*webauthn.WebAuthn, error) {
-	w, err := webauthn.New(a.passkeyWebAuthnConfig())
+func (a *api) passkeyWebAuthn(ctx context.Context) (*webauthn.WebAuthn, error) {
+	w, err := webauthn.New(a.passkeyWebAuthnConfig(ctx))
 	if err != nil {
 		return nil, internalServerError("Failed to initialize WebAuthn").withInternal(err)
 	}
@@ -269,7 +269,7 @@ func (a *api) passkeyRegistrationOptions(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	rp, err := a.passkeyWebAuthn()
+	rp, err := a.passkeyWebAuthn(ctx)
 	if err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func (a *api) passkeyRegistrationVerify(w http.ResponseWriter, r *http.Request) 
 		return badRequestError(ErrorCodeWebAuthnVerificationFailed, "Invalid credential response").withInternal(perr)
 	}
 
-	rp, err := a.passkeyWebAuthn()
+	rp, err := a.passkeyWebAuthn(ctx)
 	if err != nil {
 		return err
 	}

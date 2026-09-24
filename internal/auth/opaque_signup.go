@@ -128,7 +128,7 @@ func (a *api) opaqueSignupStart(w http.ResponseWriter, r *http.Request) error {
 		return opaqueInvalid()
 	}
 	state := &opaqueState{UserID: userID, Identity: identity, Signup: &opaqueSignupState{
-		Email: p.Email, Aud: requestAud(r), Data: p.Data, RedirectTo: a.cfg.RedirectURLOrSiteURL(p.RedirectTo), Autoconfirm: a.cfg.Mailer.Autoconfirm,
+		Email: p.Email, Aud: requestAud(r), Data: p.Data, RedirectTo: a.site(ctx).RedirectURLOrSiteURL(p.RedirectTo), Autoconfirm: a.cfg.Mailer.Autoconfirm,
 	}}
 	id, err := a.putOpaqueState(ctx, "signup", state)
 	if err != nil {

@@ -254,7 +254,7 @@ func (a *api) enrollTOTPFactor(w http.ResponseWriter, r *http.Request, mc *mfaCo
 
 	issuer := params.Issuer
 	if issuer == "" {
-		u, err := url.ParseRequestURI(a.cfg.SiteURL)
+		u, err := url.ParseRequestURI(a.site(ctx).SiteURL)
 		if err != nil {
 			return internalServerError("site url is improperly formatted")
 		}

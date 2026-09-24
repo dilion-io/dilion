@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -94,6 +95,11 @@ type Deps struct {
 	// auth.oauth_clients.
 	OAuthClients ports.OAuthClientResolver
 
+	// Settings sets each instance's site URL and redirect allow list
+	// (ports.AuthSettingsSource). Optional; without it every instance uses
+	// Config's.
+	Settings ports.AuthSettingsSource
+
 	// Audit is optional. When set, the /admin/users surface records an access
 	// event per request (안전성 확보조치 기준 제8조 접속기록, project.md §5). When nil
 	// nothing is recorded — embedders that mount this package standalone keep
@@ -122,6 +128,11 @@ type api struct {
 	providers    ports.ProviderSource
 	oauthClients ports.OAuthClientResolver
 	clock        ports.Clock
+
+	// siteSource and siteCache give each instance its own site URL and redirect
+	// allow list (site.go).
+	siteSource ports.AuthSettingsSource
+	siteCache  sync.Map
 
 	// limiters are the named per-IP rate limiters of this mount (middleware.go).
 	limiters map[string]*rateLimiter
@@ -156,6 +167,7 @@ func newAPI(d Deps) *api {
 
 		providers:    d.Providers,
 		oauthClients: d.OAuthClients,
+		siteSource:   d.Settings,
 		clock:        d.Clock,
 	}
 	if a.log == nil {
@@ -249,6 +261,7 @@ func Register(r chi.Router, d Deps) *Mount {
 	r.Use(corsMiddleware(a.cfg))
 	r.Use(clientIPMiddleware)
 	r.Use(timeoutMiddleware(a, a.cfg.APIMaxRequestDuration))
+	r.Use(a.siteMiddleware)
 
 	r.Get("/health", a.handle(a.health))
 	r.Get("/.well-known/jwks.json", a.handle(a.jwks))

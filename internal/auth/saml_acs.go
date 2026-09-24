@@ -43,7 +43,7 @@ import (
 func (a *api) samlMetadata(w http.ResponseWriter, r *http.Request) error {
 	// idpInitiated=true here only because the SP is built without IdP metadata;
 	// it has no effect on the document.
-	sp, err := a.newSAMLServiceProvider(nil, true)
+	sp, err := a.newSAMLServiceProvider(r.Context(), nil, true)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func isSAMLMetadataStale(idpMetadata *saml.EntityDescriptor, p SAMLProvider, now
 // redirect back to SiteURL carrying the error, because the caller is a browser.
 func (a *api) samlACS(w http.ResponseWriter, r *http.Request) error {
 	if err := a.handleSAMLACS(w, r); err != nil {
-		a.redirectExternalError(w, r, a.cfg.SiteURL, err, http.StatusSeeOther)
+		a.redirectExternalError(w, r, a.site(r.Context()).SiteURL, err, http.StatusSeeOther)
 	}
 	return nil
 }
@@ -332,7 +332,7 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	sp, err := a.newSAMLServiceProvider(idpMetadata, initiatedBy == "idp")
+	sp, err := a.newSAMLServiceProvider(ctx, idpMetadata, initiatedBy == "idp")
 	if err != nil {
 		return err
 	}
@@ -458,8 +458,8 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		})
 	}
 
-	if !a.cfg.IsRedirectAllowed(redirectTo) {
-		redirectTo = a.cfg.SiteURL
+	if !a.site(ctx).IsRedirectAllowed(redirectTo) {
+		redirectTo = a.site(ctx).SiteURL
 	}
 
 	if flowState != nil && flowState.IsPKCE() {

@@ -186,7 +186,7 @@ func orDefault(v, def string) string {
 // attacker's domain into a confirmation link. Anything else falls back to
 // SiteURL.
 func (a *api) externalHost(r *http.Request) *url.URL {
-	site, err := url.Parse(a.cfg.SiteURL)
+	site, err := url.Parse(a.site(r.Context()).SiteURL)
 	if err != nil || site.Host == "" {
 		site = &url.URL{Scheme: "http", Host: "localhost"}
 	}
@@ -252,7 +252,7 @@ func (a *api) actionLink(r *http.Request, actionType, token, linkType, redirectT
 // referrerFor is upstream's utilities.GetReferrer: the caller's redirect_to when
 // the allow-list admits it, else the Referer header when it does, else SiteURL.
 func (a *api) referrerFor(r *http.Request, redirectTo string) string {
-	return a.cfg.RedirectURLOrSiteURL(redirectTo, r.Referer())
+	return a.site(r.Context()).RedirectURLOrSiteURL(redirectTo, r.Referer())
 }
 
 // ---- delivery --------------------------------------------------------------
@@ -424,7 +424,7 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 		Token:           otp,
 		TokenHash:       hash,
 		EmailActionType: mailReauthentication,
-		SiteURL:         a.cfg.SiteURL,
+		SiteURL:         a.site(ctx).SiteURL,
 	}); handled {
 		return herr
 	}
@@ -505,7 +505,7 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 		TokenHash:       hashNew,
 		RedirectTo:      referrer,
 		EmailActionType: mailEmailChangeNew,
-		SiteURL:         a.cfg.SiteURL,
+		SiteURL:         a.site(r.Context()).SiteURL,
 	}); handled {
 		if herr != nil {
 			return nil, nil, herr
@@ -533,7 +533,7 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 			TokenHash:       hashCurrent,
 			RedirectTo:      referrer,
 			EmailActionType: mailEmailChangeCurrent,
-			SiteURL:         a.cfg.SiteURL,
+			SiteURL:         a.site(r.Context()).SiteURL,
 		}); herr != nil {
 			return nil, nil, herr
 		}
@@ -626,7 +626,7 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 		TokenHash:       hash,
 		RedirectTo:      referrer,
 		EmailActionType: p.linkType,
-		SiteURL:         a.cfg.SiteURL,
+		SiteURL:         a.site(r.Context()).SiteURL,
 	}); handled {
 		if herr != nil {
 			return nil, herr

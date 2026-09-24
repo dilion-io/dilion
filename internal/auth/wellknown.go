@@ -95,7 +95,7 @@ var oidcClaimsSupported = []string{
 // dynamic client registration can actually be used, and so does this.
 func (a *api) wellKnownOpenID(w http.ResponseWriter, r *http.Request) error {
 	ts, _ := a.tokensFor(r.Context()) // nil on an unconfigured mount: defaults below
-	issuer := issuerURL(a.cfg, ts)
+	issuer := issuerURL(a.site(r.Context()), ts)
 
 	resp := OpenIDConfigurationResponse{
 		Issuer:                issuer,

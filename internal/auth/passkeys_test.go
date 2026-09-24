@@ -4,6 +4,7 @@ package auth
 // mapping and the small helpers it is built on. No database required.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -15,7 +16,7 @@ func TestPasskeyWebAuthnConfigUsesExplicitSettings(t *testing.T) {
 	cfg.Passkeys.RPID = "example.com"
 	cfg.Passkeys.RPOrigins = []string{"https://app.example.com", "https://admin.example.com"}
 
-	got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig()
+	got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig(context.Background())
 
 	if got.RPID != "example.com" {
 		t.Errorf("RPID = %q, want the configured value", got.RPID)
@@ -49,7 +50,7 @@ func TestPasskeyWebAuthnConfigFallsBackToSiteURL(t *testing.T) {
 	for _, c := range cases {
 		cfg := DefaultConfig()
 		cfg.SiteURL = c.siteURL
-		got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig()
+		got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig(context.Background())
 
 		if got.RPID != c.wantRPID {
 			t.Errorf("SITE_URL %s: RPID = %q, want %q", c.siteURL, got.RPID, c.wantRPID)
@@ -71,7 +72,7 @@ func TestPasskeyWebAuthnConfigExplicitRPIDKeepsSiteURLOrigins(t *testing.T) {
 	cfg.SiteURL = "https://app.example.com"
 	cfg.Passkeys.RPID = "example.com"
 
-	got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig()
+	got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig(context.Background())
 	if got.RPID != "example.com" {
 		t.Errorf("RPID = %q, want the explicit value", got.RPID)
 	}

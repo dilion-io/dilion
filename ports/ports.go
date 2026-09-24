@@ -303,6 +303,25 @@ type OIDCProvider struct {
 // it should answer from memory or a cache.
 type ProviderSource func(ctx context.Context, instanceID, name string) (*OIDCProvider, error)
 
+// AuthSettings are the parts of the /auth/v1 configuration that differ per
+// instance: where the instance's application lives. A zero field keeps the
+// server-wide value.
+type AuthSettings struct {
+	// SiteURL replaces DILION_AUTH_SITE_URL: the default redirect target, the
+	// base of email links and of the OAuth consent page, and the fallback
+	// passkey origin and TOTP issuer.
+	SiteURL string
+	// URIAllowList replaces DILION_AUTH_URI_ALLOW_LIST: the redirect targets
+	// besides SiteURL, as globs. nil keeps the server's list; an empty,
+	// non-nil list allows SiteURL only.
+	URIAllowList []string
+}
+
+// AuthSettingsSource returns an instance's AuthSettings, or (nil, nil) to use
+// the server-wide configuration. An error fails the request. It runs on every
+// /auth/v1 request, so it should answer from memory or a cache.
+type AuthSettingsSource func(ctx context.Context, instanceID string) (*AuthSettings, error)
+
 // OAuthClient is an OAuth client of an instance's OAuth 2.1 server, decided by
 // embedder code rather than registered in auth.oauth_clients.
 type OAuthClient struct {

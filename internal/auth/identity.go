@@ -281,7 +281,7 @@ func (a *api) linkIdentityToUser(ctx context.Context, tx pgx.Tx, r *http.Request
 		target = promoted
 
 		if !data.Metadata.EmailVerified {
-			if _, serr := a.sendConfirmation(ctx, tx, r, target, a.cfg.SiteURL, false); serr != nil {
+			if _, serr := a.sendConfirmation(ctx, tx, r, target, a.site(ctx).SiteURL, false); serr != nil {
 				return nil, serr
 			}
 			return nil, commitAndFail(unprocessableEntityError(ErrorCodeEmailNotConfirmed,

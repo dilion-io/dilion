@@ -577,7 +577,7 @@ func (a *api) signIDToken(ctx context.Context, p idTokenParams) (string, error) 
 			// DEVIATION: upstream emits config.JWT.Issuer, which may be empty.
 			// `iss` is REQUIRED by OIDC Core §2, so Dilion always emits the
 			// discovery document's issuer (JWT_ISSUER, else SiteURL+/auth/v1).
-			Issuer: issuerURL(a.cfg, ts),
+			Issuer: issuerURL(a.site(ctx), ts),
 		},
 		AuthTime: authTime.Unix(),
 		ClientID: p.ClientID,

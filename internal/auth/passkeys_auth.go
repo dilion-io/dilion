@@ -56,7 +56,7 @@ func (a *api) passkeyAuthenticationOptions(w http.ResponseWriter, r *http.Reques
 		return err
 	}
 
-	rp, err := a.passkeyWebAuthn()
+	rp, err := a.passkeyWebAuthn(ctx)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func (a *api) passkeyAuthenticationVerify(w http.ResponseWriter, r *http.Request
 		return badRequestError(ErrorCodeWebAuthnVerificationFailed, "Invalid credential response").withInternal(perr)
 	}
 
-	rp, err := a.passkeyWebAuthn()
+	rp, err := a.passkeyWebAuthn(ctx)
 	if err != nil {
 		return err
 	}

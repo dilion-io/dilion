@@ -158,7 +158,7 @@ func (a *api) singleSignOn(w http.ResponseWriter, r *http.Request) error {
 		return internalServerError("Error parsing SAML Metadata for SAML provider").withInternal(err)
 	}
 
-	sp, err := a.newSAMLServiceProvider(entityDescriptor, false /* idpInitiated */)
+	sp, err := a.newSAMLServiceProvider(ctx, entityDescriptor, false /* idpInitiated */)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func (a *api) singleSignOn(w http.ResponseWriter, r *http.Request) error {
 	// The redirect target is validated HERE, against the allow-list, and stored
 	// on the relay state; the ACS re-validates before using it. A SAML flow must
 	// never become an open redirect.
-	redirectTo := a.cfg.RedirectURLOrSiteURL(params.RedirectTo, r.Referer())
+	redirectTo := a.site(ctx).RedirectURLOrSiteURL(params.RedirectTo, r.Referer())
 
 	relayState := &samlRelayState{
 		SSOProviderID: ssoProvider.ID,

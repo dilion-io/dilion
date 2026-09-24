@@ -55,7 +55,7 @@ func (a *api) validateRequestOrigin(r *http.Request) error {
 	if origin == "" {
 		return nil
 	}
-	if !a.cfg.IsRedirectAllowed(origin) {
+	if !a.site(r.Context()).IsRedirectAllowed(origin) {
 		return badRequestError(ErrorCodeValidationFailed, "unauthorized request origin")
 	}
 	return nil
