@@ -88,6 +88,9 @@ func (s *Service) createKey(ctx context.Context, name string, scopes []string, e
 		if !slices.Contains(known, p) {
 			return "", APIKey{}, fmt.Errorf("%w: unknown permission %q in scopes", ErrInvalid, p)
 		}
+		if slices.Contains(OwnerOnlyPermissions, p) {
+			return "", APIKey{}, fmt.Errorf("%w: permission %q belongs to the owner role only", ErrInvalid, p)
+		}
 	}
 
 	token := NewToken()

@@ -83,6 +83,13 @@ func (a *api) loadAdminTargetUser(r *http.Request) (*User, error) {
 		}
 		return nil, internalServerError("Database error loading user").withInternal(err)
 	}
+	// Reading an account is users.admin's alone; changing one also needs
+	// every permission the account holds (mayAdminister).
+	if r.Method != http.MethodGet {
+		if err := a.mayAdminister(r.Context(), u.ID); err != nil {
+			return nil, err
+		}
+	}
 	return u, nil
 }
 
@@ -227,6 +234,10 @@ func (a *api) adminCreateUser(w http.ResponseWriter, r *http.Request) error {
 		id = uuid.NewString()
 	} else if _, err := uuid.Parse(id); err != nil {
 		return badRequestError(ErrorCodeValidationFailed, "ID must be a valid UUIDv4")
+	} else if err := a.mayAdminister(ctx, id); err != nil {
+		// Grants are keyed by user id, so a new account under the id of a
+		// deleted one would inherit its roles.
+		return err
 	}
 
 	aud := params.Aud

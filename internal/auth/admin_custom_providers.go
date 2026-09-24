@@ -35,7 +35,7 @@ import (
 func init() {
 	registerFeature("admin_custom_providers", func(a *api, r chi.Router) {
 		r.Group(func(r chi.Router) {
-			r.Use(a.requireAdmin)
+			r.Use(a.requireAdmin, a.requireAdminPermission(PermAuthSettingsManage))
 			r.Get("/admin/custom-providers", a.handle(a.adminListCustomProviders))
 			r.Post("/admin/custom-providers", a.handle(a.adminCreateCustomProvider))
 			r.Get("/admin/custom-providers/{id}", a.handle(a.adminGetCustomProvider))

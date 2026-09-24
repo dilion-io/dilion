@@ -42,7 +42,7 @@ func init() {
 		// Gated exactly like /admin/users (auth.go): service_role JWT, or an
 		// access token that RBAC grants `users.admin`.
 		r.Group(func(r chi.Router) {
-			r.Use(a.requireAdmin)
+			r.Use(a.requireAdmin, a.requireAdminPermission(PermAuditRead))
 			r.Get("/admin/audit", a.handle(a.adminAuditLog))
 		})
 	})

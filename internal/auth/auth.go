@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -568,6 +569,61 @@ func (a *api) requireAdmin(next http.Handler) http.Handler {
 		ctx := withActor(withClaims(r.Context(), claims), actor)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireAdminPermission, after requireAdmin, additionally requires perm of a
+// user token; service_role passes. The admin surface's own permission,
+// users.admin, is about accounts; perm guards what reaches beyond them.
+func (a *api) requireAdminPermission(perm string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			actor := actorFrom(r.Context())
+			if actor.Type != ActorTypeServiceRole {
+				ok, err := a.authz.Can(r.Context(), actor, perm, "auth/admin")
+				if err != nil || !ok {
+					a.writeError(r, w, forbiddenError(ErrorCodeNotAdmin, "User not allowed: requires %s", perm))
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// mayAdminister refuses to let an admin act on an account that holds RBAC
+// permissions the admin lacks. users.admin can set any account's password,
+// email and factors, so without it a users.admin holder could take over an
+// owner's account — and with it the owner's roles. service_role, and an
+// Authorizer that cannot list permissions, skip the check.
+func (a *api) mayAdminister(ctx context.Context, targetUserID string) error {
+	actor := actorFrom(ctx)
+	if actor.Type == ActorTypeServiceRole || actor.ID == targetUserID {
+		return nil
+	}
+	lister, ok := a.authz.(ports.PermissionLister)
+	if !ok {
+		return nil
+	}
+	held, err := lister.Permissions(ctx, ports.Actor{ID: targetUserID, Type: ActorTypeUser})
+	if err != nil {
+		return internalServerError("Error checking the user's permissions").withInternal(err)
+	}
+	var missing []string
+	for _, p := range held {
+		can, err := a.authz.Can(ctx, actor, p, "auth/admin")
+		if err != nil {
+			return internalServerError("Error checking permissions").withInternal(err)
+		}
+		if !can {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return forbiddenError(ErrorCodeNotAdmin,
+			"User not allowed: the account holds permissions you do not: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // checkAdminUser admits a user access token to the admin surface. A nil

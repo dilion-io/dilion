@@ -127,7 +127,7 @@ func init() {
 
 		// Admin client management.
 		r.Group(func(r chi.Router) {
-			r.Use(a.requireOAuthServerEnabled, a.requireAdmin)
+			r.Use(a.requireOAuthServerEnabled, a.requireAdmin, a.requireAdminPermission(PermAuthSettingsManage))
 			r.Get("/admin/oauth/clients", a.handle(a.adminListOAuthClients))
 			r.Post("/admin/oauth/clients", a.handle(a.adminRegisterOAuthClient))
 			r.Get("/admin/oauth/clients/{client_id}", a.handle(a.adminGetOAuthClient))

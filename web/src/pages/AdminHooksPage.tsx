@@ -58,7 +58,7 @@ export function AdminHooksPage() {
           can lock a hook to the server setting, and by default an instance&rsquo;s webhook may only
           reach public addresses.
         </p>
-        <PermissionHint permission="users.admin" />
+        <PermissionHint permission="auth.settings.manage" />
 
         {problem && <ProblemAlert problem={problem} />}
 
@@ -184,7 +184,7 @@ function HookEditor({ hook, onSaved }: { hook: AuthHookSetting; onSaved: () => v
         instance&rsquo;s own database). The operator&rsquo;s policy checks it on save and on every
         call.
       </p>
-      <PermissionHint permission="users.admin" />
+      <PermissionHint permission="auth.settings.manage" />
 
       {problem && <ProblemAlert problem={problem} />}
       {notice && <div className="alert alert-info">{notice}</div>}

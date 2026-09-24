@@ -66,6 +66,7 @@ var migrationFiles = []string{
 	"../../migrations/0303_users_admin_permission.sql",
 	"../../migrations/0304_consents_write_permission.sql",
 	"../../migrations/0305_roles_manage_permission.sql",
+	"../../migrations/0306_auth_settings_permission.sql",
 }
 
 // applyMigration runs them under an advisory lock: `create schema if not

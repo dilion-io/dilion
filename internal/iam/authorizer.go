@@ -29,6 +29,36 @@ func NewAuthorizer(pool *pgxpool.Pool) ports.Authorizer {
 // provider (internal/instances.Registry.Pool).
 func NewAuthorizerFor(pools PoolFunc) ports.Authorizer { return &authorizer{pools: pools} }
 
+// Permissions lists the permissions actor holds through its active role
+// assignments (plus, for an API key, its scopes).
+func (a *authorizer) Permissions(ctx context.Context, actor ports.Actor) ([]string, error) {
+	if actor.ID == "" {
+		return nil, nil
+	}
+	pool, err := resolvePool(ctx, a.pools)
+	if err != nil {
+		return nil, err
+	}
+	var perms []string
+	if err := pool.QueryRow(ctx, `
+		select coalesce(array_agg(distinct p), '{}') from (
+			select unnest(r.permissions) as p
+			from dilion_authz.role_assignments ra
+			join dilion_authz.roles r on r.id = ra.role_id
+			where ra.actor_id = $1 and ra.revoked_at is null
+			union
+			select unnest(k.scopes)
+			from dilion_authz.api_keys k
+			where k.id = $1 and k.revoked_at is null
+			  and (k.expires_at is null or k.expires_at > now())
+		) held`, actor.ID).Scan(&perms); err != nil {
+		return nil, fmt.Errorf("iam: permissions: %w", err)
+	}
+	return perms, nil
+}
+
+var _ ports.PermissionLister = (*authorizer)(nil)
+
 // Can reports whether actor holds permission. resource is accepted for
 // interface compatibility but is not consulted: the model is flat RBAC, not
 // ABAC/ReBAC, so that "who can do what" stays enumerable for audits (§2.11).

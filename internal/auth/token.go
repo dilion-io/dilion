@@ -35,6 +35,12 @@ const (
 	// PermUsersAdmin is the RBAC permission that admits a user access token to
 	// /admin/* (mirrors iam.PermUsersAdmin, seeded by migration 0303).
 	PermUsersAdmin = "users.admin"
+	// PermAuthSettingsManage (owner only, migration 0306) additionally gates
+	// the instance's auth configuration: hooks, custom and SSO providers and
+	// OAuth server clients (mirrors iam.PermAuthSettingsManage).
+	PermAuthSettingsManage = "auth.settings.manage"
+	// PermAuditRead additionally gates /admin/audit (mirrors iam.PermAuditRead).
+	PermAuditRead = "audit.read"
 
 	// AudienceAuthenticated is gotrue's default `aud`.
 	AudienceAuthenticated = "authenticated"

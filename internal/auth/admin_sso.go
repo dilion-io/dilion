@@ -37,7 +37,7 @@ import (
 func init() {
 	registerFeature("admin_sso", func(a *api, r chi.Router) {
 		r.Group(func(r chi.Router) {
-			r.Use(a.requireAdmin)
+			r.Use(a.requireAdmin, a.requireAdminPermission(PermAuthSettingsManage))
 			r.Get("/admin/sso/providers", a.handle(a.adminListSSOProviders))
 			r.Post("/admin/sso/providers", a.handle(a.adminCreateSSOProvider))
 			r.Get("/admin/sso/providers/{idp_id}", a.handle(a.adminGetSSOProvider))

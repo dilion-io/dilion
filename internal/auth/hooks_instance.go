@@ -51,7 +51,7 @@ import (
 func init() {
 	registerFeature("admin_hooks", func(a *api, r chi.Router) {
 		r.Group(func(r chi.Router) {
-			r.Use(a.requireAdmin)
+			r.Use(a.requireAdmin, a.requireAdminPermission(PermAuthSettingsManage))
 			r.Get("/admin/hooks", a.handle(a.adminListHooks))
 			r.Get("/admin/hooks/{name}", a.handle(a.adminGetHook))
 			r.Put("/admin/hooks/{name}", a.handle(a.adminPutHook))

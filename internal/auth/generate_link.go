@@ -101,6 +101,13 @@ func (a *api) adminGenerateLink(w http.ResponseWriter, r *http.Request) error {
 	if err != nil && !isNoRows(err) {
 		return internalServerError("Database error finding user").withInternal(err)
 	}
+	// A link signs its bearer in as the account; it may not be minted for one
+	// holding more than the admin does.
+	if user != nil {
+		if merr := a.mayAdminister(ctx, user.ID); merr != nil {
+			return merr
+		}
+	}
 
 	if user == nil {
 		switch params.Type {

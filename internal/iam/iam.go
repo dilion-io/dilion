@@ -72,7 +72,19 @@ const (
 	// (/auth/v1/admin/*) for a regular user access token. Seeded by migration
 	// 0303 and bundled into the builtin `owner` role only.
 	PermUsersAdmin = "users.admin"
+	// PermAuthSettingsManage guards the instance's auth configuration kept
+	// in its database: auth hooks, custom OAuth/OIDC providers, SSO
+	// providers and OAuth server clients. Any of them reaches every account
+	// (a send_email hook reads every OTP; a provider can sign in as anyone
+	// it names), so it is held by the builtin owner role only and cannot be
+	// put in a custom role or an API key (OwnerOnlyPermissions). Seeded by
+	// migration 0306.
+	PermAuthSettingsManage = "auth.settings.manage"
 )
+
+// OwnerOnlyPermissions are held by the builtin owner role alone: they cannot
+// be bundled into a custom role or scoped into an API key.
+var OwnerOnlyPermissions = []string{PermAuthSettingsManage}
 
 // BuiltinPermissions is the authoritative list seeded by migrations 0300
 // (all but pii.write), 0302 (pii.write), 0303 (users.admin), 0304
@@ -81,6 +93,7 @@ var BuiltinPermissions = []string{
 	PermUsersRead, PermPIIRead, PermPIIReveal, PermPIIWrite, PermPIIExport,
 	PermConsentsWrite, PermPrivacyRequestsManage, PermHoldsManage, PermPoliciesManage,
 	PermDestinationsManage, PermKeysManage, PermRolesManage, PermAuditRead, PermUsersAdmin,
+	PermAuthSettingsManage,
 }
 
 // Builtin role ids seeded by migration 0300.
@@ -312,6 +325,11 @@ func rolePermissions(ctx context.Context, pool *pgxpool.Pool, permissions []stri
 	perms := dedupe(permissions)
 	if len(perms) == 0 {
 		return nil, fmt.Errorf("%w: role must grant at least one permission", ErrInvalid)
+	}
+	for _, p := range perms {
+		if slices.Contains(OwnerOnlyPermissions, p) {
+			return nil, fmt.Errorf("%w: permission %q belongs to the owner role only", ErrInvalid, p)
+		}
 	}
 	var known []string
 	if err := pool.QueryRow(ctx, `

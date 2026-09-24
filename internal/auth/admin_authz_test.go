@@ -22,6 +22,9 @@ import (
 // The compat surface mirrors two iam constants instead of importing the
 // management plane. This test is the guard against drift.
 func TestRBACConstantsMirrorIAM(t *testing.T) {
+	if PermAuthSettingsManage != iam.PermAuthSettingsManage || PermAuditRead != iam.PermAuditRead {
+		t.Errorf("auth mirrors of iam permissions drifted")
+	}
 	if PermUsersAdmin != iam.PermUsersAdmin {
 		t.Errorf("PermUsersAdmin = %q, want %q", PermUsersAdmin, iam.PermUsersAdmin)
 	}
@@ -343,6 +346,9 @@ func applyAuthzSchema(t *testing.T, pool *pgxpool.Pool) {
 		"0301_audit_reason.sql",
 		"0302_pii_write_permission.sql",
 		"0303_users_admin_permission.sql",
+		"0304_consents_write_permission.sql",
+		"0305_roles_manage_permission.sql",
+		"0306_auth_settings_permission.sql",
 	} {
 		sql, rerr := os.ReadFile(filepath.Join("..", "..", "migrations", f))
 		if rerr != nil {

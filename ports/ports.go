@@ -69,6 +69,14 @@ type Authorizer interface {
 	Can(ctx context.Context, actor Actor, permission string, resource string) (bool, error)
 }
 
+// PermissionLister is implemented by an Authorizer that can enumerate what an
+// actor holds. The auth admin surface uses it to refuse administering a user
+// who holds permissions the administrator lacks; with an Authorizer that does
+// not implement it, that check is skipped.
+type PermissionLister interface {
+	Permissions(ctx context.Context, actor Actor) ([]string, error)
+}
+
 // ---- Audit (§5) ----
 
 type AuditEvent struct {
