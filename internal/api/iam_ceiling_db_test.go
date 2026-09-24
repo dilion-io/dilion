@@ -221,3 +221,33 @@ func TestCatalogListLimit(t *testing.T) {
 		t.Errorf("assignments?limit=101 = %d, want 422", resp.Code)
 	}
 }
+
+// A key cannot mint keys (it could renew itself forever), and revoking a key
+// is capped like granting one.
+func TestAPIKeyAdministrationLimits(t *testing.T) {
+	e := newCeilingEnv(t, iam.RoleSecurityAdmin)
+	strong, _, err := e.svc.CreateKey(context.Background(), "ceiling-strong", []string{iam.PermPIIReveal}, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.pool.Exec(context.Background(), `delete from dilion_authz.api_keys where id = $1`, strong)
+	})
+	var id string
+	if err := e.pool.QueryRow(context.Background(), `select id from dilion_authz.api_keys where key_hash = $1`,
+		iam.HashToken(strong)).Scan(&id); err != nil {
+		t.Fatalf("key id: %v", err)
+	}
+	resp := e.api.Delete("/iam/v1/api-keys/"+id, bearer)
+	wantDenied(t, "revoking a pii.reveal key", resp.Code, resp.Body.String(), iam.PermPIIReveal)
+
+	// Issued by a key: refused.
+	minter, _, err := e.svc.CreateKey(context.Background(), "ceiling-minter", []string{iam.PermKeysManage, iam.PermUsersRead}, nil)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	resp = e.api.Post("/iam/v1/api-keys", "Authorization: Bearer "+minter, map[string]any{"scopes": []string{iam.PermUsersRead}})
+	if resp.Code != http.StatusForbidden {
+		t.Errorf("a key issuing a key = %d %s, want 403", resp.Code, resp.Body.String())
+	}
+}

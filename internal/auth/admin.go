@@ -541,7 +541,12 @@ func (a *api) adminDeleteUser(w http.ResponseWriter, r *http.Request) error {
 			return internalServerError("Error revoking user's refresh tokens").withInternal(rerr)
 		}
 
-		// (3) The account.
+		// (3) Its management-plane roles.
+		if rerr := revokeUserRoleAssignments(ctx, tx, user.ID, now); rerr != nil {
+			return internalServerError("Error revoking user's roles").withInternal(rerr)
+		}
+
+		// (4) The account.
 		if params.ShouldSoftDelete {
 			if user.DeletedAt != nil {
 				return nil // already soft deleted; upstream is a no-op here

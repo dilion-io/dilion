@@ -67,6 +67,7 @@ var migrationFiles = []string{
 	"../../migrations/0304_consents_write_permission.sql",
 	"../../migrations/0305_roles_manage_permission.sql",
 	"../../migrations/0306_auth_settings_permission.sql",
+	"../../migrations/0307_api_key_creator_type.sql",
 }
 
 // applyMigration runs them under an advisory lock: `create schema if not
@@ -720,5 +721,43 @@ func TestActorDetails(t *testing.T) {
 
 	if got, err := svc.ActorDetails(ctx, nil); err != nil || len(got) != 0 {
 		t.Errorf("ActorDetails(nil) = (%v, %v), want an empty map", got, err)
+	}
+}
+
+// A key a user issued holds nothing its creator no longer does: revoking the
+// user's role takes the key's authority with it.
+func TestUserIssuedKeyFollowsItsCreator(t *testing.T) {
+	pool := testPool(t)
+	svc := newTestService(t, pool)
+	authz := NewAuthorizer(pool)
+	ctx := context.Background()
+
+	const creator = "7c2a1b3d-4e5f-4061-8273-a4b5c6d7e8f9"
+	a, err := svc.GrantRole(ctx, RoleSecurityAdmin, creator, "root")
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	_, key, err := svc.CreateKeyBy(ctx, "ops", []string{PermAuditRead}, nil, creator, ActorTypeUser)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	keyActor := ports.Actor{ID: key.ID, Type: ActorTypeAPIKey}
+	if ok, _ := authz.Can(ctx, keyActor, PermAuditRead, ""); !ok {
+		t.Fatal("the key does not hold its scope while its creator does")
+	}
+	if _, err := svc.RevokeAssignment(ctx, a.ID, "root"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if ok, _ := authz.Can(ctx, keyActor, PermAuditRead, ""); ok {
+		t.Error("the key kept a permission its creator lost")
+	}
+
+	// A key service_role issued is not tied to anyone.
+	_, svcKey, err := svc.CreateKeyBy(ctx, "svc", []string{PermAuditRead}, nil, "svc-1", ActorTypeServiceRole)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if ok, _ := authz.Can(ctx, ports.Actor{ID: svcKey.ID, Type: ActorTypeAPIKey}, PermAuditRead, ""); !ok {
+		t.Error("a service_role key lost its scope")
 	}
 }

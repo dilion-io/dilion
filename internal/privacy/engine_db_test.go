@@ -66,6 +66,13 @@ create table if not exists auth.identities (
 	identity_data jsonb not null);
 alter table auth.identities add column if not exists provider_id text not null default '123';
 alter table auth.identities add column if not exists updated_at timestamptz;
+create schema if not exists dilion_authz;
+create table if not exists dilion_authz.role_assignments (
+	id bigserial primary key,
+	actor_id text not null,
+	role_id text not null,
+	revoked_at timestamptz,
+	revoked_by text);
 create schema if not exists dilion_auth;
 create table if not exists dilion_auth.opaque_credentials (
 	user_id uuid primary key,
@@ -127,6 +134,7 @@ func resetDB(t *testing.T, pool *pgxpool.Pool) {
 		`delete from dilion_pii.profile_search_index`,
 		`delete from auth.identities`,
 		`delete from dilion_auth.opaque_credentials`,
+		`delete from dilion_authz.role_assignments`,
 		`delete from auth.sessions`,
 		`delete from auth.refresh_tokens`,
 		`delete from auth.users`,
@@ -289,6 +297,7 @@ func (env *testEnv) newUser(t *testing.T) string {
 		uuid.NewString(), id)
 	exec(`insert into dilion_auth.opaque_credentials (user_id, record) values ($1::uuid, $2)`,
 		id, []byte("opaque-record"))
+	exec(`insert into dilion_authz.role_assignments (actor_id, role_id) values ($1, 'role_owner')`, id)
 	exec(`insert into dilion_pii.user_profiles (user_id, enc_profile) values ($1::uuid, $2)`,
 		id, []byte("enc:profile"))
 	if _, err := env.kms.Encrypt(env.ctx, id, ports.KeyScopeDefault, []byte("pii")); err != nil {
@@ -568,6 +577,7 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 		// land in this erased user.
 		{"identities_still_linked", `select count(*) from auth.identities where user_id = $1::uuid and provider_id = '123'`},
 		{"opaque_credentials", `select count(*) from dilion_auth.opaque_credentials where user_id = $1::uuid`},
+		{"active_role_assignments", `select count(*) from dilion_authz.role_assignments where actor_id = $1 and revoked_at is null`},
 	} {
 		var n int
 		if err := env.pool.QueryRow(env.ctx, q.sql, user).Scan(&n); err != nil {

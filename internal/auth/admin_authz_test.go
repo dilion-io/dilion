@@ -350,6 +350,7 @@ func applyAuthzSchema(t *testing.T, pool *pgxpool.Pool) {
 		"0304_consents_write_permission.sql",
 		"0305_roles_manage_permission.sql",
 		"0306_auth_settings_permission.sql",
+		"0307_api_key_creator_type.sql",
 	} {
 		sql, rerr := os.ReadFile(filepath.Join("..", "..", "migrations", f))
 		if rerr != nil {

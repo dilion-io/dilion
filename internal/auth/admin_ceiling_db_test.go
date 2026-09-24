@@ -110,3 +110,23 @@ func TestAuthSettingsAreOwnerOnly(t *testing.T) {
 		t.Error("an API key could be scoped to auth.settings.manage")
 	}
 }
+
+// Deleting an account ends its roles: grants are keyed by user id.
+func TestDeletingAUserRevokesItsRoles(t *testing.T) {
+	env := newTestEnv(t)
+	applyAuthzSchema(t, env.pool)
+	user := env.signup(t, "leaving-operator@example.com", "correct-horse-battery")
+	grantRole(t, env, user.User.ID, iam.RoleSecurityAdmin)
+	if rec := env.do(t, http.MethodDelete, "/admin/users/"+user.User.ID, map[string]any{"should_soft_delete": true},
+		env.serviceRoleToken(t)); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
+	}
+	var active int
+	if err := env.pool.QueryRow(context.Background(), `select count(*) from dilion_authz.role_assignments
+		where actor_id = $1 and revoked_at is null`, user.User.ID).Scan(&active); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if active != 0 {
+		t.Errorf("%d roles remain active on a deleted account", active)
+	}
+}

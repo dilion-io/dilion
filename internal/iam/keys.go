@@ -54,15 +54,17 @@ func ValidTokenFormat(token string) bool {
 // CreateKey issues a scoped API key (§2.11 "Machine key"). The returned token
 // is the only time the plaintext is available.
 func (s *Service) CreateKey(ctx context.Context, name string, scopes []string, expires *time.Time) (string, APIKey, error) {
-	return s.createKey(ctx, name, scopes, expires, "")
+	return s.createKey(ctx, name, scopes, expires, "", "")
 }
 
 // CreateKeyBy is CreateKey with the granting actor recorded.
-func (s *Service) CreateKeyBy(ctx context.Context, name string, scopes []string, expires *time.Time, createdBy string) (string, APIKey, error) {
-	return s.createKey(ctx, name, scopes, expires, createdBy)
+// createdByType is the creator's actor type: a key issued by a user
+// (ActorTypeUser) never holds more than that user currently does.
+func (s *Service) CreateKeyBy(ctx context.Context, name string, scopes []string, expires *time.Time, createdBy, createdByType string) (string, APIKey, error) {
+	return s.createKey(ctx, name, scopes, expires, createdBy, createdByType)
 }
 
-func (s *Service) createKey(ctx context.Context, name string, scopes []string, expires *time.Time, createdBy string) (string, APIKey, error) {
+func (s *Service) createKey(ctx context.Context, name string, scopes []string, expires *time.Time, createdBy, createdByType string) (string, APIKey, error) {
 	pool, err := s.db(ctx)
 	if err != nil {
 		return "", APIKey{}, err
@@ -107,10 +109,10 @@ func (s *Service) createKey(ctx context.Context, name string, scopes []string, e
 	}
 	if err := pool.QueryRow(ctx, `
 		insert into dilion_authz.api_keys
-			(id, name, key_hash, scopes, created_at, created_by, expires_at)
-		values ($1,$2,$3,$4,$5,$6,$7)
+			(id, name, key_hash, scopes, created_at, created_by, expires_at, created_by_type)
+		values ($1,$2,$3,$4,$5,$6,$7,nullif($8,''))
 		returning created_at`,
-		k.ID, k.Name, HashToken(token), sc, now, k.CreatedBy, expires).Scan(&k.CreatedAt); err != nil {
+		k.ID, k.Name, HashToken(token), sc, now, k.CreatedBy, expires, createdByType).Scan(&k.CreatedAt); err != nil {
 		return "", APIKey{}, fmt.Errorf("iam: create key: %w", err)
 	}
 	return token, k, nil
@@ -230,4 +232,24 @@ func (s *Service) ListKeys(ctx context.Context, p httpapi.ListParams) (httpapi.P
 		return page, fmt.Errorf("iam: list keys: %w", err)
 	}
 	return paginate(items, p.Limit, func(k APIKey) string { return k.ID }), nil
+}
+
+// GetKey reads one key, active or not.
+func (s *Service) GetKey(ctx context.Context, keyID string) (APIKey, error) {
+	pool, err := s.db(ctx)
+	if err != nil {
+		return APIKey{}, err
+	}
+	var k APIKey
+	err = pool.QueryRow(ctx, `
+		select id, name, scopes, created_at, created_by, expires_at, revoked_at, last_used_at
+		from dilion_authz.api_keys where id = $1`, keyID).
+		Scan(&k.ID, &k.Name, &k.Scopes, &k.CreatedAt, &k.CreatedBy, &k.ExpiresAt, &k.RevokedAt, &k.LastUsedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return APIKey{}, ErrNotFound
+	}
+	if err != nil {
+		return APIKey{}, fmt.Errorf("iam: get key: %w", err)
+	}
+	return k, nil
 }

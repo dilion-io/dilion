@@ -526,6 +526,14 @@ func (e *Engine) stepAccount(ctx context.Context, rc *runCtx, _ ErasureAction) (
 		`delete from dilion_pii.user_profiles where user_id = $1::uuid`, rc.UserID); err != nil {
 		return "", false, err
 	}
+	// Management-plane roles are keyed by user id; an erased user keeps none.
+	if e.tableExists(ctx, "dilion_authz.role_assignments") {
+		if _, err := e.pool.Exec(ctx, `update dilion_authz.role_assignments
+			set revoked_at = $2, revoked_by = 'system:erasure'
+			where actor_id = $1 and revoked_at is null`, rc.UserID, e.now()); err != nil {
+			return "", false, err
+		}
+	}
 	// The blind search index (search.go) must not outlive the document — its
 	// tokens are keyed hashes of the erased values.
 	if _, err := e.pool.Exec(ctx,

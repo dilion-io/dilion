@@ -269,6 +269,23 @@ func releaseIdentity(ctx context.Context, q querier, id *Identity, now time.Time
 	return err
 }
 
+// revokeUserRoleAssignments ends the management-plane roles a deleted user
+// held. Grants are keyed by user id: left active, they would pass to anyone
+// later given an account under the same id, and would keep empowering the API
+// keys the user issued. The history rows stay (dilion_authz keeps grant
+// history). A deployment without the management plane has no table to touch.
+func revokeUserRoleAssignments(ctx context.Context, q querier, userID string, now time.Time) error {
+	var exists bool
+	if err := q.QueryRow(ctx, `select to_regclass('dilion_authz.role_assignments') is not null`).Scan(&exists); err != nil || !exists {
+		return err
+	}
+	_, err := q.Exec(ctx, `
+		update dilion_authz.role_assignments
+		set revoked_at = $2, revoked_by = 'system:user_deleted'
+		where actor_id = $1 and revoked_at is null`, userID, now)
+	return err
+}
+
 func hardDeleteUser(ctx context.Context, q querier, id string) error {
 	// auth.identities / auth.sessions cascade; refresh_tokens cascade off sessions.
 	_, err := q.Exec(ctx, `delete from auth.users where id = $1::uuid`, id)

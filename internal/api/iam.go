@@ -9,6 +9,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
 	"github.com/dilion-io/dilion/internal/iam"
 )
@@ -632,11 +633,18 @@ func (r *registrar) registerAPIKeys() {
 			if in.Body.Name != nil {
 				name = *in.Body.Name
 			}
+			actor := requestInfoFrom(ctx).Actor
+			// A key minting keys could renew itself forever, past its own
+			// expiry and its revocation.
+			if actor.Type == iam.ActorTypeAPIKey {
+				return nil, NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied,
+					"an API key cannot issue API keys")
+			}
 			if err := r.d.grantCeiling(ctx, in.Body.Scopes, "api_keys"); err != nil {
 				return nil, err
 			}
 			token, key, err := r.keys.CreateKeyBy(ctx, name, in.Body.Scopes,
-				in.Body.ExpiresAt, requestInfoFrom(ctx).Actor.ID)
+				in.Body.ExpiresAt, actor.ID, actor.Type)
 			if err != nil {
 				return nil, mapIAMError(ctx, err)
 			}
@@ -653,6 +661,15 @@ func (r *registrar) registerAPIKeys() {
 	huma.Register(r.api, r.op("revokeApiKey", http.MethodDelete, "/iam/v1/api-keys/{keyId}",
 		"Revoke an API key", iam.PermKeysManage, "iam", http.StatusNoContent),
 		func(ctx context.Context, in *apiKeyIDInput) (*struct{}, error) {
+			// Revoking a key that holds more than the caller would let a key
+			// administrator disable the automation of those above it.
+			cur, err := r.keys.GetKey(ctx, in.KeyID)
+			if err != nil {
+				return nil, mapIAMError(ctx, err)
+			}
+			if err := r.d.grantCeiling(ctx, cur.Scopes, "api_key:"+cur.ID); err != nil {
+				return nil, err
+			}
 			key, err := r.keys.RevokeKey(ctx, in.KeyID, requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
 				return nil, mapIAMError(ctx, err)

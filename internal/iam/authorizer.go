@@ -47,10 +47,16 @@ func (a *authorizer) Permissions(ctx context.Context, actor ports.Actor) ([]stri
 			join dilion_authz.roles r on r.id = ra.role_id
 			where ra.actor_id = $1 and ra.revoked_at is null
 			union
-			select unnest(k.scopes)
-			from dilion_authz.api_keys k
+			select p from dilion_authz.api_keys k, unnest(k.scopes) p
 			where k.id = $1 and k.revoked_at is null
 			  and (k.expires_at is null or k.expires_at > now())
+			  and (k.created_by_type is distinct from 'user' or exists(
+				select 1
+				from dilion_authz.role_assignments cra
+				join dilion_authz.roles cr on cr.id = cra.role_id
+				where cra.actor_id = k.created_by
+				  and cra.revoked_at is null
+				  and p = any(cr.permissions)))
 		) held`, actor.ID).Scan(&perms); err != nil {
 		return nil, fmt.Errorf("iam: permissions: %w", err)
 	}
@@ -96,6 +102,14 @@ func (a *authorizer) Can(ctx context.Context, actor ports.Actor, permission stri
 				  and k.revoked_at is null
 				  and (k.expires_at is null or k.expires_at > now())
 				  and $2 = any(k.scopes)
+				  -- A key a user issued holds nothing its creator no longer does.
+				  and (k.created_by_type is distinct from 'user' or exists(
+					select 1
+					from dilion_authz.role_assignments cra
+					join dilion_authz.roles cr on cr.id = cra.role_id
+					where cra.actor_id = k.created_by
+					  and cra.revoked_at is null
+					  and $2 = any(cr.permissions)))
 			)`, actor.ID, permission).Scan(&allowed)
 	if err != nil {
 		return false, fmt.Errorf("iam: authorize: %w", err)
