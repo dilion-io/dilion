@@ -51,7 +51,7 @@ func newTestJWK(t *testing.T, kid string, ops ...string) (string, *ecdsa.Private
 // configWithKeys builds a validated Config carrying the given JWK JSON blobs.
 func configWithKeys(t *testing.T, secret string, jwks ...string) *Config {
 	t.Helper()
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.JWT.Secret = secret
 	if len(jwks) > 0 {
 		set, err := ParseJWKSet("[" + strings.Join(jwks, ",") + "]")
@@ -236,7 +236,7 @@ func TestTokenES256AcceptsLegacyHS256AndRejectsWrongAlg(t *testing.T) {
 
 // The HS256-only path is the dev-server default (only DILION_JWT_SECRET set).
 func TestTokenServiceHS256FallbackFromConfig(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.JWT.Secret = string(testSecret())
 	cfg.JWT.Exp = 120
 	cfg.JWT.Aud = "custom-aud"
@@ -540,7 +540,7 @@ func TestGenkeyOutputLoadsAsConfig(t *testing.T) {
 // and across the two. This is the property that binds a token to its instance
 // at every verifier, PostgREST included.
 func TestTokenServiceWithKeysBindsTokenToInstance(t *testing.T) {
-	base := DefaultConfig()
+	base := testConfig()
 	jwkA, _ := newTestJWK(t, "a-key", "sign", "verify")
 	jwkB, _ := newTestJWK(t, "b-key", "sign", "verify")
 	services := map[string]*TokenService{}

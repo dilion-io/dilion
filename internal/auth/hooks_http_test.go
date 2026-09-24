@@ -16,7 +16,7 @@ import (
 // testHookAPI is a minimal api for driver-level tests (no DB, no tokens).
 func testHookAPI(cfg *Config) *api {
 	if cfg == nil {
-		cfg = DefaultConfig()
+		cfg = testConfig()
 	}
 	return &api{cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }

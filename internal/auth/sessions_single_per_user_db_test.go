@@ -16,7 +16,7 @@ import (
 )
 
 func singlePerUserConfig(on bool) *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Sessions.SinglePerUser = on
 	return cfg
 }

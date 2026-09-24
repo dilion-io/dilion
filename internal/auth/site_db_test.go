@@ -25,7 +25,7 @@ func TestInstanceSiteSettings(t *testing.T) {
 	env := newTestEnv(t)
 	env.signup(t, "site@example.com", "correct-horse-battery")
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://server.example"
 	cfg.URIAllowList = []string{"https://server.example/**"}
 	sites := map[string]*ports.AuthSettings{

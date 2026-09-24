@@ -51,7 +51,7 @@ type ssoEnv struct {
 // ssoTestConfig is the configuration the SAML surface is exercised under.
 func ssoTestConfig(t *testing.T) *Config {
 	t.Helper()
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = ssoTestSiteURL
 	cfg.URIAllowList = []string{"http://localhost:3000/**", "https://app.test/**"}
 	cfg.SAML.Enabled = true

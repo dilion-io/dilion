@@ -92,7 +92,7 @@ func TestRenderSMSUsesUpstreamDefaultTemplate(t *testing.T) {
 }
 
 func TestRenderSMSHonoursConfiguredTemplate(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SMS.Template = "{{ .Code }} is your Acme code. Do not share it."
 	a := testAPI(t, cfg)
 
@@ -108,7 +108,7 @@ func TestRenderSMSHonoursConfiguredTemplate(t *testing.T) {
 // A template that cannot be parsed must fail the CONFIGURATION, not the first
 // OTP of the day.
 func TestConfigRejectsUnparsableSMSTemplate(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SMS.Template = "{{ .Code "
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() accepted an unparsable SMS template")
@@ -132,7 +132,7 @@ func (s *stubSender) Send(_ context.Context, to, body string) error {
 // supplies a sender never accidentally talks to Twilio.
 func TestInjectedSenderIsPreferredOverTwilio(t *testing.T) {
 	stub := &stubSender{}
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SMS.Sender = stub
 	cfg.SMS.Provider = "twilio"
 	cfg.SMS.Twilio = TwilioConfig{AccountSID: "AC1", AuthToken: "tok", MessageServiceSID: "MG1"}
@@ -159,7 +159,7 @@ func TestInjectedSenderIsPreferredOverTwilio(t *testing.T) {
 }
 
 func TestTwilioIsSelectedWhenNoSenderIsInjected(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SMS.Provider = "twilio"
 	cfg.SMS.Twilio = TwilioConfig{AccountSID: "AC1", AuthToken: "tok", MessageServiceSID: "MG1"}
 	a := testAPI(t, cfg)
@@ -174,7 +174,7 @@ func TestTwilioIsSelectedWhenNoSenderIsInjected(t *testing.T) {
 }
 
 func TestNoProviderConfiguredIsAnError(t *testing.T) {
-	a := testAPI(t, DefaultConfig())
+	a := testAPI(t, testConfig())
 	if _, err := a.smsProviderFor(); err == nil {
 		t.Fatal("smsProviderFor succeeded with neither a sender nor a provider")
 	}
@@ -182,7 +182,7 @@ func TestNoProviderConfiguredIsAnError(t *testing.T) {
 
 // whatsapp is only offered where it exists.
 func TestMessageChannelValidation(t *testing.T) {
-	plain := testAPI(t, DefaultConfig())
+	plain := testAPI(t, testConfig())
 	if !plain.isValidMessageChannel(channelSMS) {
 		t.Error("sms channel rejected")
 	}
@@ -193,7 +193,7 @@ func TestMessageChannelValidation(t *testing.T) {
 		t.Error("an unknown channel was accepted")
 	}
 
-	twilioCfg := DefaultConfig()
+	twilioCfg := testConfig()
 	twilioCfg.SMS.Provider = "twilio"
 	if !testAPI(t, twilioCfg).isValidMessageChannel(channelWhatsApp) {
 		t.Error("whatsapp rejected while Twilio is the provider")

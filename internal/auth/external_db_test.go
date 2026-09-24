@@ -269,7 +269,7 @@ type externalEnv struct {
 
 // externalTestConfig is the configuration the OAuth flows are exercised under.
 func externalTestConfig() *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.test"
 	cfg.URIAllowList = []string{"https://app.test/**"}
 	cfg.External["google"] = ProviderConfig{

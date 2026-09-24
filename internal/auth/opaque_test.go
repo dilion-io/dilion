@@ -18,7 +18,7 @@ import (
 )
 
 func opaqueTestConfig() *Config {
-	c := DefaultConfig()
+	c := testConfig()
 	c.Opaque = OpaqueConfig{Enabled: true, MasterKey: opaqueEncode(bytes.Repeat([]byte{71}, 32))}
 	return c
 }

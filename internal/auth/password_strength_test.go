@@ -42,7 +42,7 @@ func assertWeakPassword(t *testing.T, herr *HTTPError, wantReasons []string) {
 }
 
 func TestPasswordMinLength(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Password.MinLength = 8
 	a := newSecurityTestAPI(t, cfg)
 
@@ -59,7 +59,7 @@ func TestPasswordMinLength(t *testing.T) {
 // bcrypt truncates past 72 bytes, so a longer password is a 400, NOT a
 // weak_password (upstream's checkPasswordStrength does the same).
 func TestPasswordTooLongIsValidationFailed(t *testing.T) {
-	a := newSecurityTestAPI(t, DefaultConfig())
+	a := newSecurityTestAPI(t, testConfig())
 
 	herr := a.checkPasswordStrength(context.Background(), strings.Repeat("x", 73))
 	if herr == nil {
@@ -75,7 +75,7 @@ func TestPasswordTooLongIsValidationFailed(t *testing.T) {
 
 // Each colon-separated set must contribute at least one character.
 func TestPasswordRequiredCharactersMatrix(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Password.MinLength = 6
 	cfg.Password.RequiredCharacters = parseRequiredCharacters(
 		"abcdefghijklmnopqrstuvwxyz:ABCDEFGHIJKLMNOPQRSTUVWXYZ:0123456789:!@#$%^&*()")
@@ -109,7 +109,7 @@ func TestPasswordRequiredCharactersMatrix(t *testing.T) {
 
 // An empty RequiredCharacters list (the default) imposes no class rule at all.
 func TestPasswordRequiredCharactersEmptyIsNoRule(t *testing.T) {
-	a := newSecurityTestAPI(t, DefaultConfig())
+	a := newSecurityTestAPI(t, testConfig())
 	if herr := a.checkPasswordStrength(context.Background(), "aaaaaa"); herr != nil {
 		t.Errorf("with no required character sets, any 6-character password passes; got %v", herr)
 	}

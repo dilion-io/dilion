@@ -245,7 +245,7 @@ func TestEncodeRedirectURL(t *testing.T) {
 // externalHost must never trust an arbitrary Host header: a forged one would
 // plant an attacker's domain into a confirmation link.
 func TestExternalHostRejectsForeignHost(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.test"
 	cfg.Mailer.ExternalHosts = []string{"auth.app.test"}
 	a := &api{cfg: cfg}
@@ -268,7 +268,7 @@ func TestExternalHostRejectsForeignHost(t *testing.T) {
 }
 
 func TestSubjectFallsBackToUpstreamDefaults(t *testing.T) {
-	a := &api{cfg: DefaultConfig()}
+	a := &api{cfg: testConfig()}
 	if got := a.subjectFor(mailSignup, ""); got != "Confirm your email address" {
 		t.Errorf("signup subject = %q", got)
 	}

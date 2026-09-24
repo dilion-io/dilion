@@ -11,7 +11,7 @@ import (
 // client that lost the response of its last refresh: it gets the session's
 // CURRENT token back, nothing is revoked and the session survives.
 func TestRefreshReuseWithinIntervalReturnsActiveToken(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.RefreshTokenReuseInterval = 60
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -54,7 +54,7 @@ func TestRefreshReuseWithinIntervalReturnsActiveToken(t *testing.T) {
 
 // Beyond the window the same reuse is abuse: family revoked, session destroyed.
 func TestRefreshReuseBeyondIntervalIsPunished(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.RefreshTokenReuseInterval = 1
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -101,7 +101,7 @@ func TestAnonymousSignup(t *testing.T) {
 		t.Errorf("body = %+v", e)
 	}
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.AnonymousUsersEnabled = true
 	env = newTestEnvWithConfig(t, cfg)
 
@@ -138,7 +138,7 @@ func TestAnonymousSignup(t *testing.T) {
 	}
 
 	// Signups disabled wins over the anonymous path.
-	cfg = DefaultConfig()
+	cfg = testConfig()
 	cfg.AnonymousUsersEnabled = true
 	cfg.DisableSignup = true
 	env = newTestEnvWithConfig(t, cfg)
@@ -150,7 +150,7 @@ func TestAnonymousSignup(t *testing.T) {
 }
 
 func TestDisableSignup(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.DisableSignup = true
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -163,7 +163,7 @@ func TestDisableSignup(t *testing.T) {
 }
 
 func TestSessionTimeboxOnRefresh(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Sessions.Timebox = time.Hour
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -199,7 +199,7 @@ func TestSessionTimeboxOnRefresh(t *testing.T) {
 }
 
 func TestSessionInactivityTimeoutOnRefresh(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Sessions.InactivityTimeout = 10 * time.Minute
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -252,7 +252,7 @@ func TestSessionInactivityTimeoutOnRefresh(t *testing.T) {
 }
 
 func TestCleanupDeletesExpiredRows(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	env := newTestEnvWithConfig(t, cfg)
 	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: cfg})
 
@@ -302,7 +302,7 @@ func TestCleanupDeletesExpiredRows(t *testing.T) {
 	}
 
 	// RunCleanup honours CleanupEnabled=false by returning immediately.
-	off := DefaultConfig()
+	off := testConfig()
 	off.CleanupEnabled = false
 	done := make(chan struct{})
 	go func() {

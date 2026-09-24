@@ -85,3 +85,35 @@ func TestMFAUserNeedsAAL2ToAuthorizeApp(t *testing.T) {
 	env.stepUp(t, user.Token)
 	env.claimAndApprove(t, id, user.Token, "s1")
 }
+
+// Adding a way to sign in is a credential change: an MFA user needs aal2 for
+// it, as for a new password.
+func TestMFAUserNeedsAAL2ToLinkAnIdentity(t *testing.T) {
+	cfg := externalTestConfig()
+	cfg.Security.ManualLinkingEnabled = true
+	env := newExternalEnv(t, cfg)
+	user := env.signup(t, "link-mfa@example.com", "hunter22-strong")
+	env.enableMFA(t, user.User.ID)
+
+	path := "/user/identities/authorize?provider=google&redirect_to=https%3A%2F%2Fapp.test%2Fwelcome"
+	rec := env.do(t, http.MethodGet, path, nil, user.Token)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), ErrorCodeInsufficientAAL) {
+		t.Fatalf("linking at aal1 = %d %s, want 401 %s", rec.Code, rec.Body.String(), ErrorCodeInsufficientAAL)
+	}
+	env.stepUp(t, user.Token)
+	if rec := env.do(t, http.MethodGet, path, nil, user.Token); rec.Code != http.StatusFound {
+		t.Fatalf("linking at aal2 = %d %s, want 302", rec.Code, rec.Body.String())
+	}
+}
+
+// Like upstream, an anonymous account cannot enroll a factor.
+func TestAnonymousUserCannotEnrollMFA(t *testing.T) {
+	cfg := testConfig()
+	cfg.AnonymousUsersEnabled = true
+	env := newMFAEnv(t, cfg)
+	rec := env.do(t, http.MethodPost, "/signup", map[string]any{}, "")
+	anon := decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+	if rec := env.do(t, http.MethodPost, "/factors", map[string]any{"factor_type": "totp"}, anon.Token); rec.Code != http.StatusForbidden {
+		t.Fatalf("anonymous enroll = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+}

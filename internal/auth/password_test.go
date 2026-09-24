@@ -76,7 +76,7 @@ func TestPasswordLengthLimits(t *testing.T) {
 }
 
 func TestCheckPasswordStrengthDefaults(t *testing.T) {
-	a := newSecurityTestAPI(t, DefaultConfig())
+	a := newSecurityTestAPI(t, testConfig())
 	ctx := context.Background()
 
 	if herr := a.checkPasswordStrength(ctx, "short"); herr == nil {

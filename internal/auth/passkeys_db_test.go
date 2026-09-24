@@ -47,7 +47,7 @@ type passkeyEnv struct {
 // configured RPID/RPOrigins are the ones actually used, not the SiteURL
 // fallback).
 func passkeyTestConfig() *Config {
-	c := DefaultConfig()
+	c := testConfig()
 	c.Passkeys.Enabled = true
 	c.Passkeys.RPID = testRPID
 	c.Passkeys.RPOrigins = []string{testRPOrgin}

@@ -10,7 +10,7 @@ import (
 // Every emailed link must resolve under the mount point, /auth/v1 — upstream's
 // bare "/verify" default would produce a dead link in Dilion.
 func TestMailerURLPathDefaults(t *testing.T) {
-	a := newSecurityTestAPI(t, DefaultConfig())
+	a := newSecurityTestAPI(t, testConfig())
 
 	for _, actionType := range []string{
 		mailInvite, mailSignup, mailRecovery, mailMagicLink,
@@ -26,7 +26,7 @@ func TestMailerURLPathDefaults(t *testing.T) {
 
 	// An explicit configuration still wins, so a deployment that proxies
 	// upstream's "/verify" can restore it.
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Mailer.URLPaths.Confirmation = "/verify"
 	custom := newSecurityTestAPI(t, cfg)
 	if got := custom.urlPathFor(mailSignup); got != "/verify" {
@@ -50,7 +50,7 @@ func TestMailerURLPathEnvOverride(t *testing.T) {
 }
 
 func TestMailerMaxFrequencyConfig(t *testing.T) {
-	if got := DefaultConfig().Mailer.MaxFrequency; got != time.Minute {
+	if got := testConfig().Mailer.MaxFrequency; got != time.Minute {
 		t.Errorf("default Mailer.MaxFrequency = %v, want 1m", got)
 	}
 
@@ -75,7 +75,7 @@ func TestMailerMaxFrequencyConfig(t *testing.T) {
 	}
 
 	// A non-positive value falls back to the 1m default.
-	zeroed := DefaultConfig()
+	zeroed := testConfig()
 	zeroed.Mailer.MaxFrequency = 0
 	if err := zeroed.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)

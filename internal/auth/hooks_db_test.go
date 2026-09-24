@@ -79,7 +79,7 @@ func TestHookPGDriverInvokesFunction(t *testing.T) {
 		t.Fatalf("create hook function: %v", err)
 	}
 
-	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: DefaultConfig()})
+	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: testConfig()})
 	cfg := HookEndpointConfig{Enabled: true, URI: "pg-functions://dilion/hooktest/custom_access_token"}
 
 	in := &CustomAccessTokenInput{
@@ -113,7 +113,7 @@ func TestHookPGDriverErrorEnvelopeRejects(t *testing.T) {
 		t.Fatalf("create reject function: %v", err)
 	}
 
-	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: DefaultConfig()})
+	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: testConfig()})
 	cfg := HookEndpointConfig{Enabled: true, URI: "pg-functions://dilion/hooktest/rejecter"}
 	err := a.runExtHook(ctx, cfg, nil, map[string]any{}, &BeforeUserCreatedOutput{})
 	if err == nil {
@@ -147,7 +147,7 @@ func TestCustomAccessTokenHookMergesClaims(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Hooks.CustomAccessToken = HookEndpointConfig{Enabled: true, URI: srv.URL, Secrets: []string{testHookSecret}}
 	env := newTestEnvWithConfig(t, cfg)
 	applyHookMigrations(t, env.pool)
@@ -181,7 +181,7 @@ func TestBeforeUserCreatedRejectsSignup(t *testing.T) {
 	srv := jsonHookServer(t, http.StatusOK,
 		`{"error":{"http_code":403,"message":"signup blocked by hook"}}`, &hits)
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Hooks.BeforeUserCreated = HookEndpointConfig{Enabled: true, URI: srv.URL, Secrets: []string{testHookSecret}}
 	env := newTestEnvWithConfig(t, cfg)
 	applyHookMigrations(t, env.pool)
@@ -213,7 +213,7 @@ func TestSendEmailHookSuppressesMailer(t *testing.T) {
 	var hits int32
 	srv := jsonHookServer(t, http.StatusOK, `{}`, &hits)
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Mailer.Autoconfirm = false // force a confirmation email
 	cfg.Hooks.SendEmail = HookEndpointConfig{Enabled: true, URI: srv.URL, Secrets: []string{testHookSecret}}
 	env := newTestEnvWithConfig(t, cfg)
@@ -238,7 +238,7 @@ func TestSendSMSHookSuppressesProvider(t *testing.T) {
 	var hits int32
 	srv := jsonHookServer(t, http.StatusOK, `{}`, &hits)
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.External["phone"] = ProviderConfig{Enabled: true}
 	cfg.SMS.Autoconfirm = false // force an OTP send
 	// No SMS provider is configured: if the hook did NOT take over delivery,
@@ -279,7 +279,7 @@ func TestHookMetadataCarriesInstance(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Mailer.Autoconfirm = false // force a confirmation email through the hook
 	cfg.Hooks.SendEmail = HookEndpointConfig{Enabled: true, URI: srv.URL, Secrets: []string{testHookSecret}}
 	env := newTestEnvWithConfig(t, cfg)

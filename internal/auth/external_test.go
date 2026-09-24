@@ -28,7 +28,7 @@ import (
 func testAPI(t *testing.T, cfg *Config) *api {
 	t.Helper()
 	if cfg == nil {
-		cfg = DefaultConfig()
+		cfg = testConfig()
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config: %v", err)
@@ -221,7 +221,7 @@ func TestProviderRegistry(t *testing.T) {
 		t.Errorf("disabled provider error = %v", err)
 	}
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.External["github"] = ProviderConfig{Enabled: true, ClientID: []string{"id"}}
 	a = testAPI(t, cfg)
 	if _, _, err := a.provider(context.Background(), "github", ""); err == nil ||
@@ -231,7 +231,7 @@ func TestProviderRegistry(t *testing.T) {
 }
 
 func TestGitHubProviderHonoursEnterpriseURL(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.External["github"] = ProviderConfig{
 		Enabled: true, ClientID: []string{"id"}, Secret: "s",
 		RedirectURI: "https://api.test/callback", URL: "https://ghe.corp.test/",

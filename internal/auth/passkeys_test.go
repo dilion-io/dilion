@@ -11,7 +11,7 @@ import (
 )
 
 func TestPasskeyWebAuthnConfigUsesExplicitSettings(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.example.com"
 	cfg.Passkeys.RPID = "example.com"
 	cfg.Passkeys.RPOrigins = []string{"https://app.example.com", "https://admin.example.com"}
@@ -48,7 +48,7 @@ func TestPasskeyWebAuthnConfigFallsBackToSiteURL(t *testing.T) {
 		{"https://app.example.com:8443/path", "app.example.com", []string{"https://app.example.com:8443"}},
 	}
 	for _, c := range cases {
-		cfg := DefaultConfig()
+		cfg := testConfig()
 		cfg.SiteURL = c.siteURL
 		got := newAPI(Deps{Config: cfg, Tokens: NewTokenServiceHS(testSecret())}).passkeyWebAuthnConfig(context.Background())
 
@@ -68,7 +68,7 @@ func TestPasskeyWebAuthnConfigFallsBackToSiteURL(t *testing.T) {
 // TestPasskeyWebAuthnConfigExplicitRPIDKeepsSiteURLOrigins covers the mixed
 // case: one knob set, the other derived.
 func TestPasskeyWebAuthnConfigExplicitRPIDKeepsSiteURLOrigins(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.example.com"
 	cfg.Passkeys.RPID = "example.com"
 

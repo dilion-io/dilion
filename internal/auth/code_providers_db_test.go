@@ -54,7 +54,7 @@ func newCodeProviderEnv(t *testing.T, define func(env *codeProviderEnv, instance
 	truncateAll(t, pool)
 	clearTables(t, pool, "auth.flow_state", "auth.oauth_client_states", "auth.custom_oauth_providers")
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.test"
 	cfg.URIAllowList = []string{"https://app.test/**"}
 	if err := cfg.Validate(); err != nil {

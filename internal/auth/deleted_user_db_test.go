@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 // An account erased before erasure released its identities still has the
@@ -70,7 +71,7 @@ func TestPasskeySignInRefusesDeletedUser(t *testing.T) {
 func TestGrantSessionRefusesDeletedUser(t *testing.T) {
 	env := newTestEnv(t)
 	session := env.signup(t, "grant-deleted@dilion.test", "correct-horse-battery")
-	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: DefaultConfig()})
+	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: testConfig()})
 
 	u, err := findUserByID(t.Context(), env.pool, session.User.ID)
 	if err != nil {
@@ -81,5 +82,23 @@ func TestGrantSessionRefusesDeletedUser(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "/token", nil)
 	if _, err := a.grantSession(t.Context(), env.pool, u, req, "password"); err == nil {
 		t.Fatal("grantSession issued a session for a deleted user")
+	}
+}
+
+// A banned account gets no session either, whatever credential it signs in
+// with.
+func TestGrantSessionRefusesBannedUser(t *testing.T) {
+	env := newTestEnv(t)
+	session := env.signup(t, "grant-banned@dilion.test", "correct-horse-battery")
+	a := newAPI(Deps{Pool: env.pool, Tokens: env.tokens, Config: testConfig()})
+	u, err := findUserByID(t.Context(), env.pool, session.User.ID)
+	if err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	until := a.now().Add(time.Hour)
+	u.BannedUntil = &until
+	req, _ := http.NewRequest(http.MethodPost, "/token", nil)
+	if _, err := a.grantSession(t.Context(), env.pool, u, req, "password"); err == nil {
+		t.Fatal("grantSession issued a session for a banned user")
 	}
 }

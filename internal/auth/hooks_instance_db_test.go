@@ -77,7 +77,7 @@ func TestInstanceHookEnablesAndReverts(t *testing.T) {
 func TestInstanceHookDisablesServerHook(t *testing.T) {
 	var hits int32
 	srv := jsonHookServer(t, http.StatusOK, `{"error":{"http_code":403,"message":"server says no"}}`, &hits)
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Hooks.BeforeUserCreated = HookEndpointConfig{Enabled: true, URI: srv.URL}
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -95,7 +95,7 @@ func TestInstanceHookDisablesServerHook(t *testing.T) {
 func TestInstanceHookLocked(t *testing.T) {
 	var hits int32
 	srv := jsonHookServer(t, http.StatusOK, `{"error":{"http_code":403,"message":"server says no"}}`, &hits)
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Hooks.BeforeUserCreated = HookEndpointConfig{Enabled: true, URI: srv.URL, Locked: true}
 	env := newTestEnvWithConfig(t, cfg)
 

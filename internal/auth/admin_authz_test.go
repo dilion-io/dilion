@@ -140,6 +140,7 @@ func (e *testEnv) routerWith(authz ports.Authorizer) chi.Router {
 		Mailer: e.mailer,
 		Hooks:  e.hooks,
 		Authz:  authz,
+		Config: testConfig(),
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	return r

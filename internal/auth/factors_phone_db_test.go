@@ -33,7 +33,7 @@ func (s *recordingSender) last() (string, string) {
 	return s.to[len(s.to)-1], s.body[len(s.body)-1]
 }
 
-// testPhoneOTPExp mirrors DefaultConfig().MFA.PhoneOTPExp, which phoneConfig
+// testPhoneOTPExp mirrors testConfig().MFA.PhoneOTPExp, which phoneConfig
 // leaves at its default.
 const testPhoneOTPExp = 300 * time.Second
 
@@ -51,7 +51,7 @@ func extractOTP(t *testing.T, body string) string {
 // phoneConfig returns a config with the phone factor enabled and an injected
 // recording SMS sender.
 func phoneConfig(sender *recordingSender) *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.MFA.Phone.EnrollEnabled = true
 	cfg.MFA.Phone.VerifyEnabled = true
 	cfg.SMS.Sender = sender

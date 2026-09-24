@@ -50,7 +50,7 @@ func TestWaveIVProvidersConstruct(t *testing.T) {
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := DefaultConfig()
+			c := testConfig()
 			c.External[name] = cfg
 			a := testAPI(t, c)
 			if _, _, err := a.provider(context.Background(), name, "extra"); err != nil {
@@ -60,7 +60,7 @@ func TestWaveIVProvidersConstruct(t *testing.T) {
 	}
 
 	// Keycloak requires its realm URL.
-	c := DefaultConfig()
+	c := testConfig()
 	c.External["keycloak"] = base // no URL
 	a := testAPI(t, c)
 	if _, _, err := a.provider(context.Background(), "keycloak", ""); err == nil {

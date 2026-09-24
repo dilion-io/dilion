@@ -59,8 +59,8 @@ func TestDefaultConfig(t *testing.T) {
 	if c.JWT.Exp != 3600 || c.JWT.Aud != AudienceAuthenticated {
 		t.Errorf("JWT = %+v", c.JWT)
 	}
-	if !c.Mailer.Autoconfirm {
-		t.Error("Mailer.Autoconfirm must default to true until the email flows land")
+	if c.Mailer.Autoconfirm {
+		t.Error("Mailer.Autoconfirm must default to false, as upstream: an address is proven by its confirmation link")
 	}
 	if c.Mailer.OTPExp != 3600 || c.Mailer.OTPLength != 6 {
 		t.Errorf("Mailer OTP = %d/%d, want 3600/6", c.Mailer.OTPExp, c.Mailer.OTPLength)

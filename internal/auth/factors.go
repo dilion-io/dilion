@@ -146,6 +146,12 @@ func (a *api) mfaContextOf(r *http.Request) (*mfaContext, error) {
 		return nil, internalServerError(
 			"A valid session and a registered user are required to enroll a factor")
 	}
+	// Upstream mounts /factors behind requireNotAnonymous: an anonymous
+	// account has nothing to protect with a second factor, and enrolling one
+	// would pin a throwaway session to aal2.
+	if err := requireNotAnonymousUser(u); err != nil {
+		return nil, err
+	}
 	return &mfaContext{user: u, sessionID: sid}, nil
 }
 

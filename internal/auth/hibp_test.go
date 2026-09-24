@@ -47,7 +47,7 @@ func newFakeHIBPServer(t *testing.T, pwned string, count int) *httptest.Server {
 }
 
 func hibpConfig(baseURL string) *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.HIBPEnabled = true
 	cfg.Security.HIBPBaseURL = baseURL
 	return cfg
@@ -183,7 +183,7 @@ func TestPasswordStrengthSkipsHIBPWhenDisabled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.HIBPBaseURL = srv.URL
 	a := newSecurityTestAPI(t, cfg)
 

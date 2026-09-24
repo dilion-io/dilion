@@ -23,7 +23,7 @@ const (
 )
 
 func webAuthnConfig() *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.MFA.WebAuthn.EnrollEnabled = true
 	cfg.MFA.WebAuthn.VerifyEnabled = true
 	return cfg

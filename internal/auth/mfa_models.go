@@ -299,15 +299,41 @@ func computeAAL(claims []amrClaim) (string, []any) {
 // consent), managing passkeys and deleting the account all ask this: an MFA
 // user's second factor would mean little if a password alone could do them.
 func (a *api) stepUpRequired(ctx context.Context, q querier, u *User) (bool, error) {
+	return a.stepUpRequiredFor(ctx, q, u, sessionIDFrom(claimsFrom(ctx)))
+}
+
+// stepUpRequiredFor is stepUpRequired for an explicit session.
+func (a *api) stepUpRequiredFor(ctx context.Context, q querier, u *User, sessionID string) (bool, error) {
 	mfa, err := hasVerifiedFactor(ctx, q, u.ID)
 	if err != nil || !mfa {
 		return false, err
 	}
-	aal, err := a.sessionAAL(ctx, q, sessionIDFrom(claimsFrom(ctx)))
+	aal, err := a.sessionAAL(ctx, q, sessionID)
 	if err != nil {
 		return false, err
 	}
 	return aal != AAL2, nil
+}
+
+// requireSignInMethodStepUp guards adding or removing a way to sign in (an
+// identity) for an MFA user: 401 insufficient_aal below aal2, as PUT /user
+// answers for an email or password change. Linking an identity adds a
+// credential, and unlinking one can move the account's email — the same
+// takeover PUT /user already guards.
+func (a *api) requireSignInMethodStepUp(ctx context.Context, u *User, sessionID string) error {
+	pool, err := a.db(ctx)
+	if err != nil {
+		return err
+	}
+	needed, err := a.stepUpRequiredFor(ctx, pool, u, sessionID)
+	if err != nil {
+		return err
+	}
+	if needed {
+		return httpError(http.StatusUnauthorized, ErrorCodeInsufficientAAL,
+			"AAL2 session is required to link or unlink an identity when MFA is enabled.")
+	}
+	return nil
 }
 
 func hasVerifiedFactor(ctx context.Context, q querier, userID string) (bool, error) {

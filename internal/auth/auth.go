@@ -969,6 +969,9 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 	if u.DeletedAt != nil {
 		return nil, notFoundError(ErrorCodeUserNotFound, "User not found")
 	}
+	if u.IsBanned(a.now()) {
+		return nil, forbiddenError(ErrorCodeUserBanned, "User is banned")
+	}
 	now := a.now()
 	sessionID := uuid.NewString()
 

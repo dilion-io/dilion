@@ -52,11 +52,23 @@ func newTestEnv(t *testing.T) *testEnv {
 	return newTestEnvWithConfig(t, nil)
 }
 
+// testConfig is DefaultConfig with sign-ups confirmed at once, which is what
+// most tests want: a session straight from /signup. Tests of confirmation
+// mail turn it back off.
+func testConfig() *Config {
+	cfg := DefaultConfig()
+	cfg.Mailer.Autoconfirm = true
+	return cfg
+}
+
 // newTestEnvWithConfig is newTestEnv with an explicit /auth/v1 configuration.
-// nil means DefaultConfig().
+// nil means testConfig().
 func newTestEnvWithConfig(t *testing.T, cfg *Config) *testEnv {
 	t.Helper()
 
+	if cfg == nil {
+		cfg = testConfig()
+	}
 	dsn := os.Getenv("DILION_TEST_DB")
 	if dsn == "" {
 		t.Skip("DILION_TEST_DB not set; skipping database-backed tests")
@@ -543,7 +555,7 @@ func TestPasswordGrant(t *testing.T) {
 // existing user out of their own account — the client is told to prompt for a
 // change instead of being handed a 4xx.
 func TestPasswordGrantReturnsWeakPasswordAdvisory(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Password.MinLength = 12
 	env := newTestEnvWithConfig(t, cfg)
 
@@ -599,7 +611,7 @@ func TestPasswordGrantReturnsWeakPasswordAdvisory(t *testing.T) {
 // Security.RefreshTokenReuseInterval, which is 10s by default) is covered by
 // TestRefreshReuseWithinIntervalReturnsActiveToken in conf_db_test.go.
 func TestRefreshRotationAndReuseDetection(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.RefreshTokenReuseInterval = 0
 	env := newTestEnvWithConfig(t, cfg)
 	first := env.signup(t, "rotate@example.com", "hunter22")

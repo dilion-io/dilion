@@ -35,6 +35,9 @@ type mfaEnv struct {
 // the challenge expiry without sleeping.
 func newMFAEnv(t *testing.T, cfg *Config) *mfaEnv {
 	t.Helper()
+	if cfg == nil {
+		cfg = testConfig()
+	}
 
 	dsn := os.Getenv("DILION_TEST_DB")
 	if dsn == "" {
@@ -358,7 +361,7 @@ func TestMFAFactorIsolatedPerUser(t *testing.T) {
 // TestMFAEnrollLimitsAndGates covers MaxEnrolledFactors, the friendly-name
 // conflict and the enroll/verify feature switches.
 func TestMFAEnrollLimitsAndGates(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.MFA.MaxEnrolledFactors = 1
 	env := newMFAEnv(t, cfg)
 
@@ -391,7 +394,7 @@ func TestMFAEnrollLimitsAndGates(t *testing.T) {
 }
 
 func TestMFAEnrollDisabled(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.MFA.TOTP.EnrollEnabled = false
 	env := newMFAEnv(t, cfg)
 

@@ -18,7 +18,7 @@ import (
 func newSecurityTestAPI(t *testing.T, cfg *Config) *api {
 	t.Helper()
 	if cfg == nil {
-		cfg = DefaultConfig()
+		cfg = testConfig()
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config: %v", err)
@@ -33,7 +33,7 @@ func newSecurityTestAPI(t *testing.T, cfg *Config) *api {
 // captchaTestConfig enables captcha for a provider and points verification at
 // a fake siteverify endpoint.
 func captchaTestConfig(provider, verifyURL string) *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Security.Captcha.Enabled = true
 	cfg.Security.Captcha.Provider = provider
 	cfg.Security.Captcha.Secret = "0xsecret"
@@ -152,7 +152,7 @@ func TestCaptchaRejectsMissingToken(t *testing.T) {
 
 // With captcha off the token is never looked at — and no HTTP call is made.
 func TestCaptchaDisabledIsNoOp(t *testing.T) {
-	a := newSecurityTestAPI(t, DefaultConfig())
+	a := newSecurityTestAPI(t, testConfig())
 	if err := a.verifyCaptcha(captchaRequestFor(`{"email":"a@b.test"}`)); err != nil {
 		t.Fatalf("verifyCaptcha with captcha disabled: %v", err)
 	}

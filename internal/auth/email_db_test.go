@@ -113,7 +113,7 @@ func (e *emailEnv) maxMailFrequency() time.Duration {
 // confirmation required (the upstream default, and the only setting where the
 // flows are observable) and an allow-list that admits exactly one app origin.
 func emailTestConfig() *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.test"
 	cfg.URIAllowList = []string{"https://app.test/**"}
 	cfg.Mailer.Autoconfirm = false

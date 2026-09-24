@@ -87,8 +87,11 @@ func (a *api) idTokenGrant(w http.ResponseWriter, r *http.Request) error {
 			return sendOAuthError(w, "invalid request",
 				"Linking requires a valid user access token in Authorization")
 		}
-		u, err := a.userFromBearer(r)
+		u, sessionID, err := a.userFromBearer(r)
 		if err != nil {
+			return err
+		}
+		if err := a.requireSignInMethodStepUp(ctx, u, sessionID); err != nil {
 			return err
 		}
 		linkTarget = u
@@ -179,27 +182,27 @@ func (a *api) idTokenGrant(w http.ResponseWriter, r *http.Request) error {
 // userFromBearer authenticates the Authorization header the way
 // requireAuthentication does, for the handlers that need it INSIDE the handler
 // rather than as middleware (upstream calls a.requireAuthentication here).
-func (a *api) userFromBearer(r *http.Request) (*User, error) {
+func (a *api) userFromBearer(r *http.Request) (*User, string, error) {
 	token, err := extractBearerToken(r)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	claims, verr := a.verifyToken(r.Context(), token)
 	if verr != nil {
-		return nil, verr
+		return nil, "", verr
 	}
 	pool, perr := a.db(r.Context())
 	if perr != nil {
-		return nil, perr
+		return nil, "", perr
 	}
 	u, s, lerr := a.loadTokenUser(r.Context(), pool, claims)
 	if lerr != nil {
-		return nil, lerr
+		return nil, "", lerr
 	}
 	if s != nil && s.OAuthClientID != nil {
-		return nil, forbiddenError(ErrorCodeOAuthClientToken, "An OAuth application's token cannot be used here")
+		return nil, "", forbiddenError(ErrorCodeOAuthClientToken, "An OAuth application's token cannot be used here")
 	}
-	return u, nil
+	return u, sessionIDFrom(claims), nil
 }
 
 // resolveIDTokenProvider is upstream's IdTokenGrantParams.getProvider, for the

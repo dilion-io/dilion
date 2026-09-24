@@ -224,6 +224,9 @@ func (a *api) linkIdentity(w http.ResponseWriter, r *http.Request) error {
 	if user == nil {
 		return internalServerError("Could not read user")
 	}
+	if err := a.requireSignInMethodStepUp(r.Context(), user, sessionIDFrom(claimsFrom(r.Context()))); err != nil {
+		return err
+	}
 	return a.startExternalProviderFlow(w, r, user)
 }
 
@@ -324,6 +327,11 @@ func (a *api) deleteIdentity(w http.ResponseWriter, r *http.Request) error {
 	}
 	if aud := requestAud(r); claims.Audience == "" || claims.Audience != aud {
 		return forbiddenError(ErrorCodeUnexpectedAudience, "Token audience doesn't match request audience")
+	}
+	if user := userFrom(ctx); user != nil {
+		if err := a.requireSignInMethodStepUp(ctx, user, sessionIDFrom(claims)); err != nil {
+			return err
+		}
 	}
 
 	identityID := chi.URLParam(r, "identity_id")

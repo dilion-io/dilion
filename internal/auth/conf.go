@@ -234,12 +234,8 @@ type EmailContentConfig struct {
 
 // MailerConfig mirrors upstream conf.MailerConfiguration.
 type MailerConfig struct {
-	// Autoconfirm mirrors GOTRUE_MAILER_AUTOCONFIRM.
-	//
-	// DILION DEFAULT: true (upstream defaults to false). Dilion has no email
-	// confirmation flow wired yet, so signups must remain immediately usable.
-	// The email-flows work flips this default to false once /verify, /recover
-	// and /resend are in place.
+	// Autoconfirm mirrors GOTRUE_MAILER_AUTOCONFIRM (default false, as
+	// upstream): a new address is confirmed by the link mailed to it.
 	Autoconfirm bool `json:"autoconfirm"`
 	// SecureEmailChangeEnabled mirrors
 	// GOTRUE_MAILER_SECURE_EMAIL_CHANGE_ENABLED (default true): an email change
@@ -688,7 +684,11 @@ func DefaultConfig() *Config {
 			AdminRoles: []string{RoleServiceRole, "supabase_admin"},
 		},
 		Mailer: MailerConfig{
-			Autoconfirm:              true,
+			// Upstream's default. An address is proven by clicking the
+			// link sent to it: with autoconfirm on, a sign-up claims any
+			// address, and PUT /user replaces the address a password reset
+			// goes to without the new address ever being checked.
+			Autoconfirm:              false,
 			SecureEmailChangeEnabled: true,
 			OTPExp:                   3600,
 			OTPLength:                DefaultOTPLength,

@@ -99,7 +99,7 @@ type phoneEnv struct {
 // the phone provider on, confirmation REQUIRED (the only setting where the OTP
 // flow is observable) and an allow-list that admits one app origin.
 func phoneTestConfig() *Config {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.SiteURL = "https://app.test"
 	cfg.URIAllowList = []string{"https://app.test/**"}
 	cfg.Mailer.Autoconfirm = false

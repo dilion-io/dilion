@@ -22,6 +22,9 @@ import (
 // through it.
 func newRouterEnv(t *testing.T, cfg *Config) chi.Router {
 	t.Helper()
+	if cfg == nil {
+		cfg = testConfig()
+	}
 	r := chi.NewRouter()
 	Register(r, Deps{
 		Tokens: NewTokenServiceHS(testSecret()),
@@ -32,7 +35,7 @@ func newRouterEnv(t *testing.T, cfg *Config) chi.Router {
 }
 
 func TestCORSPreflight(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.CORS.AllowedHeaders = []string{"X-Tenant-Id"}
 	r := newRouterEnv(t, cfg)
 
@@ -166,7 +169,7 @@ func TestRateLimiterBurstRefillAndIsolation(t *testing.T) {
 }
 
 func TestRateLimitedEndpointReturnsUpstreamShape(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.RateLimits.TokenRefresh = 0 // burst only, then 429
 	r := newRouterEnv(t, cfg)
 
@@ -305,7 +308,7 @@ func TestFeatureRegistryIsSorted(t *testing.T) {
 }
 
 func TestSettingsResponseShape(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.DisableSignup = true
 	cfg.AnonymousUsersEnabled = true
 	cfg.SMS.Provider = "twilio"
