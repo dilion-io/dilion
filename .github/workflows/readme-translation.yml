@@ -2,7 +2,7 @@ name: Translate README
 
 on:
   push:
-    paths: ['README.md', 'scripts/translate-readme.mjs', 'scripts/translate-readme.test.mjs', '.github/workflows/readme-translation.yml']
+    paths: ['README.md', 'scripts/translate-readme.mjs', 'scripts/translate-readme.test.mjs', '.github/workflows/readme-translation.yml', '.github/actions/anthropic-credentials/**']
   workflow_dispatch:
 
 permissions:
@@ -32,70 +32,10 @@ jobs:
           node-version: '22'
       - run: node --test scripts/translate-readme.test.mjs
       - name: Resolve translation credentials
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FEDERATION_JSON_TEMPLATE: ${{ secrets.ANTHROPIC_FEDERATION_JSON_TEMPLATE }}
-          FEDERATION_AUDIENCE: "https://api.anthropic.com"
-        run: |
-          set -euo pipefail
-
-          put_env() {
-            # Heredoc form so a value can never be mistaken for another variable.
-            { printf '%s<<__CREDENTIAL_EOF__\n%s\n__CREDENTIAL_EOF__\n' "$1" "$2"; } >> "$GITHUB_ENV"
-          }
-
-          # An explicit API key always wins; it also outranks federation inside the SDKs.
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            put_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
-            echo 'Authenticating with the ANTHROPIC_API_KEY secret.'
-            exit 0
-          fi
-
-          if [ -z "$FEDERATION_JSON_TEMPLATE" ]; then
-            echo '::error::Set the ANTHROPIC_API_KEY or ANTHROPIC_FEDERATION_JSON_TEMPLATE secret to enable README translation.'
-            exit 1
-          fi
-          if ! printf '%s' "$FEDERATION_JSON_TEMPLATE" | jq -e 'type == "object"' > /dev/null; then
-            echo '::error::ANTHROPIC_FEDERATION_JSON_TEMPLATE must be a JSON object holding the token-exchange request without "assertion".'
-            exit 1
-          fi
-          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-            echo '::error::GitHub OIDC is unavailable; the job needs id-token: write.'
-            exit 1
-          fi
-
-          # Mint the GitHub OIDC assertion the federation rule trusts.
-          id_token_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
-          if [ -n "$FEDERATION_AUDIENCE" ]; then
-            id_token_url="${id_token_url}&audience=$(jq -rn --arg a "$FEDERATION_AUDIENCE" '$a|@uri')"
-          fi
-          assertion="$(curl -sS --fail-with-body \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            -H 'Accept: application/json' \
-            "$id_token_url" | jq -r '.value // empty')"
-          if [ -z "$assertion" ]; then
-            echo '::error::Could not mint a GitHub OIDC token for the federation exchange.'
-            exit 1
-          fi
-          echo "::add-mask::$assertion"
-
-          request="$(jq -nc \
-            --argjson template "$FEDERATION_JSON_TEMPLATE" \
-            --arg assertion "$assertion" \
-            '$template + {assertion: $assertion}')"
-          response="$(printf '%s' "$request" | curl -sS -X POST "https://api.anthropic.com/v1/oauth/token" \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json' \
-            --data-binary @-)"
-          access_token="$(printf '%s' "$response" | jq -r '.access_token // empty')"
-          if [ -z "$access_token" ]; then
-            # Only the error fields are echoed; the raw body may carry credentials.
-            echo "::error::Workload identity federation exchange failed: $(printf '%s' "$response" | jq -r '.error_description // .error.message? // .error // "unknown error"')"
-            exit 1
-          fi
-          echo "::add-mask::$access_token"
-          put_env ANTHROPIC_AUTH_TOKEN "$access_token"
-          echo 'Authenticating with a federated access token.'
+        uses: ./.github/actions/anthropic-credentials
+        with:
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          federation-json-template: ${{ secrets.ANTHROPIC_FEDERATION_JSON_TEMPLATE }}
       - run: npm install --global @anthropic-ai/claude-code@2.1.263
       - name: Translate with claude -p
         env:

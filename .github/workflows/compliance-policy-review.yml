@@ -1,0 +1,160 @@
+name: Review compliance policies
+
+on:
+  schedule:
+    - cron: '23 3 1 * *' # monthly, 1st day 03:23 UTC
+  push:
+    paths: ['internal/privacy/builtin_policies.yaml', 'scripts/review-compliance-policies.mjs', '.github/workflows/compliance-policy-review.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compliance-policy-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    # Never expose Claude credentials to fork PRs or feature branches.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # workload identity federation fallback
+    outputs:
+      changed: ${{ steps.meta.outputs.changed }}
+      attention: ${{ steps.meta.outputs.attention }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: node --test scripts/review-compliance-policies.test.mjs
+      - name: Current policies must load before Claude reviews them
+        run: go run ./scripts/check-compliance-policies
+      - name: Resolve Claude credentials
+        uses: ./.github/actions/anthropic-credentials
+        with:
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          federation-json-template: ${{ secrets.ANTHROPIC_FEDERATION_JSON_TEMPLATE }}
+      - run: npm install --global @anthropic-ai/claude-code@2.1.263
+      - name: Review with claude -p
+        env:
+          # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN come from the resolve step via GITHUB_ENV.
+          COMPLIANCE_REVIEW_MODEL: ${{ vars.COMPLIANCE_REVIEW_MODEL || 'opus' }}
+          COMPLIANCE_REVIEW_MAX_BUDGET_USD: ${{ vars.COMPLIANCE_REVIEW_MAX_BUDGET_USD || '10' }}
+        run: node scripts/review-compliance-policies.mjs --out "$RUNNER_TEMP/compliance-review"
+      - name: Record review outcome
+        id: meta
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/compliance-review"
+          cp internal/privacy/builtin_policies.yaml "$out/builtin_policies.yaml"
+          echo "changed=$(jq -r .changed "$out/review.json")" >> "$GITHUB_OUTPUT"
+          echo "attention=$(jq -r .attention "$out/review.json")" >> "$GITHUB_OUTPUT"
+          cat "$out/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compliance-review
+          path: ${{ runner.temp }}/compliance-review
+          if-no-files-found: error
+
+  # Publishing runs in a separate job so the token that can push branches and
+  # open PRs never shares a runner with Claude or the web content it read.
+  propose:
+    needs: review
+    if: needs.review.outputs.changed == 'true' || needs.review.outputs.attention == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: compliance-review
+          path: ${{ runner.temp }}/compliance-review
+      - name: Open or update the proposal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          review="$RUNNER_TEMP/compliance-review"
+          policy=internal/privacy/builtin_policies.yaml
+          branch=automation/compliance-policy-review
+          bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+          date="$(jq -r .date "$review/review.json")"
+          body="$review/body.md"
+          { cat "$review/report.md"; printf '\n---\n[Workflow run](%s) · 전체 결과는 `compliance-review` artifact에 있습니다.\n' "$RUN_URL"; } > "$body"
+
+          # Refuse to publish a review of a file that has changed since.
+          if [ "$(sha256sum "$policy" | cut -d' ' -f1)" != "$(jq -r .base_sha256 "$review/review.json")" ]; then
+            echo "::error::$policy changed after the review started; rerun the workflow."
+            exit 1
+          fi
+
+          if [ "$(jq -r .changed "$review/review.json")" != 'true' ]; then
+            title='컴플라이언스 정책 검토: 확인이 필요한 항목'
+            issue="$(gh issue list --state open --author 'app/github-actions' --search "in:title \"$title\"" \
+              --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+            if [ -n "$issue" ]; then
+              gh issue edit "$issue" --body-file "$body"
+              gh issue comment "$issue" --body "$date 검토 결과로 본문을 갱신했습니다."
+            else
+              gh issue create --title "$title" --body-file "$body"
+            fi
+            exit 0
+          fi
+
+          cp "$review/builtin_policies.yaml" "$policy"
+          if [ "$(sha256sum "$policy" | cut -d' ' -f1)" != "$(jq -r .proposed_sha256 "$review/review.json")" ]; then
+            echo '::error::The proposed policy file does not match the reviewed proposal.'
+            exit 1
+          fi
+
+          gh auth setup-git
+          title="fix(privacy): 컴플라이언스 정책 검토 제안 ($date)"
+          pr="$(gh pr list --head "$branch" --base "$DEFAULT_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          authors=''
+          if git fetch --quiet origin "refs/heads/$branch"; then
+            authors="$(git log --format=%ae "origin/$DEFAULT_BRANCH..FETCH_HEAD")"
+          fi
+          if [ -n "$authors" ] && grep -qvxF "$bot_email" <<< "$authors"; then
+            # A person has pushed to the proposal branch; never overwrite their work.
+            if [ -n "$pr" ]; then
+              gh pr comment "$pr" --body-file "$body"
+              echo "Posted the $date review to PR #$pr without touching its branch."
+              exit 0
+            fi
+            echo "::error::$branch holds commits from someone else and has no open PR; delete or merge it first."
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email "$bot_email"
+          git switch --create "$branch"
+          git add -- "$policy"
+          git commit --message "fix(privacy): update built-in compliance policies from the $date legal review"
+          git push --force origin "HEAD:refs/heads/$branch"
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$body"
+          else
+            gh pr create --base "$DEFAULT_BRANCH" --head "$branch" --title "$title" --body-file "$body"
+          fi
