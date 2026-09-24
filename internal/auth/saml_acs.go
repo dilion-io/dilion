@@ -734,15 +734,11 @@ func (a *api) determineSSOAccountLinking(ctx context.Context, tx querier, emails
 		}
 	}
 
-	identity, err := findIdentityByProviderID(ctx, tx, sub, providerName)
-	if err != nil && !isNoRows(err) {
-		return accountLinkingResult{}, internalServerError("Database error finding identity").withInternal(err)
+	identity, user, err := a.findLiveIdentity(ctx, tx, sub, providerName)
+	if err != nil {
+		return accountLinkingResult{}, err
 	}
 	if identity != nil {
-		user, uerr := findUserByID(ctx, tx, identity.UserID)
-		if uerr != nil {
-			return accountLinkingResult{}, internalServerError("Database error finding user").withInternal(uerr)
-		}
 		candidate.Email = user.Email
 		return accountLinkingResult{
 			Decision:       decisionAccountExists,
@@ -770,7 +766,7 @@ func (a *api) determineSSOAccountLinking(ctx context.Context, tx querier, emails
 			return accountLinkingResult{Decision: decisionMultipleAccounts, CandidateEmail: candidate}, nil
 		}
 	}
-	user, err := findUserByID(ctx, tx, linkingUserID)
+	user, err = findUserByID(ctx, tx, linkingUserID)
 	if err != nil {
 		return accountLinkingResult{}, internalServerError("Database error finding user").withInternal(err)
 	}

@@ -144,7 +144,7 @@ func TestOpaqueDatabaseLifecycle(t *testing.T) {
 	e := newTestEnvWithConfig(t, opaqueTestConfig())
 	ctx := context.Background()
 	// State and rate budgets deliberately outlive users; reset synthetic test state.
-	if _, err := e.pool.Exec(ctx, `truncate auth.opaque_handshakes,auth.opaque_attempts`); err != nil {
+	if _, err := e.pool.Exec(ctx, `truncate dilion_auth.opaque_handshakes,dilion_auth.opaque_attempts`); err != nil {
 		t.Fatal(err)
 	}
 	first := e.signup(t, "opaque@example.com", "initial-password")
@@ -243,7 +243,7 @@ func TestOpaqueDatabaseLifecycle(t *testing.T) {
 		}
 		state.Expires = time.Now().Add(-time.Hour)
 		plain, _ := json.Marshal(state)
-		_, err = e.pool.Exec(ctx, `insert into auth.opaque_handshakes(id,scope,kind,state,expires_at) values($1,'default','login',$2,$3)`, p["handshake_id"], a.sealOpaque(ctx, "login:"+p["handshake_id"], plain), state.Expires)
+		_, err = e.pool.Exec(ctx, `insert into dilion_auth.opaque_handshakes(id,scope,kind,state,expires_at) values($1,'default','login',$2,$3)`, p["handshake_id"], a.sealOpaque(ctx, "login:"+p["handshake_id"], plain), state.Expires)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -290,7 +290,7 @@ func TestOpaqueDatabaseLifecycle(t *testing.T) {
 func TestOpaqueEnrollmentAndUnknownAccounts(t *testing.T) {
 	e := newTestEnvWithConfig(t, opaqueTestConfig())
 	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `truncate auth.opaque_handshakes,auth.opaque_attempts`); err != nil {
+	if _, err := e.pool.Exec(ctx, `truncate dilion_auth.opaque_handshakes,dilion_auth.opaque_attempts`); err != nil {
 		t.Fatal(err)
 	}
 	first := e.signup(t, "gates@example.com", "initial-password")

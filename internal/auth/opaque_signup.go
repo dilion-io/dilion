@@ -86,9 +86,9 @@ func (a *api) opaqueSignupStart(w http.ResponseWriter, r *http.Request) error {
 	// Separate shared signup budget; do not consume the account's login budget.
 	account := opaqueEncode(a.opaqueMAC(ctx, "signup-rate", []byte(requestAud(r)+":"+p.Email)))
 	var attempts int
-	err = pool.QueryRow(ctx, `insert into auth.opaque_attempts(scope,account,window_start,attempts) values($1,$2,$3,1)
- on conflict(scope,account) do update set attempts=case when auth.opaque_attempts.window_start<=$3-interval '1 minute' then 1 else least(auth.opaque_attempts.attempts+1,11) end,
- window_start=case when auth.opaque_attempts.window_start<=$3-interval '1 minute' then $3 else auth.opaque_attempts.window_start end returning attempts`, opaqueScope(ctx), account, a.now()).Scan(&attempts)
+	err = pool.QueryRow(ctx, `insert into dilion_auth.opaque_attempts(scope,account,window_start,attempts) values($1,$2,$3,1)
+ on conflict(scope,account) do update set attempts=case when dilion_auth.opaque_attempts.window_start<=$3-interval '1 minute' then 1 else least(dilion_auth.opaque_attempts.attempts+1,11) end,
+ window_start=case when dilion_auth.opaque_attempts.window_start<=$3-interval '1 minute' then $3 else dilion_auth.opaque_attempts.window_start end returning attempts`, opaqueScope(ctx), account, a.now()).Scan(&attempts)
 	if err != nil {
 		return opaqueDB(err)
 	}
@@ -203,7 +203,7 @@ func (a *api) opaqueSignupFinish(w http.ResponseWriter, r *http.Request) error {
 			return opaqueDB(err)
 		}
 		version := uuid.NewString()
-		if _, err := tx.Exec(ctx, `insert into auth.opaque_credentials(user_id,scope,version,identity,record) values($1,$2,$3,$4,$5)`, user.ID, opaqueScope(ctx), version, state.Identity, a.sealOpaque(ctx, "record:"+version, data)); err != nil {
+		if _, err := tx.Exec(ctx, `insert into dilion_auth.opaque_credentials(user_id,scope,version,identity,record) values($1,$2,$3,$4,$5)`, user.ID, opaqueScope(ctx), version, state.Identity, a.sealOpaque(ctx, "record:"+version, data)); err != nil {
 			return opaqueDB(err)
 		}
 		if !signup.Autoconfirm {

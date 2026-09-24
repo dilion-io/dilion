@@ -81,7 +81,7 @@ func (a *api) opaqueServer(ctx context.Context, q querier) (*opaque.Server, stri
 	scope := opaqueScope(ctx)
 	conf := opaque.DefaultConfiguration()
 	var sealed []byte
-	err := q.QueryRow(ctx, `select material from auth.opaque_setup where scope=$1`, scope).Scan(&sealed)
+	err := q.QueryRow(ctx, `select material from dilion_auth.opaque_setup where scope=$1`, scope).Scan(&sealed)
 	if isNoRows(err) {
 		sk, pk := conf.KeyGen()
 		material := &opaque.ServerKeyMaterial{PrivateKey: sk, PublicKeyBytes: pk.Encode(), OPRFGlobalSeed: conf.GenerateOPRFSeed(), Identity: []byte("dilion:" + scope)}
@@ -89,10 +89,10 @@ func (a *api) opaqueServer(ctx context.Context, q querier) (*opaque.Server, stri
 		encrypted := a.sealOpaque(ctx, "setup", plain)
 		clear(plain)
 		material.Flush()
-		if _, err = q.Exec(ctx, `insert into auth.opaque_setup(scope,material) values($1,$2) on conflict do nothing`, scope, encrypted); err != nil {
+		if _, err = q.Exec(ctx, `insert into dilion_auth.opaque_setup(scope,material) values($1,$2) on conflict do nothing`, scope, encrypted); err != nil {
 			return nil, "", err
 		}
-		err = q.QueryRow(ctx, `select material from auth.opaque_setup where scope=$1`, scope).Scan(&sealed)
+		err = q.QueryRow(ctx, `select material from dilion_auth.opaque_setup where scope=$1`, scope).Scan(&sealed)
 	}
 	if err != nil {
 		return nil, "", err

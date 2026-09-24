@@ -231,7 +231,7 @@ personal_data_requests(type=DELETION, status∈{REQUESTED,PROCESSING},
   → Legal hold 게이트 (hold가 걸린 subject는 실행 보류 → MANUAL_REVIEW)
   → Before hooks → status=PROCESSING
   → ErasureStep 순서 실행 (정책 domains로 defaultAction 오버라이드, KEEP은 스킵)
-      100 credential          DELETE       (password, OPAQUE record)
+      100 credential          DELETE       (password, dilion_auth.opaque_credentials)
       200 refresh-token       DELETE
       300 session             DELETE
       400 mfa-factor          DELETE       (TOTP, WebAuthn factor)
@@ -455,7 +455,7 @@ auth.webauthn_credentials / auth.webauthn_challenges   -- Passkey (upstream 스�
 ...
 
 -- 확장 인증 (dilion prefix)
-dilion_auth.opaque_records (user_id, registration_record, ...)   -- OPAQUE (RFC 9807)
+dilion_auth.opaque_credentials (user_id, scope, version, record)  -- OPAQUE (RFC 9807)
 dilion_auth.hooks (name, enabled, uri, secrets[])                -- 인스턴스별 인증 훅 설정 (§2.4)
 
 -- PII Vault

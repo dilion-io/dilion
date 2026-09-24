@@ -3,6 +3,8 @@ package privacy
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +59,12 @@ create table if not exists auth.identities (
 	user_id uuid not null,
 	provider text not null default 'google',
 	identity_data jsonb not null);
+alter table auth.identities add column if not exists provider_id text not null default '123';
+alter table auth.identities add column if not exists updated_at timestamptz;
+create schema if not exists dilion_auth;
+create table if not exists dilion_auth.opaque_credentials (
+	user_id uuid primary key,
+	record bytea not null);
 `
 
 func testPool(t *testing.T) *pgxpool.Pool {
@@ -113,6 +121,7 @@ func resetDB(t *testing.T, pool *pgxpool.Pool) {
 		`delete from dilion_pii.user_profiles`,
 		`delete from dilion_pii.profile_search_index`,
 		`delete from auth.identities`,
+		`delete from dilion_auth.opaque_credentials`,
 		`delete from auth.sessions`,
 		`delete from auth.refresh_tokens`,
 		`delete from auth.users`,
@@ -267,6 +276,8 @@ func (env *testEnv) newUser(t *testing.T) string {
 	exec(`insert into auth.identities (id, user_id, provider, identity_data)
 		values ($1::uuid, $2::uuid, 'google', '{"email":"x@example.test","sub":"123"}'::jsonb)`,
 		uuid.NewString(), id)
+	exec(`insert into dilion_auth.opaque_credentials (user_id, record) values ($1::uuid, $2)`,
+		id, []byte("opaque-record"))
 	exec(`insert into dilion_pii.user_profiles (user_id, enc_profile) values ($1::uuid, $2)`,
 		id, []byte("enc:profile"))
 	if _, err := env.kms.Encrypt(env.ctx, id, ports.KeyScopeDefault, []byte("pii")); err != nil {
@@ -542,6 +553,10 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 		{"sessions", `select count(*) from auth.sessions where user_id = $1::uuid`},
 		{"profiles", `select count(*) from dilion_pii.user_profiles where user_id = $1::uuid`},
 		{"identities_with_data", `select count(*) from auth.identities where user_id = $1::uuid and identity_data <> '{}'::jsonb`},
+		// Still naming the provider account, signing up with it again would
+		// land in this erased user.
+		{"identities_still_linked", `select count(*) from auth.identities where user_id = $1::uuid and provider_id = '123'`},
+		{"opaque_credentials", `select count(*) from dilion_auth.opaque_credentials where user_id = $1::uuid`},
 	} {
 		var n int
 		if err := env.pool.QueryRow(env.ctx, q.sql, user).Scan(&n); err != nil {
@@ -553,6 +568,17 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 		if n != 0 {
 			t.Errorf("%s: %d rows remain", name, n)
 		}
+	}
+	// The released provider_id is the one auth's soft delete writes
+	// (obfuscateIdentityProviderID), so both paths leave the same trace.
+	var released string
+	if err := env.pool.QueryRow(env.ctx, `select provider_id from auth.identities where user_id = $1::uuid`,
+		user).Scan(&released); err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	sum := sha256.Sum256([]byte(user + "google:123"))
+	if want := base64.RawURLEncoding.EncodeToString(sum[:]); released != want {
+		t.Errorf("released provider_id = %q, want auth's obfuscation %q", released, want)
 	}
 
 	// Keys: DEFAULT shredded now, CONSENT retained until shred_after (gdpr P3Y).

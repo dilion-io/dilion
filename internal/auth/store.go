@@ -251,17 +251,22 @@ func softDeleteUserIdentities(ctx context.Context, q querier, userID string, now
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		if _, err := q.Exec(ctx, `
-			update auth.identities
-			set identity_data = '{}'::jsonb, provider_id = $2, updated_at = $3
-			where id = $1::uuid`,
-			id.ID, obfuscateIdentityProviderID(userID, id.Provider, id.ProviderID), now,
-		); err != nil {
+	for i := range ids {
+		if err := releaseIdentity(ctx, q, &ids[i], now); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// releaseIdentity detaches one identity from the provider account it names.
+func releaseIdentity(ctx context.Context, q querier, id *Identity, now time.Time) error {
+	_, err := q.Exec(ctx, `
+		update auth.identities
+		set identity_data = '{}'::jsonb, provider_id = $2, updated_at = $3
+		where id = $1::uuid`,
+		id.ID, obfuscateIdentityProviderID(id.UserID, id.Provider, id.ProviderID), now)
+	return err
 }
 
 func hardDeleteUser(ctx context.Context, q querier, id string) error {

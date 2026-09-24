@@ -36,6 +36,32 @@ func init() {
 // ---- storage ---------------------------------------------------------------
 
 // findIdentityByProviderID is upstream's models.FindIdentityByIdAndProvider.
+// findLiveIdentity finds the identity for a provider account together with its
+// user. An identity still attached to a deleted user (one erased before
+// erasure released provider_id) is released on the way, the way a soft delete
+// does, and reported as absent: it must neither sign anyone in to the deleted
+// account nor carry the provider's profile back onto it.
+func (a *api) findLiveIdentity(ctx context.Context, tx querier, sub, provider string) (*Identity, *User, error) {
+	identity, err := findIdentityByProviderID(ctx, tx, sub, provider)
+	if isNoRows(err) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, internalServerError("Database error finding identity").withInternal(err)
+	}
+	user, err := findUserByID(ctx, tx, identity.UserID)
+	if err != nil {
+		return nil, nil, internalServerError("Database error finding user").withInternal(err)
+	}
+	if user.DeletedAt == nil {
+		return identity, user, nil
+	}
+	if err := releaseIdentity(ctx, tx, identity, a.now()); err != nil {
+		return nil, nil, internalServerError("Database error releasing identity").withInternal(err)
+	}
+	return nil, nil, nil
+}
+
 func findIdentityByProviderID(ctx context.Context, q querier, providerID, provider string) (*Identity, error) {
 	i, err := scanIdentity(q.QueryRow(ctx,
 		`select `+identityColumns+` from auth.identities
@@ -228,9 +254,9 @@ func (a *api) linkIdentityToUser(ctx context.Context, tx pgx.Tx, r *http.Request
 			"This provider's identity can only be linked to the user it names")
 	}
 
-	existing, err := findIdentityByProviderID(ctx, tx, sub, providerType)
-	if err != nil && !isNoRows(err) {
-		return nil, internalServerError("Database error finding identity for linking").withInternal(err)
+	existing, _, err := a.findLiveIdentity(ctx, tx, sub, providerType)
+	if err != nil {
+		return nil, err
 	}
 	if existing != nil {
 		if existing.UserID == target.ID {

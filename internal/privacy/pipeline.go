@@ -302,13 +302,17 @@ func (e *Engine) stepCredential(ctx context.Context, rc *runCtx, _ ErasureAction
 		`update auth.users set encrypted_password = '' where id = $1::uuid`, rc.UserID); err != nil {
 		return "", false, err
 	}
-	if e.tableExists(ctx, "dilion_auth.opaque_records") {
-		if _, err := e.pool.Exec(ctx,
-			`delete from dilion_auth.opaque_records where user_id::text = $1`, rc.UserID); err != nil {
-			return "", false, err
-		}
+	// The OPAQUE record is the password's other form. A missing table is
+	// evidence, not success: a wrong name here once left every record behind.
+	const opaque = "dilion_auth.opaque_credentials"
+	if !e.tableExists(ctx, opaque) {
+		return e.skipMissing(opaque)
 	}
-	return "", false, nil
+	tag, err := e.pool.Exec(ctx, `delete from `+opaque+` where user_id = $1::uuid`, rc.UserID)
+	if err != nil {
+		return "", false, err
+	}
+	return fmt.Sprintf("opaque_rows=%d", tag.RowsAffected()), false, nil
 }
 
 // 200 refresh-token.
@@ -360,7 +364,8 @@ func (e *Engine) stepPasskey(ctx context.Context, rc *runCtx, _ ErasureAction) (
 	return fmt.Sprintf("rows=%d", tag.RowsAffected()), false, nil
 }
 
-// 600 oauth-identity — provider profile removed, row kept for referential sanity.
+// 600 oauth-identity — provider profile removed and the provider's subject
+// released; the row is kept for referential sanity.
 func (e *Engine) stepOAuthIdentity(ctx context.Context, rc *runCtx, action ErasureAction) (string, bool, error) {
 	if !e.tableExists(ctx, "auth.identities") {
 		return e.skipMissing("auth.identities")
@@ -372,8 +377,17 @@ func (e *Engine) stepOAuthIdentity(ctx context.Context, rc *runCtx, action Erasu
 		}
 		return fmt.Sprintf("rows=%d", tag.RowsAffected()), false, nil
 	}
-	tag, err := e.pool.Exec(ctx,
-		`update auth.identities set identity_data = '{}'::jsonb where user_id::text = $1`, rc.UserID)
+	// provider_id is released too, as upstream's soft delete does
+	// (auth's obfuscateIdentityProviderID, reproduced in SQL). Left in place, the
+	// provider's subject would still point at this account, and signing up again
+	// with the same provider account would land in the erased one and write the
+	// provider's profile back onto it.
+	tag, err := e.pool.Exec(ctx, `update auth.identities
+		set identity_data = '{}'::jsonb,
+		    provider_id = translate(rtrim(encode(sha256(convert_to(
+		        user_id::text || provider || ':' || provider_id, 'UTF8')), 'base64'), '='), '+/', '-_'),
+		    updated_at = $2
+		where user_id::text = $1`, rc.UserID, e.now())
 	if err != nil {
 		return "", false, err
 	}

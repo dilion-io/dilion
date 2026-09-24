@@ -740,6 +740,12 @@ func (a *api) runTokenClaimsHook(ctx context.Context, userID string, claims map[
 // grantSession creates a session + first refresh token and returns the gotrue
 // session envelope. Must run inside the caller's transaction.
 func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Request, amrMethod string) (*AccessTokenResponse, error) {
+	// Every sign-in ends here, so a deleted account is refused here whichever
+	// credential it still has; the flows check first where they can answer
+	// better.
+	if u.DeletedAt != nil {
+		return nil, notFoundError(ErrorCodeUserNotFound, "User not found")
+	}
 	now := a.now()
 	sessionID := uuid.NewString()
 

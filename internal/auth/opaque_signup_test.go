@@ -225,7 +225,7 @@ func TestOpaqueSignupMailFailureRollback(t *testing.T) {
 	if err := e.pool.QueryRow(context.Background(), `select count(*) from auth.users`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("failed mail left account", err)
 	}
-	if err := e.pool.QueryRow(context.Background(), `select count(*) from auth.opaque_credentials`).Scan(&count); err != nil || count != 0 {
+	if err := e.pool.QueryRow(context.Background(), `select count(*) from dilion_auth.opaque_credentials`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("failed mail left credential", err)
 	}
 }

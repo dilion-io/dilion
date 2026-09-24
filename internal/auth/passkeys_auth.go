@@ -149,6 +149,10 @@ func (a *api) passkeyAuthenticationVerify(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return nil, err
 		}
+		if u.DeletedAt != nil {
+			// A soft-deleted account keeps its passkeys; it is still gone.
+			return nil, pgx.ErrNoRows
+		}
 		creds, err := findPasskeysByUserID(ctx, pool, u.ID)
 		if err != nil {
 			return nil, err

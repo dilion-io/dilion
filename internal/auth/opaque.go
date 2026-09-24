@@ -126,13 +126,13 @@ func (a *api) putOpaqueState(ctx context.Context, kind string, s *opaqueState) (
 			return opaqueDB(err)
 		}
 		var count int
-		if err := tx.QueryRow(ctx, `select count(*) from auth.opaque_handshakes where scope=$1 and expires_at>$2`, opaqueScope(ctx), a.now()).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, `select count(*) from dilion_auth.opaque_handshakes where scope=$1 and expires_at>$2`, opaqueScope(ctx), a.now()).Scan(&count); err != nil {
 			return opaqueDB(err)
 		}
 		if count >= 10000 {
 			return tooManyRequestsError("OPAQUE is busy; retry later")
 		}
-		_, err := tx.Exec(ctx, `insert into auth.opaque_handshakes(id,scope,kind,state,expires_at) values($1,$2,$3,$4,$5)`, id, opaqueScope(ctx), kind, sealed, s.Expires)
+		_, err := tx.Exec(ctx, `insert into dilion_auth.opaque_handshakes(id,scope,kind,state,expires_at) values($1,$2,$3,$4,$5)`, id, opaqueScope(ctx), kind, sealed, s.Expires)
 		if err != nil {
 			return opaqueDB(err)
 		}
@@ -152,7 +152,7 @@ func (a *api) takeOpaqueState(ctx context.Context, kind, id string) (*opaqueStat
 		return nil, err
 	}
 	var sealed []byte
-	err = pool.QueryRow(ctx, `delete from auth.opaque_handshakes where id=$1 and scope=$2 and kind=$3 returning state`, id, opaqueScope(ctx), kind).Scan(&sealed)
+	err = pool.QueryRow(ctx, `delete from dilion_auth.opaque_handshakes where id=$1 and scope=$2 and kind=$3 returning state`, id, opaqueScope(ctx), kind).Scan(&sealed)
 	if isNoRows(err) {
 		return nil, opaqueInvalid()
 	}
@@ -246,7 +246,7 @@ func (a *api) opaqueRegistrationStart(w http.ResponseWriter, r *http.Request) er
 		if err != nil {
 			return err
 		}
-		err = tx.QueryRow(ctx, `select version::text from auth.opaque_credentials where user_id=$1`, user.ID).Scan(&version)
+		err = tx.QueryRow(ctx, `select version::text from dilion_auth.opaque_credentials where user_id=$1`, user.ID).Scan(&version)
 		if isNoRows(err) {
 			return nil
 		}
@@ -299,7 +299,7 @@ func (a *api) opaqueRegistrationFinish(w http.ResponseWriter, r *http.Request) e
 			return opaqueInvalid()
 		}
 		var current string
-		err = tx.QueryRow(ctx, `select version::text from auth.opaque_credentials where user_id=$1`, user.ID).Scan(&current)
+		err = tx.QueryRow(ctx, `select version::text from dilion_auth.opaque_credentials where user_id=$1`, user.ID).Scan(&current)
 		if err != nil && !isNoRows(err) {
 			return opaqueDB(err)
 		}
@@ -307,12 +307,12 @@ func (a *api) opaqueRegistrationFinish(w http.ResponseWriter, r *http.Request) e
 			return opaqueInvalid()
 		}
 		// Delete+insert deliberately revokes keys tied to the previous version.
-		if _, err := tx.Exec(ctx, `delete from auth.opaque_credentials where user_id=$1`, user.ID); err != nil {
+		if _, err := tx.Exec(ctx, `delete from dilion_auth.opaque_credentials where user_id=$1`, user.ID); err != nil {
 			return opaqueDB(err)
 		}
 		version := uuid.NewString()
 		sealed := a.sealOpaque(ctx, "record:"+version, data)
-		_, err = tx.Exec(ctx, `insert into auth.opaque_credentials(user_id,scope,version,identity,record) values($1,$2,$3,$4,$5)`, user.ID, opaqueScope(ctx), version, state.Identity, sealed)
+		_, err = tx.Exec(ctx, `insert into dilion_auth.opaque_credentials(user_id,scope,version,identity,record) values($1,$2,$3,$4,$5)`, user.ID, opaqueScope(ctx), version, state.Identity, sealed)
 		if err != nil {
 			return opaqueDB(err)
 		}
@@ -348,9 +348,9 @@ func (a *api) opaqueLoginStart(w http.ResponseWriter, r *http.Request) error {
 	// A shared per-account limit supplements the existing per-process IP limit.
 	account := opaqueEncode(a.opaqueMAC(ctx, "rate", []byte(requestAud(r)+":"+p.Email)))
 	var attempts int
-	err = pool.QueryRow(ctx, `insert into auth.opaque_attempts(scope,account,window_start,attempts) values($1,$2,$3,1)
- on conflict(scope,account) do update set attempts=case when auth.opaque_attempts.window_start<=$3-interval '1 minute' then 1 else least(auth.opaque_attempts.attempts+1,11) end,
- window_start=case when auth.opaque_attempts.window_start<=$3-interval '1 minute' then $3 else auth.opaque_attempts.window_start end returning attempts`, opaqueScope(ctx), account, a.now()).Scan(&attempts)
+	err = pool.QueryRow(ctx, `insert into dilion_auth.opaque_attempts(scope,account,window_start,attempts) values($1,$2,$3,1)
+ on conflict(scope,account) do update set attempts=case when dilion_auth.opaque_attempts.window_start<=$3-interval '1 minute' then 1 else least(dilion_auth.opaque_attempts.attempts+1,11) end,
+ window_start=case when dilion_auth.opaque_attempts.window_start<=$3-interval '1 minute' then $3 else dilion_auth.opaque_attempts.window_start end returning attempts`, opaqueScope(ctx), account, a.now()).Scan(&attempts)
 	if err != nil {
 		return opaqueDB(err)
 	}
@@ -368,7 +368,7 @@ func (a *api) opaqueLoginStart(w http.ResponseWriter, r *http.Request) error {
 	}
 	var userID, version, identity string
 	var sealed []byte
-	err = pool.QueryRow(ctx, `select c.user_id::text,c.version::text,c.identity,c.record from auth.opaque_credentials c join auth.users u on u.id=c.user_id where c.scope=$1 and lower(u.email)=$2 and u.aud=$3 and u.instance_id=$4::uuid and u.deleted_at is null and u.is_sso_user=false`, opaqueScope(ctx), p.Email, requestAud(r), nilUUID).Scan(&userID, &version, &identity, &sealed)
+	err = pool.QueryRow(ctx, `select c.user_id::text,c.version::text,c.identity,c.record from dilion_auth.opaque_credentials c join auth.users u on u.id=c.user_id where c.scope=$1 and lower(u.email)=$2 and u.aud=$3 and u.instance_id=$4::uuid and u.deleted_at is null and u.is_sso_user=false`, opaqueScope(ctx), p.Email, requestAud(r), nilUUID).Scan(&userID, &version, &identity, &sealed)
 	var record *opaque.ClientRecord
 	if isNoRows(err) {
 		identity = opaqueEncode(a.opaqueMAC(ctx, "fake-identity", []byte(account)))
@@ -441,7 +441,7 @@ func (a *api) opaqueLoginFinish(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		var version string
-		if err := tx.QueryRow(ctx, `select version::text from auth.opaque_credentials where user_id=$1 and scope=$2`, user.ID, opaqueScope(ctx)).Scan(&version); err != nil {
+		if err := tx.QueryRow(ctx, `select version::text from dilion_auth.opaque_credentials where user_id=$1 and scope=$2`, user.ID, opaqueScope(ctx)).Scan(&version); err != nil {
 			if isNoRows(err) {
 				return opaqueInvalid()
 			}
@@ -467,7 +467,7 @@ func (a *api) opaqueLoginFinish(w http.ResponseWriter, r *http.Request) error {
 		plain, _ := json.Marshal(opaqueStoredKey{Secret: state.SessionKey, Version: state.Version, Expires: expires})
 		defer clear(plain)
 		sealed := a.sealOpaque(ctx, "key:"+keyID+":"+sessionID, plain)
-		_, err = tx.Exec(ctx, `insert into auth.opaque_session_keys(id,scope,session_id,credential_version,secret,expires_at) values($1,$2,$3,$4,$5,$6)`, keyID, opaqueScope(ctx), sessionID, state.Version, sealed, expires)
+		_, err = tx.Exec(ctx, `insert into dilion_auth.opaque_session_keys(id,scope,session_id,credential_version,secret,expires_at) values($1,$2,$3,$4,$5,$6)`, keyID, opaqueScope(ctx), sessionID, state.Version, sealed, expires)
 		if err != nil {
 			return opaqueDB(err)
 		}
@@ -520,7 +520,7 @@ func (m *Mount) WithOpaqueSessionKey(ctx context.Context, bearer, keyID string, 
 		}
 		var sealed []byte
 		var version string
-		err = tx.QueryRow(ctx, `select secret,credential_version::text from auth.opaque_session_keys where id=$1 and scope=$2 and session_id=$3 and expires_at>$4`, keyID, opaqueScope(ctx), sess.ID, a.now()).Scan(&sealed, &version)
+		err = tx.QueryRow(ctx, `select secret,credential_version::text from dilion_auth.opaque_session_keys where id=$1 and scope=$2 and session_id=$3 and expires_at>$4`, keyID, opaqueScope(ctx), sess.ID, a.now()).Scan(&sealed, &version)
 		if isNoRows(err) {
 			return opaqueInvalid()
 		}
