@@ -9,23 +9,23 @@ compliance:
   policies:
     kr:
       erasure:
-        grace-period-days: 30
+        grace-period-days: 5
         manual-review: false
         domains:
           # 접속기록은 안전성 확보조치 기준 §8의 보존 의무 대상 — 탈퇴 시 절단 금지,
-          # retention(P3Y) 경과 후 DELETE.
+          # retention(P2Y) 경과 후 DELETE.
           audit-log: KEEP
       retention:
         - domain: consent-evidence
           period: P3Y
-          from: erasure
+          from: created
           action: CRYPTO_SHRED
-          basis: "신용정보법 §20②"
+          basis: "신용정보법 §20② (업무처리기록의 보존 3년, 신용정보회사등에 한정)"
         - domain: audit-log
-          period: P3Y
+          period: P2Y
           from: created
           action: DELETE
-          basis: "개인정보의 안전성 확보조치 기준 §8"
+          basis: "개인정보의 안전성 확보조치 기준 §8① (5만명 이상 또는 고유식별정보·민감정보 처리 시 2년 이상)"
       consent:
         required-keys: [terms, privacy]
         reconfirm:
@@ -66,7 +66,7 @@ compliance:
           period: P6Y
           from: created
           action: CRYPTO_SHRED
-          basis: "45 CFR §164.316(b)(2)(i)"
+          basis: "45 CFR §164.530(j)(2)"
       consent:
         required-keys: [terms, privacy]
         reconfirm: {}

@@ -179,7 +179,7 @@ export function renderReport({ date, model, source, proposed, summary, findings,
   if (proposed !== source) {
     lines.push(tests.ok
       ? '- `go test ./internal/privacy`: 통과'
-      : '- `go test ./internal/privacy`: **실패** — 기존 값을 고정한 테스트를 이 제안과 함께 갱신해야 합니다.')
+      : '- `go test ./internal/privacy`: **실패** — 병합 전에 아래 실패를 확인하세요.')
     if (!tests.ok && tests.failures.length) {
       lines.push('', '```text', ...tests.failures, '```')
     }
@@ -265,8 +265,9 @@ export async function review({ directory = root, out, date = new Date().toISOStr
       writeAtomic(input, source)
       throw new Error(`Proposed policies were rejected by the policy loader; ${policyFile} was restored:\n${check.output.trim()}`)
     }
-    // Existing tests pin today's values, so a failure here is reported for the
-    // reviewer instead of rejecting the proposal.
+    // Tests use their own fixture, so only structural checks such as
+    // TestBuiltinPoliciesAreValid see the proposal; a failure is reported for
+    // the reviewer instead of rejecting it.
     const result = go(['test', './internal/privacy'], directory)
     tests = { ok: result.ok, failures: result.output.split('\n').filter(l => /^\s*(--- FAIL|\S+_test\.go:\d+)/.test(l)).slice(0, 40) }
   }

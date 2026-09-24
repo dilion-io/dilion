@@ -287,7 +287,7 @@ func newTestEngineWith(t *testing.T, policyYAML, instanceID string, connectors m
 		KMS:              kms,
 		Hooks:            reg,
 		Clock:            clock,
-		PolicyYAML:       []byte(policyYAML),
+		PolicyYAML:       testPolicies(t, policyYAML),
 		TombstoneKey:     []byte("test-tombstone-key"),
 		OutboundNetworks: testOutbound,
 		InstanceID:       instanceID,
@@ -700,8 +700,9 @@ func TestPolicyKeepDomainStillLogged(t *testing.T) {
 		where request_id = $1 and domain = $2`, req.ID, DomainAuditLog).Scan(&basis); err != nil {
 		t.Fatalf("basis: %v", err)
 	}
-	if basis == nil || !strings.Contains(*basis, "안전성 확보조치") {
-		t.Errorf("KEEP row must copy the policy basis, got %v", basis)
+	want := mustLoad(t, "").Policies["kr"].BasisFor(DomainAuditLog)
+	if basis == nil || want == "" || *basis != want {
+		t.Errorf("KEEP row must copy the policy basis %q, got %v", want, basis)
 	}
 	if s, _ := env.status(t, req.ID); s != StatusDone {
 		t.Errorf("status = %s, want DONE", s)
