@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
@@ -79,6 +80,10 @@ func newExpandEnv(t *testing.T, perms ...string) *expandEnv {
 		}
 		d.Verifier = fakeVerifier{claims: &ports.Claims{Subject: testUserID, Role: "authenticated"}}
 		d.Authz = fakeAuthorizer{allow: allow}
+		// These tests are about the reports, not sign-in sessions.
+		d.SessionLookup = func(context.Context, string, string) (auth.SessionAssurance, error) {
+			return auth.SessionAssurance{AAL: auth.AAL2, Active: true}, nil
+		}
 	}
 	_, tapi := humatest.New(t, NewConfig())
 	RegisterIAMAPI(tapi, d)

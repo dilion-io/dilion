@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/ports"
 )
@@ -77,8 +81,14 @@ func (g guard) handle(ctx huma.Context, next func(huma.Context)) {
 		case iam.RoleAuthenticated:
 			// A regular end-user token may act on the management plane, but only
 			// through RBAC: deny-by-default, decided from role_assignments keyed
-			// by the user's UUID (§2.11).
+			// by the user's UUID (§2.11) — and only from the user's own, still
+			// open, second-factor-verified sign-in.
 			ri.Actor = ports.Actor{ID: claims.Subject, Type: iam.ActorTypeUser}
+			sid, _ := claims.Extra["session_id"].(string)
+			if p := g.d.userSessionProblem(ctx.Context(), claims.Subject, sid, !g.d.AdminMFADisabled); p != nil {
+				writeProblem(ctx, p)
+				return
+			}
 		default:
 			// Any other compatibility-plane JWT (anon, ...) carries no management
 			// plane authority at all.
@@ -187,6 +197,55 @@ var errorStatuses = []int{
 	http.StatusConflict,
 	http.StatusUnprocessableEntity,
 	http.StatusInternalServerError,
+}
+
+// userSessionProblem checks the session behind a user access token, from the
+// database rather than the token's claims (which hooks may rewrite): it must
+// still exist and be the user's, the account must be active, the session must
+// be the user's own sign-in rather than an OAuth application's, and, when
+// needAAL2, it must have verified a second factor. A token passing every
+// check yields nil.
+func (d Deps) userSessionProblem(ctx context.Context, userID, sessionID string, needAAL2 bool) *Problem {
+	as, err := d.lookupSession(ctx, userID, sessionID)
+	switch {
+	case errors.Is(err, auth.ErrSessionNotFound):
+		return NewProblem(http.StatusUnauthorized, httpapi.CodeUnauthenticated,
+			"this token's session has ended; sign in again")
+	case err != nil:
+		slog.ErrorContext(ctx, "session lookup failed", "error", err)
+		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
+	case !as.Active:
+		return NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied, "the account is banned or deleted")
+	case as.OAuthClient:
+		return NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied,
+			"an OAuth application's token cannot act for the user here")
+	case needAAL2 && as.AAL != auth.AAL2:
+		return NewProblem(http.StatusForbidden, httpapi.CodeInsufficientAAL,
+			"the management plane needs a session verified with a second factor (aal2)")
+	}
+	return nil
+}
+
+func (d Deps) lookupSession(ctx context.Context, userID, sessionID string) (auth.SessionAssurance, error) {
+	if d.SessionLookup != nil {
+		return d.SessionLookup(ctx, userID, sessionID)
+	}
+	pool, err := d.pools()(ctx)
+	if err != nil {
+		return auth.SessionAssurance{}, err
+	}
+	return auth.LookupSessionAssurance(ctx, pool, userID, sessionID)
+}
+
+// writeProblem answers a middleware refusal with a problem of its own code,
+// which huma.WriteErr cannot carry.
+func writeProblem(ctx huma.Context, p *Problem) {
+	if p.Status == http.StatusUnauthorized {
+		ctx.SetHeader("WWW-Authenticate", `Bearer realm="dilion"`)
+	}
+	ctx.SetHeader("Content-Type", "application/problem+json")
+	ctx.SetStatus(p.Status)
+	_ = json.NewEncoder(ctx.BodyWriter()).Encode(p)
 }
 
 // grantCeiling refuses to let the caller hand out a permission it does not

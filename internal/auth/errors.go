@@ -10,18 +10,21 @@ import (
 // Error codes mirror github.com/supabase/auth/internal/api/apierrors/errorcode.go
 // verbatim. Only the wave-1 subset is declared; add upstream names as features land.
 const (
-	ErrorCodeUnexpectedFailure       = "unexpected_failure"
-	ErrorCodeValidationFailed        = "validation_failed"
-	ErrorCodeBadJSON                 = "bad_json"
-	ErrorCodeBadJWT                  = "bad_jwt"
-	ErrorCodeNotAdmin                = "not_admin"
-	ErrorCodeNoAuthorization         = "no_authorization"
-	ErrorCodeEmailExists             = "email_exists"
-	ErrorCodePhoneExists             = "phone_exists"
-	ErrorCodeUserNotFound            = "user_not_found"
-	ErrorCodeUserAlreadyExists       = "user_already_exists"
-	ErrorCodeUserBanned              = "user_banned"
-	ErrorCodeSessionNotFound         = "session_not_found"
+	ErrorCodeUnexpectedFailure = "unexpected_failure"
+	ErrorCodeValidationFailed  = "validation_failed"
+	ErrorCodeBadJSON           = "bad_json"
+	ErrorCodeBadJWT            = "bad_jwt"
+	ErrorCodeNotAdmin          = "not_admin"
+	ErrorCodeNoAuthorization   = "no_authorization"
+	ErrorCodeEmailExists       = "email_exists"
+	ErrorCodePhoneExists       = "phone_exists"
+	ErrorCodeUserNotFound      = "user_not_found"
+	ErrorCodeUserAlreadyExists = "user_already_exists"
+	ErrorCodeUserBanned        = "user_banned"
+	ErrorCodeSessionNotFound   = "session_not_found"
+	// ErrorCodeOAuthClientToken: an OAuth application's token on a route only
+	// the user's own sign-in may use (Dilion extension).
+	ErrorCodeOAuthClientToken        = "oauth_client_token_not_allowed"
 	ErrorCodeSessionExpired          = "session_expired"
 	ErrorCodeRefreshTokenNotFound    = "refresh_token_not_found"
 	ErrorCodeRefreshTokenAlreadyUsed = "refresh_token_already_used"

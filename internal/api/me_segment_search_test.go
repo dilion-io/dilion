@@ -319,4 +319,3 @@ func TestExportConsentAudienceEndpoint(t *testing.T) {
 		t.Errorf("subject manifest = %v", ev.SubjectIDs)
 	}
 }
-

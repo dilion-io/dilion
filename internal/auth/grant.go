@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -284,6 +285,14 @@ func (a *api) refreshTokenGrant(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 
+		// An OAuth application's refresh token is redeemed at /oauth/token,
+		// with its client's credentials, and keeps its client_id and scope.
+		// Here it would come back as the user's own first-party token.
+		// Upstream refuses it the same way (tokens.Service.RefreshTokenGrant).
+		if sess != nil && sess.OAuthClientID != nil {
+			return errOAuthSessionRefresh
+		}
+
 		// SESSIONS_SINGLE_PER_USER, checked in upstream's position: before the
 		// revoked-token branch, so a reuse-interval replay is judged by the
 		// same rule as a normal refresh.
@@ -338,11 +347,18 @@ func (a *api) refreshTokenGrant(w http.ResponseWriter, r *http.Request) error {
 		resp, err = a.buildSessionResponse(ctx, tx, user, sess.ID, next, "")
 		return err
 	}); err != nil {
+		if errors.Is(err, errOAuthSessionRefresh) {
+			return sendOAuthError(w, oAuth2ErrorInvalidClient, "Client authentication required for OAuth session")
+		}
 		return err
 	}
 
 	return sendJSON(w, http.StatusOK, resp)
 }
+
+// errOAuthSessionRefresh aborts a /token refresh of an OAuth application's
+// session; refreshTokenGrant answers it in upstream's OAuth error shape.
+var errOAuthSessionRefresh = errors.New("auth: refresh token belongs to an OAuth application")
 
 // handleRefreshTokenReuse implements the reuse decision for an already-revoked
 // refresh token.

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/google/uuid"
@@ -40,6 +41,12 @@ func newCeilingEnv(t *testing.T, roles ...string) *ceilingEnv {
 	}
 	svc := iam.New(pool)
 	user := uuid.NewString()
+	if _, err := pool.Exec(ctx, `insert into auth.users (id, aud, role, created_at, updated_at)
+		values ($1::uuid, 'authenticated', 'authenticated', now(), now())`, user); err != nil {
+		t.Fatalf("user: %v", err)
+	}
+	// Management needs an open, second-factor-verified session.
+	session := seedSession(t, pool, user, "totp", time.Minute)
 	for _, role := range roles {
 		if _, err := svc.GrantRole(ctx, role, user, "root"); err != nil {
 			t.Fatalf("grant %s: %v", role, err)
@@ -50,13 +57,16 @@ func newCeilingEnv(t *testing.T, roles ...string) *ceilingEnv {
 		_, _ = pool.Exec(bg, `delete from dilion_authz.role_assignments where actor_id = $1 or granted_by = $1`, user)
 		_, _ = pool.Exec(bg, `delete from dilion_authz.api_keys where created_by = $1`, user)
 		_, _ = pool.Exec(bg, `delete from dilion_authz.roles where not builtin and name like 'ceiling-%'`)
+		_, _ = pool.Exec(bg, `delete from auth.users where id = $1::uuid`, user)
+		_, _ = pool.Exec(bg, `delete from auth.sessions where user_id = $1::uuid`, user)
 	})
 	_, tapi := humatest.New(t, NewConfig())
 	RegisterIAMAPI(tapi, Deps{
-		Pool:     pool,
-		Verifier: fakeVerifier{claims: &ports.Claims{Subject: user, Role: "authenticated"}},
-		Authz:    iam.NewAuthorizer(pool),
-		Audit:    &recordingSink{},
+		Pool: pool,
+		Verifier: fakeVerifier{claims: &ports.Claims{Subject: user, Role: "authenticated",
+			Extra: map[string]any{"session_id": session}}},
+		Authz: iam.NewAuthorizer(pool),
+		Audit: &recordingSink{},
 	})
 	return &ceilingEnv{api: tapi, pool: pool, svc: svc, user: user}
 }

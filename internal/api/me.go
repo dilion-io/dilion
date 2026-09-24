@@ -113,6 +113,15 @@ func (r *registrar) selfGuard() huma.Middlewares {
 		ri.Actor.ID = claims.Subject
 		ri.Actor.Type = iam.ActorTypeUser
 		ri.SessionID, _ = claims.Extra["session_id"].(string)
+		// Like /auth/v1, a token naming a session is checked against it; a
+		// token without one (minted by an embedder) is taken as it is.
+		// Deletion needs a session regardless (requireDeletionAssurance).
+		if ri.SessionID != "" {
+			if p := r.d.userSessionProblem(ctx.Context(), claims.Subject, ri.SessionID, false); p != nil {
+				writeProblem(ctx, p)
+				return
+			}
+		}
 		next(huma.WithValue(ctx, ctxKey{}, ri))
 	}}
 }
@@ -126,11 +135,7 @@ func (r *registrar) selfGuard() huma.Middlewares {
 // rewrite.
 func (r *registrar) requireDeletionAssurance(ctx context.Context) error {
 	ri := requestInfoFrom(ctx)
-	pool, err := r.d.pools()(ctx)
-	if err != nil {
-		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
-	}
-	as, err := auth.LookupSessionAssurance(ctx, pool, ri.Actor.ID, ri.SessionID)
+	as, err := r.d.lookupSession(ctx, ri.Actor.ID, ri.SessionID)
 	if errors.Is(err, auth.ErrSessionNotFound) {
 		return NewProblem(http.StatusForbidden, httpapi.CodeReauthenticationNeeded,
 			"this token's session has ended; sign in again and retry")

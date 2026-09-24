@@ -348,9 +348,9 @@ func findSessionByID(ctx context.Context, q querier, id string) (*session, error
 	var s session
 	var createdAt *time.Time
 	err := q.QueryRow(ctx,
-		`select id::text, user_id::text, not_after, created_at, refreshed_at
+		`select id::text, user_id::text, not_after, created_at, refreshed_at, oauth_client_id::text
 		 from auth.sessions where id = $1::uuid`, id).
-		Scan(&s.ID, &s.UserID, &s.NotAfter, &createdAt, &s.RefreshedAt)
+		Scan(&s.ID, &s.UserID, &s.NotAfter, &createdAt, &s.RefreshedAt, &s.OAuthClientID)
 	if err != nil {
 		return nil, err
 	}

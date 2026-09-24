@@ -583,6 +583,8 @@ func (s *Server) buildRouter() *chi.Mux {
 			OAuthClients: s.cfg.oauthClients,
 			// Per-instance site URL and redirect allow list.
 			Settings: s.cfg.authSettings,
+			// Admin user tokens need aal2 unless WithoutAdminMFA.
+			AdminMFADisabled: s.cfg.adminMFADisabled,
 		})
 	})
 
@@ -596,6 +598,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		Audit:    s.audit,
 
 		DeletionReauthWindow: s.cfg.authConfig.Security.DeletionReauthWindow,
+		AdminMFADisabled:     s.cfg.adminMFADisabled,
 	}
 	api.RegisterPrivacyAPI(humaAPI, s.instances.PrivacyService, deps)
 	api.RegisterIAMAPI(humaAPI, deps)

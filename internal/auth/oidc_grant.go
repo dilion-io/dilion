@@ -192,18 +192,12 @@ func (a *api) userFromBearer(r *http.Request) (*User, error) {
 	if perr != nil {
 		return nil, perr
 	}
-	u, derr := a.loadUserWithIdentities(r.Context(), pool, claims.Subject)
-	if derr != nil {
-		if isNoRows(derr) {
-			return nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
-		}
-		return nil, internalServerError("Database error loading user").withInternal(derr)
+	u, s, lerr := a.loadTokenUser(r.Context(), pool, claims)
+	if lerr != nil {
+		return nil, lerr
 	}
-	if u.DeletedAt != nil {
-		return nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
-	}
-	if u.IsBanned(a.now()) {
-		return nil, forbiddenError(ErrorCodeUserBanned, "User is banned")
+	if s != nil && s.OAuthClientID != nil {
+		return nil, forbiddenError(ErrorCodeOAuthClientToken, "An OAuth application's token cannot be used here")
 	}
 	return u, nil
 }

@@ -95,6 +95,10 @@ type Deps struct {
 	// auth.oauth_clients.
 	OAuthClients ports.OAuthClientResolver
 
+	// AdminMFADisabled lets a user token administer without an aal2 session
+	// (dilion.WithoutAdminMFA). Development only.
+	AdminMFADisabled bool
+
 	// Settings sets each instance's site URL and redirect allow list
 	// (ports.AuthSettingsSource). Optional; without it every instance uses
 	// Config's.
@@ -132,7 +136,9 @@ type api struct {
 	// siteSource and siteCache give each instance its own site URL and redirect
 	// allow list (site.go).
 	siteSource ports.AuthSettingsSource
-	siteCache  sync.Map
+
+	adminMFADisabled bool
+	siteCache        sync.Map
 
 	// limiters are the named per-IP rate limiters of this mount (middleware.go).
 	limiters map[string]*rateLimiter
@@ -165,10 +171,11 @@ func newAPI(d Deps) *api {
 		audit:  d.Audit,
 		log:    d.Logger,
 
-		providers:    d.Providers,
-		oauthClients: d.OAuthClients,
-		siteSource:   d.Settings,
-		clock:        d.Clock,
+		providers:        d.Providers,
+		oauthClients:     d.OAuthClients,
+		siteSource:       d.Settings,
+		adminMFADisabled: d.AdminMFADisabled,
+		clock:            d.Clock,
 	}
 	if a.log == nil {
 		a.log = slog.Default()
@@ -272,11 +279,11 @@ func Register(r chi.Router, d Deps) *Mount {
 	r.Post("/token", a.handle(a.token))
 
 	r.Group(func(r chi.Router) {
-		r.Use(a.requireAuthentication)
+		r.Use(a.requireAuthenticationForClients)
 		r.Get("/user", a.handle(a.getUser))
-		r.With(a.limit(LimiterUser)).Put("/user", a.handle(a.updateUser))
 		r.Post("/logout", a.handle(a.logout))
 	})
+	r.With(a.requireAuthentication, a.limit(LimiterUser)).Put("/user", a.handle(a.updateUser))
 
 	r.Route("/admin/users", func(r chi.Router) {
 		r.Use(a.requireAdmin)
@@ -351,7 +358,20 @@ const (
 	ctxKeyClaims ctxKey = iota
 	ctxKeyUser
 	ctxKeyActor
+	ctxKeySession
 )
+
+func withSession(ctx context.Context, s *session) context.Context {
+	return context.WithValue(ctx, ctxKeySession, s)
+}
+
+// sessionFrom is the session the request's token belongs to, verified by the
+// authentication middleware to exist, be the user's and not have ended; nil
+// for a token without a session_id.
+func sessionFrom(ctx context.Context) *session {
+	s, _ := ctx.Value(ctxKeySession).(*session)
+	return s
+}
 
 func withClaims(ctx context.Context, c *ports.Claims) context.Context {
 	return context.WithValue(ctx, ctxKeyClaims, c)
@@ -410,6 +430,27 @@ func extractBearerToken(r *http.Request) (string, error) {
 
 // requireAuthentication verifies the Bearer JWT and loads the user it names.
 func (a *api) requireAuthentication(next http.Handler) http.Handler {
+	return a.authenticate(next, false)
+}
+
+// requireAuthenticationForClients is requireAuthentication that also admits
+// an OAuth application's token, for the few routes such a token exists for:
+// reading the user (GET /user, /oauth/userinfo) and signing out.
+func (a *api) requireAuthenticationForClients(next http.Handler) http.Handler {
+	return a.authenticate(next, true)
+}
+
+// authenticate verifies the bearer token and loads its user and session.
+//
+// Like upstream (maybeLoadUserOrSession), a token naming a session that no
+// longer exists is refused: signing out, a password change, reuse detection
+// or an admin revocation ends the session, and its access tokens must stop
+// working then rather than at their expiry.
+//
+// A token of an OAuth application's session is refused unless
+// allowOAuthClient: the application was granted scopes, not the user's
+// account, so it may not change credentials, factors, identities or consents.
+func (a *api) authenticate(next http.Handler, allowOAuthClient bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := extractBearerToken(r)
 		if err != nil {
@@ -431,27 +472,67 @@ func (a *api) requireAuthentication(next http.Handler) http.Handler {
 			a.writeError(r, w, perr)
 			return
 		}
-		u, derr := a.loadUserWithIdentities(r.Context(), pool, claims.Subject)
-		if derr != nil {
-			if isNoRows(derr) {
-				a.writeError(r, w, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist"))
-				return
-			}
-			a.writeError(r, w, internalServerError("Database error loading user").withInternal(derr))
+		u, s, lerr := a.loadTokenUser(r.Context(), pool, claims)
+		if lerr != nil {
+			a.writeError(r, w, lerr)
 			return
 		}
-		if u.DeletedAt != nil {
-			a.writeError(r, w, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist"))
-			return
-		}
-		if u.IsBanned(a.now()) {
-			a.writeError(r, w, forbiddenError(ErrorCodeUserBanned, "User is banned"))
+		if s != nil && s.OAuthClientID != nil && !allowOAuthClient {
+			a.writeError(r, w, forbiddenError(ErrorCodeOAuthClientToken,
+				"An OAuth application's token cannot be used here"))
 			return
 		}
 
-		ctx := withUser(withClaims(r.Context(), claims), u)
+		ctx := withSession(withUser(withClaims(r.Context(), claims), u), s)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// loadTokenUser loads a verified token's user, refusing a deleted or banned
+// one, and its session, refusing one that no longer exists, has ended or is
+// another user's.
+func (a *api) loadTokenUser(ctx context.Context, q querier, claims *ports.Claims) (*User, *session, error) {
+	u, err := a.loadUserWithIdentities(ctx, q, claims.Subject)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
+		}
+		return nil, nil, internalServerError("Database error loading user").withInternal(err)
+	}
+	if u.DeletedAt != nil {
+		return nil, nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
+	}
+	if u.IsBanned(a.now()) {
+		return nil, nil, forbiddenError(ErrorCodeUserBanned, "User is banned")
+	}
+	s, err := a.tokenSession(ctx, q, claims)
+	if err != nil {
+		return nil, nil, err
+	}
+	return u, s, nil
+}
+
+// tokenSession loads the session a token names, or nil when it names none.
+func (a *api) tokenSession(ctx context.Context, q querier, claims *ports.Claims) (*session, error) {
+	id := sessionIDFrom(claims)
+	if id == "" {
+		return nil, nil
+	}
+	gone := forbiddenError(ErrorCodeSessionNotFound, "Session from session_id claim in JWT does not exist")
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, gone
+	}
+	s, err := findSessionByID(ctx, q, id)
+	if isNoRows(err) {
+		return nil, gone
+	}
+	if err != nil {
+		return nil, internalServerError("Database error loading session").withInternal(err)
+	}
+	if s.UserID != claims.Subject || (s.NotAfter != nil && !a.now().Before(*s.NotAfter)) {
+		return nil, gone
+	}
+	return s, nil
 }
 
 // requireAdmin gates the /admin/* endpoints. A `service_role` JWT is admitted
@@ -471,9 +552,11 @@ func (a *api) requireAdmin(next http.Handler) http.Handler {
 			a.writeError(r, w, verr)
 			return
 		}
-		if claims.Role != RoleServiceRole && !a.userIsAdmin(r, claims) {
-			a.writeError(r, w, forbiddenError(ErrorCodeNotAdmin, "User not allowed"))
-			return
+		if claims.Role != RoleServiceRole {
+			if aerr := a.checkAdminUser(r.Context(), claims); aerr != nil {
+				a.writeError(r, w, aerr)
+				return
+			}
 		}
 		// The audited actor is exactly the credential the gate admitted: a
 		// service_role JWT acts as "service_role", an RBAC-admitted access
@@ -487,23 +570,53 @@ func (a *api) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// userIsAdmin reports whether a regular user token holds `users.admin`. A nil
+// checkAdminUser admits a user access token to the admin surface. A nil
 // Authorizer denies (service_role-only, the pre-RBAC behaviour), and so does an
-// Authorizer error — this gate is fail-closed.
-func (a *api) userIsAdmin(r *http.Request, claims *ports.Claims) bool {
+// Authorizer error — this gate is fail-closed. Beyond the
+// users.admin permission, the account must still be active, the token's
+// session must still exist and be the user's own sign-in rather than an OAuth
+// application's, and — unless WithoutAdminMFA — the session must have verified
+// a second factor (aal2). Administering every account in the instance is not
+// something a password alone should do.
+func (a *api) checkAdminUser(ctx context.Context, claims *ports.Claims) error {
+	denied := forbiddenError(ErrorCodeNotAdmin, "User not allowed")
 	if a.authz == nil || claims == nil || claims.Role != RoleAuthenticated || claims.Subject == "" {
-		return false
+		return denied
 	}
-	ok, err := a.authz.Can(r.Context(), ports.Actor{
-		ID:   claims.Subject,
-		Type: ActorTypeUser,
-	}, PermUsersAdmin, "auth/admin")
+	ok, err := a.authz.Can(ctx, ports.Actor{ID: claims.Subject, Type: ActorTypeUser}, PermUsersAdmin, "auth/admin")
 	if err != nil {
-		a.log.ErrorContext(r.Context(), "auth: admin authorization check failed",
+		a.log.ErrorContext(ctx, "auth: admin authorization check failed",
 			slog.String("actor_id", claims.Subject), slog.String("error", err.Error()))
-		return false
+		return denied
 	}
-	return ok
+	if !ok {
+		return denied
+	}
+	pool, err := a.db(ctx)
+	if err != nil {
+		return err
+	}
+	_, s, err := a.loadTokenUser(ctx, pool, claims)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		return forbiddenError(ErrorCodeSessionNotFound, "Session from session_id claim in JWT does not exist")
+	}
+	if s.OAuthClientID != nil {
+		return forbiddenError(ErrorCodeOAuthClientToken, "An OAuth application's token cannot be used here")
+	}
+	if a.adminMFADisabled {
+		return nil
+	}
+	aal, err := a.sessionAAL(ctx, pool, s.ID)
+	if err != nil {
+		return err
+	}
+	if aal != AAL2 {
+		return forbiddenError(ErrorCodeInsufficientAAL, "AAL2 session is required for administration")
+	}
+	return nil
 }
 
 // ---- helpers --------------------------------------------------------------

@@ -117,6 +117,7 @@ dev: up $(MASTER_KEY_FILE) $(OPAQUE_KEY_FILE) ## API 서버 기동 :8787 (migrat
 	DILION_AUTH_WEBAUTHN_RP_ORIGINS='$(DEV_WEB_ORIGIN),http://localhost:8787' \
 	DILION_ADDR=':8787' \
 	DILION_POLICY_FILE='dev/policy.dev.yaml' \
+	DILION_DEV_NO_ADMIN_MFA='true' \
 	go run ./cmd/dilion
 
 dev-web: ## 샘플 프론트 기동 :5173 (proxy → :8787)

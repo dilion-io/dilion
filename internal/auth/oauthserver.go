@@ -150,9 +150,9 @@ func init() {
 			r.Get("/oauth/authorize", a.handle(a.oauthAuthorize))
 			r.Post("/oauth/authorize", a.handle(a.oauthAuthorize))
 
+			r.With(a.requireAuthenticationForClients).Get("/oauth/userinfo", a.handle(a.oauthUserInfo))
 			r.Group(func(r chi.Router) {
 				r.Use(a.requireAuthentication)
-				r.Get("/oauth/userinfo", a.handle(a.oauthUserInfo))
 				r.Get("/oauth/authorizations/{authorization_id}", a.handle(a.oauthGetAuthorization))
 				r.Post("/oauth/authorizations/{authorization_id}/consent", a.handle(a.oauthConsent))
 				r.Get("/user/oauth/grants", a.handle(a.userListOAuthGrants))

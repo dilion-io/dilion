@@ -75,8 +75,8 @@ func TestMeDeletionNeedsAssuredSession(t *testing.T) {
 	}{
 		{"fresh password sign-in", plain, seedSession(t, pool, plain, "password", time.Minute), "DELETION", http.StatusAccepted, ""},
 		{"old sign-in, however fresh the token claims", plain, seedSession(t, pool, plain, "password", time.Hour), "DELETION", http.StatusForbidden, httpapi.CodeReauthenticationNeeded},
-		{"no such session", plain, uuid.NewString(), "DELETION", http.StatusForbidden, httpapi.CodeReauthenticationNeeded},
-		{"another user's session", withMFA, seedSession(t, pool, plain, "password", time.Minute), "DELETION", http.StatusForbidden, httpapi.CodeReauthenticationNeeded},
+		{"no such session", plain, uuid.NewString(), "DELETION", http.StatusUnauthorized, httpapi.CodeUnauthenticated},
+		{"another user's session", withMFA, seedSession(t, pool, plain, "password", time.Minute), "DELETION", http.StatusUnauthorized, httpapi.CodeUnauthenticated},
 		{"MFA user at aal1", withMFA, seedSession(t, pool, withMFA, "password", time.Minute), "DELETION", http.StatusForbidden, httpapi.CodeInsufficientAAL},
 		{"MFA user at aal2", withMFA, seedSession(t, pool, withMFA, "totp", time.Minute), "DELETION", http.StatusAccepted, ""},
 		{"old sign-in, export", plain, seedSession(t, pool, plain, "password", time.Hour), "EXPORT", http.StatusAccepted, ""},

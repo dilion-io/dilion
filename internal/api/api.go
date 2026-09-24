@@ -20,6 +20,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -46,6 +47,14 @@ type Deps struct {
 	// recency check off (the session and MFA checks remain). The server fills
 	// it from auth's Security.DeletionReauthWindow.
 	DeletionReauthWindow time.Duration
+
+	// SessionLookup reads the assurance of a user token's session. nil means
+	// auth.LookupSessionAssurance on the request's database.
+	SessionLookup func(ctx context.Context, userID, sessionID string) (auth.SessionAssurance, error)
+
+	// AdminMFADisabled lets a user token act on the management plane without
+	// an aal2 session (dilion.WithoutAdminMFA). Development only.
+	AdminMFADisabled bool
 }
 
 // pools returns the effective pool provider (Pools, else a static Pool).

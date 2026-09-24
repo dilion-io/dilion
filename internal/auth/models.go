@@ -153,6 +153,10 @@ type session struct {
 	NotAfter    *time.Time
 	CreatedAt   time.Time
 	RefreshedAt *time.Time
+	// OAuthClientID is set on a session an OAuth client's tokens hang off
+	// (grantOAuthSession): the tokens belong to that application, not to the
+	// user's own sign-in. Only findSessionByID loads it.
+	OAuthClientID *string
 }
 
 // lastRefreshedAt is upstream's models.Session.LastRefreshedAt: the most recent

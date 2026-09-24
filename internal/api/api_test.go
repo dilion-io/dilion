@@ -14,6 +14,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/privacy"
 	"github.com/dilion-io/dilion/ports"
@@ -212,6 +213,14 @@ func serviceRoleDeps(sink *recordingSink) Deps {
 
 func newAPI(t *testing.T, svc privacy.Service, d Deps) humatest.TestAPI {
 	t.Helper()
+	if d.Pool == nil && d.Pools == nil && d.SessionLookup == nil {
+		// No database to read sessions from: every user token belongs to an
+		// open, second-factor-verified sign-in. The session rules themselves
+		// are tested against a real database (session_db_test.go).
+		d.SessionLookup = func(context.Context, string, string) (auth.SessionAssurance, error) {
+			return auth.SessionAssurance{AAL: auth.AAL2, Active: true, AuthenticatedAt: time.Now()}, nil
+		}
+	}
 	_, tapi := humatest.New(t, NewConfig())
 	RegisterPrivacyAPI(tapi, StaticService(svc), d)
 	RegisterIAMAPI(tapi, d)

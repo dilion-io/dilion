@@ -337,6 +337,11 @@ type SessionAssurance struct {
 	// MFAEnabled reports whether the user has a verified factor, and so could
 	// reach aal2.
 	MFAEnabled bool
+	// OAuthClient reports that the session belongs to an OAuth application
+	// the user authorized, not to the user's own sign-in.
+	OAuthClient bool
+	// Active is false for a banned or deleted user.
+	Active bool
 }
 
 // ErrSessionNotFound is LookupSessionAssurance's answer for a session that
@@ -359,6 +364,18 @@ func LookupSessionAssurance(ctx context.Context, pool *pgxpool.Pool, userID, ses
 	if s.UserID != userID || (s.NotAfter != nil && !time.Now().Before(*s.NotAfter)) {
 		return out, ErrSessionNotFound
 	}
+	out.OAuthClient = s.OAuthClientID != nil
+	var (
+		deletedAt, bannedUntil *time.Time
+	)
+	if err := pool.QueryRow(ctx, `select deleted_at, banned_until from auth.users where id = $1::uuid`, userID).
+		Scan(&deletedAt, &bannedUntil); err != nil {
+		if isNoRows(err) {
+			return out, ErrSessionNotFound
+		}
+		return out, err
+	}
+	out.Active = deletedAt == nil && (bannedUntil == nil || !time.Now().Before(*bannedUntil))
 	claims, err := findAMRClaims(ctx, pool, sessionID)
 	if err != nil {
 		return out, err

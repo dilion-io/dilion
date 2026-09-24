@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/iam"
@@ -140,13 +142,28 @@ func (e *testEnv) routerWith(authz ports.Authorizer) chi.Router {
 	return r
 }
 
-// userToken signs a regular end-user access token for sub.
+// userToken signs a regular end-user access token for sub, backed by a real
+// user and an open aal2 session: the admin gate admits nothing less.
 func (e *testEnv) userToken(t *testing.T, sub string) string {
 	t.Helper()
-	token, err := e.tokens.Sign(context.Background(), ports.Claims{
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `insert into auth.users (id, aud, role, email, created_at, updated_at)
+		values ($1::uuid, 'authenticated', 'authenticated', $2, now(), now()) on conflict (id) do nothing`,
+		sub, "user-"+sub[:8]+"@dilion.test"); err != nil {
+		t.Fatalf("user: %v", err)
+	}
+	sessionID := uuid.NewString()
+	if err := insertSession(ctx, e.pool, sessionID, sub, "", nil, time.Now()); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if err := addAMRClaimToSession(ctx, e.pool, sessionID, AMRMethodTOTP, time.Now()); err != nil {
+		t.Fatalf("amr: %v", err)
+	}
+	token, err := e.tokens.Sign(ctx, ports.Claims{
 		Subject: sub,
 		Role:    RoleAuthenticated,
 		Email:   "user@dilion.test",
+		Extra:   map[string]any{"session_id": sessionID},
 	})
 	if err != nil {
 		t.Fatalf("sign user token: %v", err)

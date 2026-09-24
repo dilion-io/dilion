@@ -345,6 +345,8 @@ users.admin                 # /auth/v1/admin/* (Supabase 호환 관리 표면)
 **운영 안전장치:**
 
 - **직무 분리(SoD):** `holds.manage`와 파기 실행 권한 분리, `policies.manage`는 변경-승인 분리(CC8.1)와 연결. 감사 로그는 어떤 권한으로도 수정 불가(§5.4).
+- **관리 평면의 사용자 토큰:** `/iam/v1`, `/privacy/v1`, `/auth/v1/admin/*`는 사용자 access token을 그 사용자가 직접 로그인한 세션(OAuth 앱 세션이 아님)이 아직 열려 있고, 계정이 활성이며, 세션이 두 번째 factor를 검증한(aal2) 경우에만 받습니다. 판정은 토큰 claim이 아니라 DB에서 읽습니다. `service_role`과 scoped API key는 해당하지 않습니다.
+- **세션이 끝난 토큰과 OAuth 앱 토큰:** upstream처럼 `session_id`가 가리키는 세션이 없으면(로그아웃, 비밀번호 변경, 재사용 감지, 관리자 회수) 403 `session_not_found`로 거부합니다. OAuth 앱에 발급된 토큰은 `GET /user`, `/oauth/userinfo`, `/logout`에만 쓸 수 있고, 계정·자격증명·factor·동의를 바꾸는 경로에서는 403 `oauth_client_token_not_allowed`입니다. 그 refresh token은 `/oauth/token`에서만 쓸 수 있고, `/token`에서는 upstream처럼 `invalid_client`입니다.
 - **관리 평면 MFA는 정책 데이터가 아니라 제품 기본값입니다.** 관할별로 방향이 갈리는 법률 지식이 아니므로(한국 고시 제6조는 외부 접속 시 안전한 인증수단을 사실상 요구,[^kr-safety] SOC 2 CC6.1 감사인 기대, HIPAA도 강화 추세, 금지하는 관할 없음) compliance YAML의 항목으로 두지 않고 관리 평면에서 상시 요구합니다. 개발 환경용 해제는 `NewServer` 옵션으로만 가능하며, 해제 상태는 기동 시 경고 + 감사 이벤트로 기록됩니다.
 - admin 세션 비활성 타임아웃(§8.12).
 
