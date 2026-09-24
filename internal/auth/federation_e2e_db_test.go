@@ -148,6 +148,9 @@ func (f *federation) finishSignIn(t *testing.T, redirectURL string) string {
 // provider defined in code on the relying party, and the IdP's user id
 // becoming the relying party's.
 func TestFederationCodeClientFirstParty(t *testing.T) {
+	// A provider defined in code is the embedder's, and may sit on its own
+	// network: the outbound guard does not apply to it.
+	withoutOutboundAllowance(t)
 	clientID := uuid.NewString()
 	const secret = "workspace-client-secret"
 	f := newFederation(t, func(_ context.Context, _, id string) (*ports.OAuthClient, error) {

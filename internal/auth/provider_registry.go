@@ -43,6 +43,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // ---- provider data model ---------------------------------------------------
@@ -614,10 +616,34 @@ var providerTransport http.RoundTripper = http.DefaultTransport
 // httpClient returns the client used for every provider call. The timeout is
 // GOTRUE_API_MAX_REQUEST_DURATION: an external provider must never be able to
 // hold a Dilion request open longer than the request's own budget.
+//
+// Its dials are guarded (internal/netguard): the URLs it fetches — a custom
+// provider's endpoints and the ones its discovery document names, SAML
+// metadata — are set by instance admins, and must not reach the server's own
+// network unless the operator allowed that network (Deps.OutboundNetworks).
 func (a *api) httpClient() *http.Client {
-	timeout := a.cfg.APIMaxRequestDuration
-	if timeout <= 0 {
-		timeout = 10 * time.Second
+	return &http.Client{Transport: netguard.Transport(providerTransport, a.outbound), Timeout: a.outboundTimeout()}
+}
+
+// trustedHTTPClient is httpClient without the guard, for providers the
+// embedder defines in code (ports.ProviderSource), which may well be on its
+// own network — a platform's IdP, say.
+func (a *api) trustedHTTPClient() *http.Client {
+	return &http.Client{Transport: providerTransport, Timeout: a.outboundTimeout()}
+}
+
+func (a *api) outboundTimeout() time.Duration {
+	if t := a.cfg.APIMaxRequestDuration; t > 0 {
+		return t
 	}
-	return &http.Client{Transport: providerTransport, Timeout: timeout}
+	return 10 * time.Second
+}
+
+// providerClient is the client for calls to p: unguarded for a code-defined
+// provider, guarded otherwise.
+func (a *api) providerClient(p externalProvider) *http.Client {
+	if t, ok := p.(interface{ trustedOutbound() bool }); ok && t.trustedOutbound() {
+		return a.trustedHTTPClient()
+	}
+	return a.httpClient()
 }

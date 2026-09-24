@@ -64,6 +64,7 @@ import (
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/instances"
 	"github.com/dilion-io/dilion/internal/kmslocal"
+	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
 )
@@ -124,10 +125,14 @@ type config struct {
 	providers     ports.ProviderSource
 	oauthClients  ports.OAuthClientResolver
 	authSettings  ports.AuthSettingsSource
-	authConfig    *auth.Config
-	addr          string
-	clock         ports.Clock
-	log           *slog.Logger
+	// trustedProxies and outboundNetworks are netguard network lists
+	// (WithTrustedProxies, WithOutboundNetworks).
+	trustedProxies   string
+	outboundNetworks string
+	authConfig       *auth.Config
+	addr             string
+	clock            ports.Clock
+	log              *slog.Logger
 
 	adminMFADisabled bool
 }
@@ -259,6 +264,27 @@ func WithProviderSource(src ports.ProviderSource) Option {
 	return func(c *config) { c.providers = src }
 }
 
+// WithTrustedProxies names the proxies in front of the server whose
+// X-Forwarded-For header is believed: a comma-separated list of IPs and CIDRs,
+// or "*" to believe every hop (the previous behaviour). The header is whatever
+// a client sends, so by default it is ignored and the peer address is the
+// client — which a deployment behind a load balancer must change, or every
+// client will share the balancer's rate limits.
+//
+//	dilion.WithTrustedProxies("10.0.0.0/8, 192.168.0.10")
+func WithTrustedProxies(spec string) Option {
+	return func(c *config) { c.trustedProxies = spec }
+}
+
+// WithOutboundNetworks lists the private networks that calls to URLs set by
+// instance admins may reach — auth hooks, custom and SSO providers, privacy
+// webhook destinations — in the same format as WithTrustedProxies. By
+// default those calls reach only the public internet. Providers defined in
+// code (WithProviderSource) are not restricted.
+func WithOutboundNetworks(spec string) Option {
+	return func(c *config) { c.outboundNetworks = spec }
+}
+
 // WithAuthSettingsSource sets, per instance, the parts of the /auth/v1
 // configuration that name the instance's application — its site URL and
 // redirect allow list — from embedder code, the way WithProviderSource does
@@ -348,6 +374,9 @@ type Server struct {
 	instances *instances.Registry
 	authz     ports.Authorizer
 	audit     ports.AuditSink
+
+	trustedProxies   netguard.Networks
+	outboundNetworks netguard.Networks
 }
 
 // NewServer wires the server. It connects the database (unless WithPool was
@@ -433,6 +462,15 @@ func NewServer(opts ...Option) (*Server, error) {
 		authCfg.JWT.Secret = string(k)
 		log.Warn("dilion: no JWT signing key configured; generated an ephemeral HS256 secret — issued tokens stop verifying after restart (set DILION_AUTH_JWT_KEYS for ES256, or WithJWTSecret / DILION_JWT_SECRET)")
 	}
+	var err error
+	if s.trustedProxies, err = netguard.ParseNetworks(cfg.trustedProxies); err != nil {
+		s.closeOwnedPool()
+		return nil, fmt.Errorf("dilion: trusted proxies: %w", err)
+	}
+	if s.outboundNetworks, err = netguard.ParseNetworks(cfg.outboundNetworks); err != nil {
+		s.closeOwnedPool()
+		return nil, fmt.Errorf("dilion: outbound networks: %w", err)
+	}
 	if cfg.adminMFADisabled {
 		log.Warn("dilion: admin MFA requirement disabled (WithoutAdminMFA) — development only")
 	}
@@ -500,6 +538,8 @@ func NewServer(opts ...Option) (*Server, error) {
 		Connectors:   cfg.connectors,
 		TombstoneKey: tombstoneKey,
 		Logger:       log,
+		// Privacy webhook destinations reach these private networks.
+		OutboundNetworks: s.outboundNetworks,
 	})
 	if err != nil {
 		s.closeOwnedPool()
@@ -585,6 +625,8 @@ func (s *Server) buildRouter() *chi.Mux {
 			Settings: s.cfg.authSettings,
 			// Admin user tokens need aal2 unless WithoutAdminMFA.
 			AdminMFADisabled: s.cfg.adminMFADisabled,
+			TrustedProxies:   s.trustedProxies,
+			OutboundNetworks: &s.outboundNetworks,
 		})
 	})
 
@@ -599,6 +641,7 @@ func (s *Server) buildRouter() *chi.Mux {
 
 		DeletionReauthWindow: s.cfg.authConfig.Security.DeletionReauthWindow,
 		AdminMFADisabled:     s.cfg.adminMFADisabled,
+		TrustedProxies:       s.trustedProxies,
 	}
 	api.RegisterPrivacyAPI(humaAPI, s.instances.PrivacyService, deps)
 	api.RegisterIAMAPI(humaAPI, deps)
@@ -696,6 +739,8 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:              s.cfg.addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// A client trickling a body in must not hold a connection forever.
+		ReadTimeout: 60 * time.Second,
 		// No BaseContext from ctx on purpose: cancelling ctx must start a
 		// graceful drain, not kill in-flight requests.
 	}

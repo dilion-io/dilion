@@ -16,6 +16,9 @@ import (
 	"sync"
 	"time"
 	"weak"
+
+	"github.com/dilion-io/dilion/internal/netguard"
+	"github.com/dilion-io/dilion/ports"
 )
 
 // ---- CORS ------------------------------------------------------------------
@@ -98,43 +101,22 @@ type ipCtxKey struct{}
 // clientIPMiddleware resolves the client address once per request and puts it on
 // the context, so sessions, audit records and the rate limiter all agree on the
 // same value.
-func clientIPMiddleware(next http.Handler) http.Handler {
+func (a *api) clientIPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := resolveClientIP(r)
+		ip := netguard.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), a.trustedProxies)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ipCtxKey{}, ip)))
 	})
 }
 
-// clientIP is the address of the caller: the first usable X-Forwarded-For hop
-// (Dilion is deployed behind a proxy by default, matching upstream's xff
-// middleware), otherwise the peer address without its port.
-//
-// SECURITY: X-Forwarded-For is client-controlled unless a trusted proxy
-// overwrites it. Deployments that expose Dilion directly must strip the header
-// at the edge, exactly as they must for gotrue.
+// clientIP is the address of the caller, as clientIPMiddleware resolved it:
+// X-Forwarded-For counts only as far as the operator's trusted proxies
+// (Deps.TrustedProxies) vouch for it, since the header is whatever the client
+// sends. Every rate limit and account lock keys on this value.
 func clientIP(r *http.Request) string {
 	if v, ok := r.Context().Value(ipCtxKey{}).(string); ok && v != "" {
 		return v
 	}
-	return resolveClientIP(r)
-}
-
-func resolveClientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		for _, part := range strings.Split(fwd, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			if ip := net.ParseIP(part); ip != nil {
-				return ip.String()
-			}
-		}
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return netguard.ClientIP(r.RemoteAddr, "", netguard.Networks{})
 }
 
 // clientIPInet returns clientIP in a form Postgres `inet` accepts, or nil when
@@ -241,7 +223,9 @@ func (a *api) limitCheck(name string, r *http.Request) error {
 		a.log.ErrorContext(r.Context(), "auth: unknown rate limiter", "limiter", name)
 		return tooManyRequestsError("Request rate limit reached")
 	}
-	if !l.allow(clientIP(r)) {
+	// Keyed per instance too: one instance's traffic must not spend another
+	// instance's budget for the same address.
+	if !l.allow(ports.InstanceFromContext(r.Context()) + "|" + clientIP(r)) {
 		return tooManyRequestsError("Request rate limit reached")
 	}
 	return nil

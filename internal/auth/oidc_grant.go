@@ -99,7 +99,7 @@ func (a *api) idTokenGrant(w http.ResponseWriter, r *http.Request) error {
 		return herr
 	}
 
-	idt, err := a.verifyIDToken(ctx, res.Issuer, params.IDToken, idTokenOptions{
+	idt, err := a.verifyIDToken(ctx, a.httpClient(), res.Issuer, params.IDToken, idTokenOptions{
 		AcceptableIssuers:    res.AcceptableIssuers,
 		AccessToken:          params.AccessToken,
 		SkipAccessTokenCheck: params.AccessToken == "",

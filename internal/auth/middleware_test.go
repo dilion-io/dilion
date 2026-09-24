@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/dilion-io/dilion/internal/netguard"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 // newRouterEnv mounts /auth/v1 without a database. Every endpoint that does not
@@ -88,20 +92,28 @@ func TestCORSSimpleRequest(t *testing.T) {
 	}
 }
 
-func TestClientIPPrefersForwardedFor(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	req.RemoteAddr = "10.0.0.1:1234"
-	if got := clientIP(req); got != "10.0.0.1" {
-		t.Errorf("clientIP without XFF = %q", got)
+// X-Forwarded-For counts only as far as a trusted proxy vouches for it.
+func TestClientIPTrustsOnlyConfiguredProxies(t *testing.T) {
+	resolve := func(trusted string, xff string) string {
+		a := &api{trustedProxies: netguard.MustParseNetworks(trusted)}
+		var got string
+		h := a.clientIPMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = clientIP(r) }))
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		return got
 	}
-	req.Header.Set("X-Forwarded-For", "203.0.113.9, 70.41.3.18, 150.172.238.178")
-	if got := clientIP(req); got != "203.0.113.9" {
-		t.Errorf("clientIP = %q, want the first hop", got)
+	if got := resolve("", "203.0.113.9"); got != "10.0.0.1" {
+		t.Errorf("no trusted proxy: clientIP = %q, want the peer", got)
 	}
-	// A junk first hop is skipped, not trusted.
-	req.Header.Set("X-Forwarded-For", "not-an-ip, 203.0.113.10")
-	if got := clientIP(req); got != "203.0.113.10" {
-		t.Errorf("clientIP = %q", got)
+	if got := resolve("10.0.0.0/8", "203.0.113.9, 70.41.3.18"); got != "70.41.3.18" {
+		t.Errorf("trusted proxy: clientIP = %q, want the hop it vouches for", got)
+	}
+	if got := resolve("*", "203.0.113.9, 70.41.3.18"); got != "203.0.113.9" {
+		t.Errorf("trust everything: clientIP = %q, want the first hop", got)
 	}
 }
 
@@ -183,11 +195,23 @@ func TestRateLimitedEndpointReturnsUpstreamShape(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/token?grant_type=refresh_token",
 		strings.NewReader(`{"refresh_token":"aaaaaaaaaaaa"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Forwarded-For", "198.51.100.8")
+	req.RemoteAddr = "198.51.100.8:1234"
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code == http.StatusTooManyRequests {
 		t.Error("a different client IP shares the bucket")
+	}
+
+	// The same address on another instance has a budget of its own.
+	req = httptest.NewRequest(http.MethodPost, "/token?grant_type=refresh_token",
+		strings.NewReader(`{"refresh_token":"aaaaaaaaaaaa"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "198.51.100.7:5000"
+	req = req.WithContext(ports.ContextWithInstance(req.Context(), "another-instance"))
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Error("another instance shares the bucket")
 	}
 }
 

@@ -42,6 +42,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // HTTP hook driver defaults (upstream hookshttp constants). They are package
@@ -91,7 +93,7 @@ func (a *api) runHTTPHook(ctx context.Context, cfg HookEndpointConfig, in any) (
 
 	client := &http.Client{Timeout: httpHookTimeout}
 	if cfg.ssrfGuard {
-		client.Transport = guardedHookTransport
+		client.Transport = netguard.Transport(http.DefaultTransport, a.outbound)
 	}
 	ctx, cancel := context.WithTimeout(ctx, httpHookTimeout)
 	defer cancel()
@@ -118,7 +120,7 @@ func (a *api) runHTTPHook(ctx context.Context, cfg HookEndpointConfig, in any) (
 
 		rsp, derr := client.Do(req)
 		if derr != nil {
-			if errors.Is(derr, errNonPublicAddress) {
+			if errors.Is(derr, netguard.ErrNotPublic) {
 				// Not transient: retrying would dial the same address.
 				return nil, internalServerError("Hook URI does not resolve to a public address").withInternal(derr)
 			}

@@ -16,6 +16,9 @@ import (
 
 const destinationCols = `id, type, name, config, enabled`
 
+// minWebhookSecret is the shortest HMAC key a webhook destination accepts.
+const minWebhookSecret = 32
+
 func scanDestination(row pgx.Row) (*Destination, error) {
 	var d Destination
 	var cfg []byte
@@ -79,6 +82,12 @@ func (e *Engine) CreateDestination(ctx context.Context, in CreateDestinationInpu
 		return nil, fmt.Errorf("privacy: destination config: %w", err)
 	}
 
+	// Receivers act on these calls — a privacy.delete erases an account — so
+	// they must be able to tell them from forgeries: a webhook is signed, and
+	// with a key worth the name.
+	if in.Type == DestinationWebhook && len(in.Secret) < minWebhookSecret {
+		return nil, fmt.Errorf("%w: a webhook destination needs a secret of at least %d bytes", ErrInvalidInput, minWebhookSecret)
+	}
 	var secretEnc []byte
 	if in.Secret != "" {
 		secretEnc, err = e.kms.Encrypt(ctx, systemSubjectID, ports.KeyScopeDefault, []byte(in.Secret))

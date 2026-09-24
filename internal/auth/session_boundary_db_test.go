@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -127,5 +128,23 @@ func TestAdminGateWithoutAdminMFA(t *testing.T) {
 	app, _ := oauthAppTokens(t, oenv, "dev-app@example.com")
 	if code := getAdminUsers(t, env, r, app.AccessToken); code != http.StatusForbidden {
 		t.Errorf("an OAuth application's token with WithoutAdminMFA = %d, want 403", code)
+	}
+}
+
+// Every body is capped, including ones a handler decodes itself: the OAuth
+// token endpoint's JSON form used to buffer whatever it was sent.
+func TestRequestBodiesAreCapped(t *testing.T) {
+	env := newOAuthEnv(t, nil)
+	client := env.registerClient(t, map[string]any{"redirect_uris": []string{testRedirectURI}})
+	big := `{"grant_type":"authorization_code","code":"` + strings.Repeat("a", 2<<20) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(big))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(client.ClientID, client.ClientSecret)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+	// Cut off at the cap, the body no longer parses: invalid_request, not the
+	// invalid_grant a fully read (and buffered) bogus code would get.
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_request") {
+		t.Fatalf("2 MiB token request = %d %s, want 400 invalid_request", rec.Code, rec.Body.String())
 	}
 }

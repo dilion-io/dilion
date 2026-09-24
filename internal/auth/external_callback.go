@@ -152,7 +152,7 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 		pp.setPKCEVerifier(verifier)
 	}
 
-	hc := a.httpClient()
+	hc := a.providerClient(p)
 	tok, err := p.exchange(ctx, hc, code)
 	if err != nil {
 		// Never log or return the code itself beyond upstream's 4-character

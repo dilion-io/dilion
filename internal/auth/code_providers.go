@@ -95,7 +95,7 @@ func (a *api) buildCodeProvider(ctx context.Context, name string, spec *ports.OI
 		cp.DiscoveryURL = &d
 	}
 
-	built, err := a.buildCustomProvider(ctx, cp, scopes)
+	built, err := a.buildCustomProvider(ctx, a.trustedHTTPClient(), cp, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +107,7 @@ func (a *api) buildCodeProvider(ctx context.Context, name string, spec *ports.OI
 	// only fills an empty one.
 	rt.oauth.RedirectURL = strings.TrimSpace(spec.RedirectURI)
 	rt.linkBySubject = spec.LinkBySubject
+	rt.trusted = true
 	return rt, nil
 }
 

@@ -69,7 +69,7 @@ func (g *googleProvider) exchange(ctx context.Context, hc *http.Client, code str
 
 func (g *googleProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {
 	if tok.IDToken != "" {
-		idt, err := g.a.verifyIDToken(ctx, g.issuer, tok.IDToken, idTokenOptions{
+		idt, err := g.a.verifyIDToken(ctx, hc, g.issuer, tok.IDToken, idTokenOptions{
 			AccessToken:          tok.AccessToken,
 			SkipAccessTokenCheck: tok.AccessToken == "",
 		})

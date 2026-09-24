@@ -921,15 +921,6 @@ func TestBearerToken(t *testing.T) {
 	}
 }
 
-func TestClientIP(t *testing.T) {
-	if got := clientIP("10.0.0.1:5555", ""); got != "10.0.0.1" {
-		t.Errorf("clientIP = %q", got)
-	}
-	if got := clientIP("10.0.0.1:5555", "203.0.113.7, 10.0.0.1"); got != "203.0.113.7" {
-		t.Errorf("clientIP(xff) = %q", got)
-	}
-}
-
 func TestDefaultCodeMapping(t *testing.T) {
 	cases := map[int]string{
 		http.StatusUnauthorized:        httpapi.CodeUnauthenticated,

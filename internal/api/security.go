@@ -16,6 +16,8 @@ import (
 	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/ports"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // guard authenticates the caller and enforces one permission. It is installed
@@ -37,7 +39,7 @@ func (r *registrar) guardFor(perm string) huma.Middlewares {
 func (g guard) handle(ctx huma.Context, next func(huma.Context)) {
 	ri := &requestInfo{
 		RequestID: firstNonEmpty(ctx.Header("X-Request-Id"), httpapi.NewID("req")),
-		IP:        clientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For")),
+		IP:        netguard.ClientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For"), g.d.TrustedProxies),
 		UserAgent: ctx.Header("User-Agent"),
 	}
 	resource := ctx.Operation().Method + " " + ctx.Operation().Path

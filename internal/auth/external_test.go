@@ -33,7 +33,7 @@ func testAPI(t *testing.T, cfg *Config) *api {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	return &api{cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &api{cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil)), outbound: defaultOutboundNetworks}
 }
 
 func TestProviderClaimsToMapMatchesUpstreamKeys(t *testing.T) {
@@ -359,7 +359,7 @@ func TestVerifyIDToken(t *testing.T) {
 	resetOIDCCache()
 	t.Cleanup(resetOIDCCache)
 
-	tok, err := a.verifyIDToken(context.Background(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
+	tok, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
 		AccessToken: p.accessToken,
 	})
 	if err != nil {
@@ -373,7 +373,7 @@ func TestVerifyIDToken(t *testing.T) {
 	}
 
 	// at_hash must bind the ID token to the access token it came with.
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
 		AccessToken: "some-other-access-token",
 	}); err == nil {
 		t.Error("a mismatched access token must fail the at_hash check")
@@ -381,7 +381,7 @@ func TestVerifyIDToken(t *testing.T) {
 
 	// A token from a different issuer is refused even though it is signed by
 	// the same key set.
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL,
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL,
 		p.signIDToken(map[string]any{"iss": "https://evil.test"}), idTokenOptions{
 			SkipAccessTokenCheck: true,
 		}); err == nil {
@@ -389,7 +389,7 @@ func TestVerifyIDToken(t *testing.T) {
 	}
 
 	// Expired.
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL,
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL,
 		p.signIDToken(map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}), idTokenOptions{
 			SkipAccessTokenCheck: true,
 		}); err == nil {
@@ -397,7 +397,7 @@ func TestVerifyIDToken(t *testing.T) {
 	}
 
 	// No expiry at all.
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL,
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL,
 		p.signIDToken(map[string]any{"exp": nil}), idTokenOptions{SkipAccessTokenCheck: true}); err == nil {
 		t.Error("a token without exp must be refused")
 	}
@@ -405,7 +405,7 @@ func TestVerifyIDToken(t *testing.T) {
 	// `alg: none` and HMAC must never verify against a published public key.
 	none := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0." +
 		"eyJpc3MiOiJodHRwOi8vZXhhbXBsZS5jb20iLCJzdWIiOiJ4In0."
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL, none, idTokenOptions{SkipAccessTokenCheck: true}); err == nil {
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, none, idTokenOptions{SkipAccessTokenCheck: true}); err == nil {
 		t.Error("alg=none must be refused")
 	}
 	hs := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -416,7 +416,7 @@ func TestVerifyIDToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL, hsToken, idTokenOptions{SkipAccessTokenCheck: true}); err == nil {
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, hsToken, idTokenOptions{SkipAccessTokenCheck: true}); err == nil {
 		t.Error("an HMAC-signed token must be refused")
 	}
 }
@@ -427,7 +427,7 @@ func TestVerifyIDTokenRefreshesRotatedKeys(t *testing.T) {
 	resetOIDCCache()
 	t.Cleanup(resetOIDCCache)
 
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
 		SkipAccessTokenCheck: true,
 	}); err != nil {
 		t.Fatalf("verify: %v", err)
@@ -442,7 +442,7 @@ func TestVerifyIDTokenRefreshesRotatedKeys(t *testing.T) {
 	p.key = newKey
 	p.kid = "test-key-2"
 
-	if _, err := a.verifyIDToken(context.Background(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
+	if _, err := a.verifyIDToken(context.Background(), a.httpClient(), p.srv.URL, p.signIDToken(nil), idTokenOptions{
 		SkipAccessTokenCheck: true,
 	}); err != nil {
 		t.Fatalf("verify after rotation: %v", err)

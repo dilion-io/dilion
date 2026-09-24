@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -31,6 +33,9 @@ import (
 //	DILION_TEST_DB=1 go test ./internal/privacy/...
 //
 // DSN override: DILION_TEST_DB_DSN.
+// testWebhookSecret is a webhook destination secret of the required length.
+const testWebhookSecret = "whsec_0123456789abcdef0123456789abcdef"
+
 const defaultTestDSN = "postgres://dilion:dilion@localhost:55432/dilion_test_c"
 
 // authDDL is a minimal stand-in for agent B's 0100_auth.sql: only the columns
@@ -236,6 +241,11 @@ func newTestEngine(t *testing.T, policyYAML string) *testEnv {
 }
 
 // newTestEngineWith is newTestEngine for a named instance with connectors.
+// testOutbound is what engines built by newTestEngineWith may reach besides
+// the public internet: loopback, where the fake receivers listen. A test of
+// the guard itself empties it first.
+var testOutbound = netguard.MustParseNetworks("127.0.0.0/8,::1")
+
 func newTestEngineWith(t *testing.T, policyYAML, instanceID string, connectors map[string]ports.Connector) *testEnv {
 	t.Helper()
 	pool := testPool(t)
@@ -243,14 +253,15 @@ func newTestEngineWith(t *testing.T, policyYAML, instanceID string, connectors m
 	kms := newFakeKMS(pool)
 	reg := hooks.NewRegistry()
 	e, err := NewEngine(EngineDeps{
-		Pool:         pool,
-		KMS:          kms,
-		Hooks:        reg,
-		Clock:        clock,
-		PolicyYAML:   []byte(policyYAML),
-		TombstoneKey: []byte("test-tombstone-key"),
-		InstanceID:   instanceID,
-		Connectors:   connectors,
+		Pool:             pool,
+		KMS:              kms,
+		Hooks:            reg,
+		Clock:            clock,
+		PolicyYAML:       []byte(policyYAML),
+		TombstoneKey:     []byte("test-tombstone-key"),
+		OutboundNetworks: testOutbound,
+		InstanceID:       instanceID,
+		Connectors:       connectors,
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -463,7 +474,7 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 	dst, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
 		Type: DestinationWebhook, Name: "primary-app",
 		Config: map[string]any{"url": srv.URL, "identity_field": "user_id"},
-		Secret: "whsec_test",
+		Secret: testWebhookSecret,
 	})
 	if err != nil {
 		t.Fatalf("destination: %v", err)
@@ -505,7 +516,7 @@ func TestErasurePipelineEndToEnd(t *testing.T) {
 	if !strings.HasPrefix(gotIdem, "tsk_") {
 		t.Errorf("Idempotency-Key = %q, want the task id", gotIdem)
 	}
-	if err := verifySignature("whsec_test", gotSig, []byte(gotBody), env.clock.Now(), time.Minute); err != nil {
+	if err := verifySignature(testWebhookSecret, gotSig, []byte(gotBody), env.clock.Now(), time.Minute); err != nil {
 		t.Errorf("webhook signature: %v (header %q)", err, gotSig)
 	}
 	var body map[string]any
@@ -972,7 +983,7 @@ func TestReconfirmOutboxFansOutToWebhook(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
-		Type: DestinationWebhook, Name: "crm", Config: map[string]any{"url": srv.URL}, Secret: "s"}); err != nil {
+		Type: DestinationWebhook, Name: "crm", Config: map[string]any{"url": srv.URL}, Secret: testWebhookSecret}); err != nil {
 		t.Fatal(err)
 	}
 	payload := fmt.Sprintf(`{"user_id":%q,"purpose":"marketing.email"}`, user)
@@ -1012,7 +1023,7 @@ func TestWebhookRetriesThenDeadLettersAndParksRequest(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
-		Type: DestinationWebhook, Name: "flaky", Config: map[string]any{"url": srv.URL}, Secret: "s"}); err != nil {
+		Type: DestinationWebhook, Name: "flaky", Config: map[string]any{"url": srv.URL}, Secret: testWebhookSecret}); err != nil {
 		t.Fatal(err)
 	}
 	req, err := env.e.CreateRequest(env.ctx, CreateRequestInput{UserID: user, Type: RequestDeletion, Immediate: true})
@@ -1072,7 +1083,7 @@ func TestStuckRunningTaskIsReclaimed(t *testing.T) {
 	}))
 	defer srv.Close()
 	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
-		Type: DestinationWebhook, Name: "app", Config: map[string]any{"url": srv.URL}, Secret: "s"}); err != nil {
+		Type: DestinationWebhook, Name: "app", Config: map[string]any{"url": srv.URL}, Secret: testWebhookSecret}); err != nil {
 		t.Fatal(err)
 	}
 	req, err := env.e.CreateRequest(env.ctx, CreateRequestInput{UserID: user, Type: RequestDeletion, Immediate: true})
@@ -1226,7 +1237,7 @@ func TestDestinationsCRUDAndListing(t *testing.T) {
 		d, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
 			Type: DestinationWebhook, Name: fmt.Sprintf("app-%d", i),
 			Config: map[string]any{"url": "https://example.test/hook", "secret": "leak-me"},
-			Secret: "whsec",
+			Secret: testWebhookSecret,
 		})
 		if err != nil {
 			t.Fatalf("create: %v", err)
@@ -1402,7 +1413,7 @@ func TestOutgoingEventsCarryInstance(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
-		Type: DestinationWebhook, Name: "hook", Config: map[string]any{"url": srv.URL}, Secret: "s"}); err != nil {
+		Type: DestinationWebhook, Name: "hook", Config: map[string]any{"url": srv.URL}, Secret: testWebhookSecret}); err != nil {
 		t.Fatal(err)
 	}
 	connDst, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
@@ -1448,5 +1459,52 @@ func TestOutgoingEventsCarryInstance(t *testing.T) {
 	}
 	if got := conn.tasks[0].InstanceID; got != "tenant-a" {
 		t.Errorf("connector task instance = %q, want tenant-a", got)
+	}
+}
+
+// A webhook destination is set by an instance admin; delivering to it must
+// not reach the server's own network unless the operator allowed that
+// network.
+func TestWebhookDestinationCannotReachPrivateNetwork(t *testing.T) {
+	prev := testOutbound
+	testOutbound = netguard.Networks{}
+	t.Cleanup(func() { testOutbound = prev })
+	env := newTestEngine(t, "")
+	user := env.newUser(t)
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
+		Type: DestinationWebhook, Name: "internal", Config: map[string]any{"url": srv.URL}, Secret: testWebhookSecret}); err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"user_id":%q,"purpose":"marketing.email"}`, user)
+	if _, err := env.pool.Exec(env.ctx, `insert into dilion_privacy.outbox (event_type, aggregate_id, payload)
+		values ('consent.reconfirm_due', $1, $2::jsonb)`, user, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.e.dispatchOutboxOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.e.runTasksOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("delivery reached a loopback receiver %d times", n)
+	}
+}
+
+// A webhook's signature is only as good as its key.
+func TestWebhookDestinationNeedsASecret(t *testing.T) {
+	env := newTestEngine(t, "")
+	for _, secret := range []string{"", "short"} {
+		if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
+			Type: DestinationWebhook, Name: "weak", Config: map[string]any{"url": "https://example.com/hook"}, Secret: secret}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("secret %q: err = %v, want ErrInvalidInput", secret, err)
+		}
 	}
 }

@@ -191,12 +191,12 @@ func (p *appleProvider) exchange(ctx context.Context, hc *http.Client, code stri
 	return cfg.exchangeCode(ctx, hc, code, url.Values{"secret": {secret}})
 }
 
-func (p *appleProvider) userData(ctx context.Context, _ *http.Client, tok *oauthToken) (*userProvidedData, error) {
+func (p *appleProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {
 	if tok.AccessToken == "" || tok.IDToken == "" {
 		// Apple returns the profile only on the first authorization.
 		return &userProvidedData{Metadata: &providerClaims{}}, nil
 	}
-	idt, err := p.a.verifyIDToken(ctx, p.issuer, tok.IDToken, idTokenOptions{
+	idt, err := p.a.verifyIDToken(ctx, hc, p.issuer, tok.IDToken, idTokenOptions{
 		// Apple signs with either of its two issuer hosts.
 		AcceptableIssuers: []string{DefaultAppleIssuer, OtherAppleIssuer},
 		AccessToken:       tok.AccessToken,

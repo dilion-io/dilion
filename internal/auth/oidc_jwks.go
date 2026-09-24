@@ -284,9 +284,7 @@ func unverifiedIDTokenIssuer(raw string) (string, error) {
 // verifyIDToken verifies `raw` against the key set published by `issuer`.
 //
 // The audience is NOT checked here — see the file comment.
-func (a *api) verifyIDToken(ctx context.Context, issuer, raw string, opts idTokenOptions) (*idToken, error) {
-	hc := a.httpClient()
-
+func (a *api) verifyIDToken(ctx context.Context, hc *http.Client, issuer, raw string, opts idTokenOptions) (*idToken, error) {
 	doc, err := oidcCache.discover(ctx, hc, issuer)
 	if err != nil {
 		return nil, err

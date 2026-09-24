@@ -33,6 +33,8 @@ import (
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/hooks"
 	"github.com/dilion-io/dilion/ports"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // systemSubjectID is the KMS subject used for platform secrets that do not
@@ -70,6 +72,11 @@ type EngineDeps struct {
 	// because connectors are shared by every instance and a webhook receiver
 	// may be too. Empty means ports.DefaultInstanceID.
 	InstanceID string
+	// OutboundNetworks are the private networks webhook destinations may
+	// reach. Destinations are set through the API by the instance's admins,
+	// so by default deliveries reach only the public internet
+	// (internal/netguard).
+	OutboundNetworks netguard.Networks
 }
 
 // Engine implements Service.
@@ -133,7 +140,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		connectors:     d.Connectors,
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
 		instanceID:     d.InstanceID,
-		http:           &http.Client{Timeout: 15 * time.Second},
+		http:           &http.Client{Timeout: 15 * time.Second, Transport: netguard.Transport(http.DefaultTransport, d.OutboundNetworks)},
 		log:            slog.Default().With("component", "privacy"),
 	}
 	if e.clock == nil {

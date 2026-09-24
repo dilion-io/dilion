@@ -11,8 +11,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -22,6 +20,8 @@ import (
 	"github.com/dilion-io/dilion/internal/audit"
 	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/ports"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // PoolFunc resolves the database pool for a request: in a multi-instance
@@ -47,6 +47,10 @@ type Deps struct {
 	// recency check off (the session and MFA checks remain). The server fills
 	// it from auth's Security.DeletionReauthWindow.
 	DeletionReauthWindow time.Duration
+
+	// TrustedProxies are the proxies whose X-Forwarded-For is believed when
+	// recording a caller's address (netguard.ClientIP).
+	TrustedProxies netguard.Networks
 
 	// SessionLookup reads the assurance of a user token's session. nil means
 	// auth.LookupSessionAssurance on the request's database.
@@ -204,17 +208,4 @@ func listParams(limit int, cursor, sort string) httpapi.ListParams {
 // catalogListParams is listParams for a catalog list (httpapi.MaxCatalogLimit).
 func catalogListParams(limit int, cursor string) httpapi.ListParams {
 	return httpapi.ListParams{Limit: limit, Cursor: cursor, Max: httpapi.MaxCatalogLimit}.Norm()
-}
-
-func clientIP(remoteAddr, forwardedFor string) string {
-	if forwardedFor != "" {
-		first, _, _ := strings.Cut(forwardedFor, ",")
-		if ip := strings.TrimSpace(first); ip != "" {
-			return ip
-		}
-	}
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
 }

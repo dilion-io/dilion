@@ -74,6 +74,9 @@ type customOAuthProvider struct {
 // explicit URLs for OAuth2) when the provider is built.
 type customRuntimeProvider struct {
 	a *api
+	// trusted marks a provider the embedder defined in code: its calls skip
+	// the outbound guard.
+	trusted bool
 
 	oauth               oauthConfig
 	providerType        string
@@ -139,11 +142,13 @@ func (a *api) resolveCustomProvider(ctx context.Context, name, scopes string) (e
 		}
 		return nil, err
 	}
-	return a.buildCustomProvider(ctx, cp, scopes)
+	return a.buildCustomProvider(ctx, a.httpClient(), cp, scopes)
 }
 
 // buildCustomProvider resolves endpoints and returns the runtime provider.
-func (a *api) buildCustomProvider(ctx context.Context, cp *customOAuthProvider, scopes string) (externalProvider, error) {
+// hc fetches the provider's discovery document: guarded for a stored
+// provider, the embedder's client for a code-defined one.
+func (a *api) buildCustomProvider(ctx context.Context, hc *http.Client, cp *customOAuthProvider, scopes string) (externalProvider, error) {
 	if !cp.Enabled {
 		return nil, errors.New("provider is not enabled")
 	}
@@ -151,7 +156,7 @@ func (a *api) buildCustomProvider(ctx context.Context, cp *customOAuthProvider, 
 		return nil, errors.New("provider is missing client credentials")
 	}
 
-	authURL, tokenURL, userinfoURL, issuer, err := a.customProviderEndpoints(ctx, cp)
+	authURL, tokenURL, userinfoURL, issuer, err := a.customProviderEndpoints(ctx, hc, cp)
 	if err != nil {
 		return nil, err
 	}
@@ -184,13 +189,13 @@ func (a *api) buildCustomProvider(ctx context.Context, cp *customOAuthProvider, 
 // OIDC it resolves them from the discovery document (a custom discovery_url
 // overrides the issuer's well-known location); for OAuth2 it uses the explicit
 // URLs.
-func (a *api) customProviderEndpoints(ctx context.Context, cp *customOAuthProvider) (string, string, string, string, error) {
+func (a *api) customProviderEndpoints(ctx context.Context, hc *http.Client, cp *customOAuthProvider) (string, string, string, string, error) {
 	if cp.ProviderType == customProviderTypeOIDC {
 		if cp.Issuer == nil || *cp.Issuer == "" {
 			return "", "", "", "", errors.New("oidc custom provider is missing its issuer")
 		}
 		issuer := strings.TrimSuffix(*cp.Issuer, "/")
-		doc, err := a.customProviderDiscovery(ctx, issuer, cp.DiscoveryURL)
+		doc, err := a.customProviderDiscovery(ctx, hc, issuer, cp.DiscoveryURL)
 		if err != nil {
 			return "", "", "", "", err
 		}
@@ -213,16 +218,20 @@ func (a *api) customProviderEndpoints(ctx context.Context, cp *customOAuthProvid
 
 // customProviderDiscovery fetches the OIDC metadata. When discoveryURL is set it
 // is fetched verbatim; otherwise the cached issuer/.well-known path is used.
-func (a *api) customProviderDiscovery(ctx context.Context, issuer string, discoveryURL *string) (*oidcDiscovery, error) {
+func (a *api) customProviderDiscovery(ctx context.Context, hc *http.Client, issuer string, discoveryURL *string) (*oidcDiscovery, error) {
 	if discoveryURL != nil && *discoveryURL != "" {
 		doc := &oidcDiscovery{}
-		if err := getJSON(ctx, a.httpClient(), *discoveryURL, "", doc); err != nil {
+		if err := getJSON(ctx, hc, *discoveryURL, "", doc); err != nil {
 			return nil, fmt.Errorf("oidc: discovery for %s: %w", issuer, err)
 		}
 		return doc, nil
 	}
-	return oidcCache.discover(ctx, a.httpClient(), issuer)
+	return oidcCache.discover(ctx, hc, issuer)
 }
+
+// trustedOutbound reports a provider the embedder defined in code, whose calls
+// skip the outbound guard (providerClient).
+func (p *customRuntimeProvider) trustedOutbound() bool { return p.trusted }
 
 func (p *customRuntimeProvider) authCodeURL(state string, extra url.Values) string {
 	if len(p.authorizationParams) > 0 || p.pkceVerifier != "" {
@@ -257,7 +266,7 @@ func (p *customRuntimeProvider) exchange(ctx context.Context, hc *http.Client, c
 func (p *customRuntimeProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {
 	// OIDC with an id_token: verify it and read the claims from the token.
 	if p.providerType == customProviderTypeOIDC && tok.IDToken != "" {
-		idt, err := p.a.verifyIDToken(ctx, p.issuer, tok.IDToken, idTokenOptions{
+		idt, err := p.a.verifyIDToken(ctx, hc, p.issuer, tok.IDToken, idTokenOptions{
 			AccessToken:          tok.AccessToken,
 			SkipAccessTokenCheck: tok.AccessToken == "",
 		})

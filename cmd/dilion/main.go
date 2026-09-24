@@ -77,6 +77,14 @@ func run() error {
 		}
 		opts = append(opts, dilion.WithPIIFieldsYAML(b))
 	}
+	// Comma-separated IPs/CIDRs, or "*": see dilion.WithTrustedProxies and
+	// dilion.WithOutboundNetworks.
+	if v := os.Getenv("DILION_TRUSTED_PROXIES"); v != "" {
+		opts = append(opts, dilion.WithTrustedProxies(v))
+	}
+	if v := os.Getenv("DILION_OUTBOUND_ALLOWED_NETWORKS"); v != "" {
+		opts = append(opts, dilion.WithOutboundNetworks(v))
+	}
 	if truthy(os.Getenv("DILION_DEV_NO_ADMIN_MFA")) {
 		opts = append(opts, dilion.WithoutAdminMFA())
 	}

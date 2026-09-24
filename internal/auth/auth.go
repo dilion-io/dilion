@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -37,6 +38,19 @@ const Version = "0.1.0"
 
 // maxRequestBody caps request bodies (gotrue applies a similar limit).
 const maxRequestBody = 1 << 20 // 1 MiB
+
+// limitBodyMiddleware caps every request body at maxRequestBody, whatever
+// reads it: decodeBody always did, but a handler decoding the body itself (the
+// OAuth token endpoint's JSON form, a form parse) could otherwise be sent an
+// arbitrarily large one and buffer it whole.
+func limitBodyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // PoolFunc resolves the database pool for a request. In a multi-instance
 // deployment it returns the database of the instance selected on the context
@@ -96,6 +110,16 @@ type Deps struct {
 	// auth.oauth_clients.
 	OAuthClients ports.OAuthClientResolver
 
+	// TrustedProxies are the proxies whose X-Forwarded-For is believed
+	// (netguard.ClientIP); the zero value trusts none, so the peer address is
+	// the client.
+	TrustedProxies netguard.Networks
+
+	// OutboundNetworks are the private networks that calls to URLs instance
+	// admins configure (hooks, custom and SSO providers) may reach; nil
+	// means none. Code-defined providers are not guarded.
+	OutboundNetworks *netguard.Networks
+
 	// AdminMFADisabled lets a user token administer without an aal2 session
 	// (dilion.WithoutAdminMFA). Development only.
 	AdminMFADisabled bool
@@ -141,6 +165,12 @@ type api struct {
 	adminMFADisabled bool
 	siteCache        sync.Map
 
+	// outbound is the networks guarded outbound calls may reach besides the
+	// public internet (Deps.OutboundNetworks).
+	outbound netguard.Networks
+	// trustedProxies is Deps.TrustedProxies.
+	trustedProxies netguard.Networks
+
 	// limiters are the named per-IP rate limiters of this mount (middleware.go).
 	limiters map[string]*rateLimiter
 }
@@ -184,9 +214,19 @@ func newAPI(d Deps) *api {
 	if a.clock == nil {
 		a.clock = ports.SystemClock{}
 	}
+	a.trustedProxies = d.TrustedProxies
+	a.outbound = defaultOutboundNetworks
+	if d.OutboundNetworks != nil {
+		a.outbound = *d.OutboundNetworks
+	}
 	a.limiters = buildLimiters(cfg)
 	return a
 }
+
+// defaultOutboundNetworks is the outbound allowance of a mount whose Deps
+// sets none: nothing but the public internet. This package's tests widen it
+// to loopback, where their fake providers listen (main_test.go).
+var defaultOutboundNetworks netguard.Networks
 
 func (a *api) now() time.Time { return a.clock.Now().UTC() }
 
@@ -267,7 +307,8 @@ func Register(r chi.Router, d Deps) *Mount {
 	a := newAPI(d)
 
 	r.Use(corsMiddleware(a.cfg))
-	r.Use(clientIPMiddleware)
+	r.Use(limitBodyMiddleware)
+	r.Use(a.clientIPMiddleware)
 	r.Use(timeoutMiddleware(a, a.cfg.APIMaxRequestDuration))
 	r.Use(a.siteMiddleware)
 

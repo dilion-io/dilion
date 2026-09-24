@@ -94,7 +94,7 @@ func (p *azureProvider) exchange(ctx context.Context, hc *http.Client, code stri
 	return p.oauth.exchangeCode(ctx, hc, code, nil)
 }
 
-func (p *azureProvider) userData(ctx context.Context, _ *http.Client, tok *oauthToken) (*userProvidedData, error) {
+func (p *azureProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {
 	if tok.IDToken == "" {
 		return nil, fmt.Errorf("azure: token response has no id_token")
 	}
@@ -108,7 +108,7 @@ func (p *azureProvider) userData(ctx context.Context, _ *http.Client, tok *oauth
 		return nil, perr
 	}
 
-	idt, err := p.a.verifyIDToken(ctx, detected, tok.IDToken, idTokenOptions{
+	idt, err := p.a.verifyIDToken(ctx, hc, detected, tok.IDToken, idTokenOptions{
 		AcceptableIssuers:    []string{detected},
 		AccessToken:          tok.AccessToken,
 		SkipAccessTokenCheck: tok.AccessToken == "",

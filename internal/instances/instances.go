@@ -40,6 +40,8 @@ import (
 	"github.com/dilion-io/dilion/internal/hooks"
 	"github.com/dilion-io/dilion/internal/privacy"
 	"github.com/dilion-io/dilion/ports"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // PoolFunc resolves the database pool of the instance selected on ctx. It is
@@ -143,6 +145,9 @@ type Config struct {
 	Connectors   map[string]ports.Connector
 	TombstoneKey []byte
 	Logger       *slog.Logger
+	// OutboundNetworks are the private networks every instance's privacy
+	// webhook destinations may reach (netguard).
+	OutboundNetworks netguard.Networks
 }
 
 // Registry resolves instance resources from a context and owns the lazily
@@ -264,15 +269,16 @@ func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, e
 	// NewEngine performs no I/O: it only validates and loads policy data, so
 	// holding the registry lock here is cheap.
 	e, err := privacy.NewEngine(privacy.EngineDeps{
-		Pool:          pool,
-		KMS:           kms,
-		Hooks:         r.cfg.Hooks,
-		Clock:         r.cfg.Clock,
-		PolicyYAML:    policy,
-		PIIFieldsYAML: pii,
-		Connectors:    r.cfg.Connectors,
-		TombstoneKey:  r.cfg.TombstoneKey,
-		InstanceID:    id,
+		Pool:             pool,
+		KMS:              kms,
+		Hooks:            r.cfg.Hooks,
+		Clock:            r.cfg.Clock,
+		PolicyYAML:       policy,
+		PIIFieldsYAML:    pii,
+		Connectors:       r.cfg.Connectors,
+		TombstoneKey:     r.cfg.TombstoneKey,
+		InstanceID:       id,
+		OutboundNetworks: r.cfg.OutboundNetworks,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)

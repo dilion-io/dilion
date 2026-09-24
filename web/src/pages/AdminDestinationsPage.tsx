@@ -402,12 +402,12 @@ function CreateDestinationForm({ onCreated }: { onCreated: () => void }) {
           </p>
         )}
         <label>
-          secret (optional, write-only)
+          secret (write-only; at least 32 bytes, required for a WEBHOOK)
           <input
             type="password"
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
-            placeholder="hmac shared secret"
+            placeholder="hmac shared secret, ≥ 32 bytes"
           />
         </label>
         <div className="row">

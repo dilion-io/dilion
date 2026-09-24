@@ -59,11 +59,11 @@ func (p *linkedinOIDCProvider) exchange(ctx context.Context, hc *http.Client, co
 	return p.oauth.exchangeCode(ctx, hc, code, nil)
 }
 
-func (p *linkedinOIDCProvider) userData(ctx context.Context, _ *http.Client, tok *oauthToken) (*userProvidedData, error) {
+func (p *linkedinOIDCProvider) userData(ctx context.Context, hc *http.Client, tok *oauthToken) (*userProvidedData, error) {
 	if tok.IDToken == "" {
 		return nil, fmt.Errorf("linkedin_oidc: token response has no id_token")
 	}
-	idt, err := p.a.verifyIDToken(ctx, p.issuer, tok.IDToken, idTokenOptions{
+	idt, err := p.a.verifyIDToken(ctx, hc, p.issuer, tok.IDToken, idTokenOptions{
 		AccessToken:          tok.AccessToken,
 		SkipAccessTokenCheck: tok.AccessToken == "",
 	})

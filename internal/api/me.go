@@ -29,6 +29,8 @@ import (
 	"github.com/dilion-io/dilion/internal/auth"
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/privacy"
+
+	"github.com/dilion-io/dilion/internal/netguard"
 )
 
 // ---- DTOs ----
@@ -77,7 +79,7 @@ func (r *registrar) selfGuard() huma.Middlewares {
 	return huma.Middlewares{func(ctx huma.Context, next func(huma.Context)) {
 		ri := &requestInfo{
 			RequestID: firstNonEmpty(ctx.Header("X-Request-Id"), httpapi.NewID("req")),
-			IP:        clientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For")),
+			IP:        netguard.ClientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For"), r.d.TrustedProxies),
 			UserAgent: ctx.Header("User-Agent"),
 		}
 		token, ok := bearerToken(ctx.Header("Authorization"))

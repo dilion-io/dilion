@@ -32,19 +32,16 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/dilion-io/dilion/internal/audit"
+	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -197,86 +194,6 @@ func isHTTPHookURI(uri string) bool {
 	return strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://")
 }
 
-// ---- SSRF guard ------------------------------------------------------------
-
-// errNonPublicAddress is what a guarded hook call fails with when the hook's
-// host is, or resolves to, an address outside the public internet.
-var errNonPublicAddress = errors.New("hook address is not public")
-
-// nonPublicPrefixes are the ranges net/netip's predicates do not already
-// cover: shared (CGNAT), "this network", IETF protocol assignments,
-// benchmarking, reserved, and the IPv6 transition prefixes that can embed an
-// IPv4 address of any kind.
-var nonPublicPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("64:ff9b:1::/48"),
-	netip.MustParsePrefix("2002::/16"),
-}
-
-// isPublicAddr reports whether a guarded hook may connect to addr.
-func isPublicAddr(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
-		return false
-	}
-	for _, p := range nonPublicPrefixes {
-		if p.Contains(addr) {
-			return false
-		}
-	}
-	return true
-}
-
-// guardedHookTransport carries the calls of guarded hooks. The check runs on
-// the address actually dialled, after DNS resolution, so a name that resolves
-// to a public address when saved and to an internal one later (DNS
-// rebinding), or a redirect to an internal URL, is still refused. It ignores
-// HTTP_PROXY: through a proxy the dialled address would be the proxy's.
-var guardedHookTransport = &http.Transport{
-	Proxy: nil,
-	DialContext: (&net.Dialer{
-		Timeout: httpHookTimeout,
-		Control: func(_, address string, _ syscall.RawConn) error {
-			ap, err := netip.ParseAddrPort(address)
-			if err != nil || !isPublicAddr(ap.Addr()) {
-				return errNonPublicAddress
-			}
-			return nil
-		},
-	}).DialContext,
-	ForceAttemptHTTP2:   true,
-	MaxIdleConns:        100,
-	IdleConnTimeout:     90 * time.Second,
-	TLSHandshakeTimeout: 10 * time.Second,
-}
-
-// checkPublicHost resolves a guarded URI's host when it is saved, so an admin
-// learns straight away that it points inside the network; the dial-time check
-// in guardedHookTransport is the one that holds.
-func checkPublicHost(ctx context.Context, host string) error {
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if !isPublicAddr(addr) {
-			return errNonPublicAddress
-		}
-		return nil
-	}
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return fmt.Errorf("cannot resolve %s", host)
-	}
-	for _, addr := range addrs {
-		if !isPublicAddr(addr) {
-			return errNonPublicAddress
-		}
-	}
-	return nil
-}
-
 // ---- admin surface ---------------------------------------------------------
 
 // hookSettingView is how /admin/hooks reports one hook.
@@ -376,7 +293,7 @@ func (a *api) validateHookSetting(ctx context.Context, key string, enabled bool,
 		return badRequestError(ErrorCodeValidationFailed, "uri is not allowed: %s", reason.Error())
 	}
 	if guard {
-		if err := checkPublicHost(ctx, host); err != nil {
+		if err := netguard.CheckHost(ctx, host, a.outbound); err != nil {
 			return badRequestError(ErrorCodeValidationFailed, "uri is not allowed: %s", err.Error())
 		}
 	}

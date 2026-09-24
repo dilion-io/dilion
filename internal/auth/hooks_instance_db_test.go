@@ -125,6 +125,7 @@ func TestInstanceHookLocked(t *testing.T) {
 // With no policy, an instance's webhook may only reach public addresses: saving
 // a loopback URL fails, and one stored anyway is never dialled.
 func TestInstanceHookSSRFGuardByDefault(t *testing.T) {
+	withoutOutboundAllowance(t)
 	var hits int32
 	srv := jsonHookServer(t, http.StatusOK, `{}`, &hits)
 	env := newTestEnv(t)
