@@ -48,7 +48,7 @@ test('report neutralises mentions, lists sources and shows proposed edits', () =
   assert.match(report, /<summary>확인된 항목 1건<\/summary>/)
 })
 
-test('review writes accepted proposals, restores rejected ones and records metadata', () => {
+test('review writes accepted proposals, restores rejected ones and records metadata', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'dilion-compliance-test-'))
   const input = join(directory, policyFile)
   const out = join(directory, 'out')
@@ -58,11 +58,11 @@ test('review writes accepted proposals, restores rejected ones and records metad
 
     const calls = []
     const passing = (args) => { calls.push(args[0]); return { ok: true, output: '' } }
-    let meta = review({ directory, out, date: '2026-09-24', run: () => ({ summary: 's', findings: [finding()] }), go: passing })
+    let meta = await review({ directory, out, date: '2026-09-24', run: () => ({ summary: 's', findings: [finding()] }), go: passing })
     assert.deepEqual([meta.changed, meta.attention, calls.length], [false, false, 0])
     assert.equal(readFileSync(input, 'utf8'), source)
 
-    meta = review({ directory, out, date: '2026-09-24', run: () => ({ summary: 's', findings: [outdated] }), go: passing })
+    meta = await review({ directory, out, date: '2026-09-24', run: () => ({ summary: 's', findings: [outdated] }), go: passing })
     assert.deepEqual([meta.changed, meta.attention, calls], [true, true, ['run', 'test']])
     assert.equal(readFileSync(input, 'utf8'), source.replace('P3Y', 'P2Y'))
     assert.equal(JSON.parse(readFileSync(join(out, 'review.json'), 'utf8')).counts.outdated, 1)
@@ -70,10 +70,10 @@ test('review writes accepted proposals, restores rejected ones and records metad
 
     writeFileSync(input, source)
     const rejecting = (args) => ({ ok: args[0] !== 'run', output: 'privacy: unknown action' })
-    assert.throws(() => review({ directory, out, run: () => ({ summary: 's', findings: [outdated] }), go: rejecting }), /rejected by the policy loader/)
+    await assert.rejects(() => review({ directory, out, run: () => ({ summary: 's', findings: [outdated] }), go: rejecting }), /rejected by the policy loader/)
     assert.equal(readFileSync(input, 'utf8'), source)
 
-    assert.throws(() => review({ directory, out, run: () => { writeFileSync(input, source + '# edited\n'); return { summary: 's', findings: [outdated] } }, go: passing }), /changed during the review/)
-    assert.throws(() => review({ directory, out, run: () => { throw new Error('API down') } }), /API down/)
+    await assert.rejects(() => review({ directory, out, run: () => { writeFileSync(input, source + '# edited\n'); return { summary: 's', findings: [outdated] } }, go: passing }), /changed during the review/)
+    await assert.rejects(() => review({ directory, out, run: () => { throw new Error('API down') } }), /API down/)
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })

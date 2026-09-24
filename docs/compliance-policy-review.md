@@ -19,6 +19,7 @@ Claude Code 로그인 또는 `ANTHROPIC_API_KEY`가 필요하며 사용 요금�
 `COMPLIANCE_REVIEW_MODEL`과 `COMPLIANCE_REVIEW_MAX_BUDGET_USD`로 변경할 수 있습니다.
 제안이 채택되면 정책 파일을 그 자리에서 수정하므로 `git diff`로 확인할 수 있습니다.
 출력 디렉터리에는 `report.md`(사람용 보고서)와 `review.json`(요약·해시)이 남습니다.
+진행 과정(Claude의 발언, 도구 호출, 도구 결과 요약, 비용)은 `--output-format stream-json`으로 받아 stderr에 실시간 출력합니다.
 
 ## 안전 장치
 
@@ -35,8 +36,8 @@ Claude Code 로그인 또는 `ANTHROPIC_API_KEY`가 필요하며 사용 요금�
 
 ## GitHub Actions 설정
 
-1. **Settings → Secrets and variables → Actions**에 `ANTHROPIC_API_KEY` secret 또는
-   `ANTHROPIC_FEDERATION_JSON_TEMPLATE` secret을 등록합니다. README 번역과 같은 자격증명입니다.
+1. **Settings → Secrets and variables → Actions**에 `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`, 우선 사용), `ANTHROPIC_API_KEY`,
+   `ANTHROPIC_FEDERATION_JSON_TEMPLATE` 중 하나를 secret으로 등록합니다. README 번역과 같은 자격증명입니다.
 2. 필요하면 `COMPLIANCE_REVIEW_MODEL`, `COMPLIANCE_REVIEW_MAX_BUDGET_USD` repository variable을 설정합니다.
 3. **Settings → Actions → General**에서 *Allow GitHub Actions to create and approve pull requests*를
    켭니다. 꺼져 있으면 PR 생성 단계가 실패합니다.

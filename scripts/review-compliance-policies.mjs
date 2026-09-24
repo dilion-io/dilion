@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { runClaude as claude } from './claude-stream.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const policyFile = 'internal/privacy/builtin_policies.yaml'
@@ -208,27 +209,20 @@ export function renderReport({ date, model, source, proposed, summary, findings,
   return report
 }
 
-export function runClaude(source, date) {
+export async function runClaude(source, date) {
   const work = mkdtempSync(join(tmpdir(), 'dilion-compliance-'))
   try {
     const input = `Today is ${date}.\n\nCurrent contents of ${policyFile}:\n\n${source}`
-    const result = spawnSync('claude', [
+    const response = await claude([
       '-p', '--safe-mode', '--tools', 'WebSearch,WebFetch', '--allowedTools', 'WebSearch,WebFetch',
       '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--setting-sources', '', '--no-session-persistence', '--output-format', 'json',
+      '--setting-sources', '', '--no-session-persistence',
       '--model', process.env.COMPLIANCE_REVIEW_MODEL || 'opus',
       '--max-budget-usd', process.env.COMPLIANCE_REVIEW_MAX_BUDGET_USD || '10',
       '--json-schema', JSON.stringify(schema),
       '--system-prompt', instructions,
-    ], { cwd: work, input, encoding: 'utf8', timeout: 1_800_000, maxBuffer: 16 << 20 })
-    // Do not log Claude's raw output/stderr; authentication diagnostics may
-    // contain account information.
-    if (result.error || result.status !== 0) {
-      throw new Error(`claude -p failed (${result.error?.code || result.status}); check CLI installation/authentication and budget`)
-    }
-    let response
-    try { response = JSON.parse(result.stdout) } catch { throw new Error('Claude returned invalid JSON') }
-    if (response.type !== 'result' || response.subtype !== 'success' || response.is_error !== false || typeof response.structured_output !== 'object') {
+    ], { cwd: work, input, timeout: 1_800_000 })
+    if (response.subtype !== 'success' || response.is_error !== false || typeof response.structured_output !== 'object') {
       throw new Error(`Claude returned an unsuccessful review (${response.subtype || 'unknown'})`)
     }
     return response.structured_output
@@ -256,11 +250,11 @@ function writeAtomic(path, text) {
 
 // review asks Claude to verify the policy file, writes any accepted proposal in
 // place (so `git diff` shows it) and leaves report.md and review.json in out.
-export function review({ directory = root, out, date = new Date().toISOString().slice(0, 10), run = runClaude, go = runGo } = {}) {
+export async function review({ directory = root, out, date = new Date().toISOString().slice(0, 10), run = runClaude, go = runGo } = {}) {
   if (!out) throw new Error('An output directory is required')
   const input = join(directory, policyFile)
   const source = readFileSync(input, 'utf8')
-  const { summary, findings, proposed } = validateReview(run(source, date), source)
+  const { summary, findings, proposed } = validateReview(await run(source, date), source)
 
   let tests = { ok: true, failures: [] }
   if (proposed !== source) {
@@ -297,7 +291,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     const args = process.argv.slice(2)
     if (args.length !== 2 || args[0] !== '--out') throw new Error('Usage: node scripts/review-compliance-policies.mjs --out <directory>')
-    const meta = review({ out: resolve(args[1]) })
+    const meta = await review({ out: resolve(args[1]) })
     console.log(meta.changed ? `proposed changes to ${policyFile}` : 'no changes proposed', JSON.stringify(meta.counts))
   } catch (error) {
     console.error(error.message)

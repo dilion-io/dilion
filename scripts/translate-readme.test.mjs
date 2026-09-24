@@ -25,29 +25,29 @@ test('translation validates structure, code and links', () => {
   }
 })
 
-test('atomic generation, freshness, force, failure and concurrent edits', () => {
+test('atomic generation, freshness, force, failure and concurrent edits', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'dilion-translation-test-'))
   const output = join(directory, 'README.en.md')
   try {
     writeFileSync(join(directory, 'README.md'), source)
-    assert.throws(() => translate({ directory, check: true }), /missing or stale/)
-    translate({ directory, run: () => english })
+    await assert.rejects(() => translate({ directory, check: true }), /missing or stale/)
+    await translate({ directory, run: () => english })
     const good = readFileSync(output, 'utf8')
     assert.match(good, /source-sha256: [a-f0-9]{64}/)
-    assert.equal(translate({ directory, check: true }), 'up to date')
-    translate({ directory, run: () => assert.fail('unnecessary API call') })
+    assert.equal(await translate({ directory, check: true }), 'up to date')
+    await translate({ directory, run: () => assert.fail('unnecessary API call') })
     let calls = 0
-    translate({ directory, force: true, run: () => { calls++; return english } })
+    await translate({ directory, force: true, run: () => { calls++; return english } })
     assert.equal(calls, 1)
-    assert.throws(() => translate({ directory, force: true, run: () => { throw new Error('API down') } }), /API down/)
+    await assert.rejects(() => translate({ directory, force: true, run: () => { throw new Error('API down') } }), /API down/)
     assert.equal(readFileSync(output, 'utf8'), good)
-    assert.throws(() => translate({ directory, force: true, run: () => 'bad output' }))
+    await assert.rejects(() => translate({ directory, force: true, run: () => 'bad output' }))
     assert.equal(readFileSync(output, 'utf8'), good)
-    assert.throws(() => translate({ directory, force: true, run: () => {
+    await assert.rejects(() => translate({ directory, force: true, run: () => {
       writeFileSync(join(directory, 'README.md'), source + '\n수정됨\n')
       return english
     } }), /changed during translation/)
     assert.equal(readFileSync(output, 'utf8'), good)
-    assert.throws(() => translate({ directory, check: true }), /missing or stale/)
+    await assert.rejects(() => translate({ directory, check: true }), /missing or stale/)
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })

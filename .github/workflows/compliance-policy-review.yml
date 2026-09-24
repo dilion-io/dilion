@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '23 3 1 * *' # monthly, 1st day 03:23 UTC
   push:
-    paths: ['internal/privacy/builtin_policies.yaml', 'scripts/review-compliance-policies.mjs', '.github/workflows/compliance-policy-review.yml']
+    paths: ['internal/privacy/builtin_policies.yaml', 'scripts/review-compliance-policies.mjs', 'scripts/claude-stream.mjs', '.github/workflows/compliance-policy-review.yml']
   workflow_dispatch:
 
 permissions:
@@ -38,7 +38,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: node --test scripts/review-compliance-policies.test.mjs
+      - run: node --test scripts/review-compliance-policies.test.mjs scripts/claude-stream.test.mjs
       - name: Current policies must load before Claude reviews them
         run: go run ./scripts/check-compliance-policies
       - name: Resolve Claude credentials

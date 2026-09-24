@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, renameSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { runClaude as claude } from './claude-stream.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const instructions = `Translate the supplied Korean project README into clear, faithful English Markdown.
@@ -59,26 +59,20 @@ export function validateTranslation(source, translated) {
   }
 }
 
-export function runClaude(source) {
+export async function runClaude(source) {
   const protectedMarkdown = protectMarkdown(source)
   const work = mkdtempSync(join(tmpdir(), 'dilion-readme-'))
   try {
-    const result = spawnSync('claude', [
+    const response = await claude([
       '-p', '--safe-mode', '--tools', '', '--strict-mcp-config',
       '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
-      '--no-session-persistence', '--output-format', 'json',
+      '--no-session-persistence',
       '--model', process.env.README_TRANSLATION_MODEL || 'sonnet',
       '--max-budget-usd', process.env.README_TRANSLATION_MAX_BUDGET_USD || '3',
       '--system-prompt', instructions,
-    ], { cwd: work, input: protectedMarkdown.input, encoding: 'utf8', timeout: 300_000, maxBuffer: 2 << 20 })
-    // Do not log Claude's raw output/stderr; authentication diagnostics may
-    // contain account information. Failure must not overwrite a good file.
-    if (result.error || result.status !== 0) {
-      throw new Error(`claude -p failed (${result.error?.code || result.status}); check CLI installation/authentication and budget`)
-    }
-    let response
-    try { response = JSON.parse(result.stdout) } catch { throw new Error('Claude returned invalid JSON; existing README.en.md was preserved') }
-    if (response.type !== 'result' || response.subtype !== 'success' || response.is_error !== false || typeof response.result !== 'string') {
+    ], { cwd: work, input: protectedMarkdown.input, timeout: 300_000 })
+    // Failure must not overwrite a good file.
+    if (response.subtype !== 'success' || response.is_error !== false || typeof response.result !== 'string') {
       throw new Error('Claude returned an unsuccessful translation result')
     }
     return protectedMarkdown.restore(response.result.trim()) + '\n'
@@ -87,7 +81,7 @@ export function runClaude(source) {
   }
 }
 
-export function translate({ directory = root, check = false, force = false, run = runClaude } = {}) {
+export async function translate({ directory = root, check = false, force = false, run = runClaude } = {}) {
   const input = join(directory, 'README.md')
   const output = join(directory, 'README.en.md')
   const source = readFileSync(input, 'utf8')
@@ -100,7 +94,7 @@ export function translate({ directory = root, check = false, force = false, run 
     return 'up to date'
   }
   if (current && !force) return 'up to date (no API call)'
-  const translated = run(source)
+  const translated = await run(source)
   validateTranslation(source, translated)
   if (readFileSync(input, 'utf8') !== source) throw new Error('README.md changed during translation; retry')
   const temporary = join(directory, `.README.en.md.${randomUUID()}.tmp`)
@@ -117,7 +111,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     const args = process.argv.slice(2)
     if (args.some(arg => !['--check', '--force'].includes(arg)) || args.length > 1) throw new Error('Usage: node scripts/translate-readme.mjs [--check | --force]')
-    console.log(translate({ check: args.includes('--check'), force: args.includes('--force') }))
+    console.log(await translate({ check: args.includes('--check'), force: args.includes('--force') }))
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1

@@ -2,7 +2,7 @@ name: Translate README
 
 on:
   push:
-    paths: ['README.md', 'scripts/translate-readme.mjs', 'scripts/translate-readme.test.mjs', '.github/workflows/readme-translation.yml', '.github/actions/anthropic-credentials/**']
+    paths: ['README.md', 'scripts/translate-readme.mjs', 'scripts/translate-readme.test.mjs', 'scripts/claude-stream.mjs', '.github/workflows/readme-translation.yml', '.github/actions/anthropic-credentials/**']
   workflow_dispatch:
 
 permissions:
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-node@v7.0.0
         with:
           node-version: '22'
-      - run: node --test scripts/translate-readme.test.mjs
+      - run: node --test scripts/translate-readme.test.mjs scripts/claude-stream.test.mjs
       - name: Resolve translation credentials
         uses: ./.github/actions/anthropic-credentials
         with:

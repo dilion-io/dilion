@@ -27,11 +27,12 @@ README 이외의 저장소 파일이나 `todo.md`를 모델에 전달하지 않�
 받아 자리표시자 누락·중복, 코드, 링크 목적지, 제목 개수를 검증한 뒤 파일을 원자적으로 교체합니다.
 코드 블록 안의 주석은 재현성을 위해 한국어 원본 그대로 유지합니다.
 오류·빈 응답·구조 변경·동시 원본 수정이 있으면 기존 영어 파일을 보존합니다.
+진행 과정(Claude의 발언, 도구 호출, 도구 결과 요약, 비용)은 `--output-format stream-json`으로 받아 stderr에 실시간 출력합니다.
 구조 검사는 번역 의미의 정확성까지 보장하지 않으므로 생성된 diff도 검토하세요.
 
 ## GitHub Actions 설정
 
-1. 저장소 **Settings → Secrets and variables → Actions**에 `ANTHROPIC_API_KEY` secret을 등록합니다.
+1. 저장소 **Settings → Secrets and variables → Actions**에 `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`) 또는 `ANTHROPIC_API_KEY` secret을 등록합니다. OAuth 토큰이 있으면 API 키·WIF보다 우선합니다.
 2. 필요하면 `README_TRANSLATION_MODEL` repository variable을 설정합니다.
 3. GitHub Actions의 `GITHUB_TOKEN` 쓰기가 허용되어 있어야 합니다. 기본 브랜치 보호 규칙이
    봇의 직접 커밋을 막으면 자동 반영은 실패합니다. 보호 규칙을 우회하는 PAT는 사용하지 않습니다.
