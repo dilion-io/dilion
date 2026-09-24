@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -522,5 +523,20 @@ func TestSessionRedirectURLPutsTokensInTheFragment(t *testing.T) {
 func TestRedactURLDropsQueryStrings(t *testing.T) {
 	if got := redactURL("https://api.github.com/user?access_token=secret"); got != "https://api.github.com/user" {
 		t.Fatalf("redactURL = %q", got)
+	}
+}
+
+func TestOIDCCacheIsBounded(t *testing.T) {
+	now := time.Now()
+	m := map[string]discoveryEntry{}
+	for i := 0; i < maxOIDCCacheEntries; i++ {
+		m[strconv.Itoa(i)] = discoveryEntry{fetchedAt: now.Add(time.Duration(i) * time.Second)}
+	}
+	pruneCache(m, now.Add(time.Hour), 24*time.Hour, func(e discoveryEntry) time.Time { return e.fetchedAt })
+	if len(m) != maxOIDCCacheEntries-1 {
+		t.Fatalf("a full cache kept %d entries, want room for one more", len(m))
+	}
+	if _, ok := m["0"]; ok {
+		t.Error("the oldest entry was kept")
 	}
 }

@@ -27,10 +27,12 @@ package instances
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"sync"
 
@@ -156,9 +158,14 @@ type Registry struct {
 	cfg Config
 	log *slog.Logger
 
-	mu      sync.Mutex
-	engines map[string]*privacy.Engine
-	tokens  map[string]*auth.TokenService
+	// mu guards the caches only. Building an instance's objects calls the
+	// resolver, which may do I/O (a control-plane lookup, a vault); that runs
+	// outside the lock, deduplicated per instance by building, so one slow or
+	// unknown instance never holds up requests for the others.
+	mu       sync.RWMutex
+	building singleflight.Group
+	engines  map[string]*privacy.Engine
+	tokens   map[string]*auth.TokenService
 	// keyOwner maps a fingerprint of key material to the first instance seen
 	// with it, to warn when two instances share keys (which would let one
 	// instance's tokens pass verification at the other).
@@ -245,11 +252,35 @@ func (r *Registry) Engine(ctx context.Context) (*privacy.Engine, error) {
 
 // EngineFor returns an explicit instance's compliance engine.
 func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.engines[id]; ok {
+	r.mu.RLock()
+	e, ok := r.engines[id]
+	r.mu.RUnlock()
+	if ok {
 		return e, nil
 	}
+	v, err, _ := r.building.Do("engine:"+id, func() (any, error) {
+		r.mu.RLock()
+		e, ok := r.engines[id]
+		r.mu.RUnlock()
+		if ok {
+			return e, nil
+		}
+		e, err := r.buildEngine(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		r.mu.Lock()
+		r.engines[id] = e
+		r.mu.Unlock()
+		return e, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*privacy.Engine), nil
+}
+
+func (r *Registry) buildEngine(ctx context.Context, id string) (*privacy.Engine, error) {
 	pool, err := r.PoolFor(ctx, id)
 	if err != nil {
 		return nil, err
@@ -266,8 +297,6 @@ func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, e
 	if err != nil {
 		return nil, fmt.Errorf("instances: pii fields for instance %q: %w", id, err)
 	}
-	// NewEngine performs no I/O: it only validates and loads policy data, so
-	// holding the registry lock here is cheap.
 	e, err := privacy.NewEngine(privacy.EngineDeps{
 		Pool:             pool,
 		KMS:              kms,
@@ -276,15 +305,31 @@ func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, e
 		PolicyYAML:       policy,
 		PIIFieldsYAML:    pii,
 		Connectors:       r.cfg.Connectors,
-		TombstoneKey:     r.cfg.TombstoneKey,
+		TombstoneKey:     InstanceTombstoneKey(r.cfg.TombstoneKey, id),
 		InstanceID:       id,
 		OutboundNetworks: r.cfg.OutboundNetworks,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)
 	}
-	r.engines[id] = e
 	return e, nil
+}
+
+// InstanceTombstoneKey derives an instance's tombstone key — which keys its
+// erasure registry and blind search index — from the deployment's. Sharing
+// one key would make the same person's tombstone and search tokens identical
+// in every instance, so anyone holding two instances' databases could link
+// them without any key. The default instance keeps the deployment key itself,
+// so a single-instance deployment's existing data stays valid.
+func InstanceTombstoneKey(key []byte, id string) []byte {
+	if id == ports.DefaultInstanceID || len(key) == 0 {
+		return key
+	}
+	derived, err := hkdf.Key(sha256.New, key, nil, "dilion:tombstone:instance:"+id, 32)
+	if err != nil {
+		panic(err) // only for an impossible length
+	}
+	return derived
 }
 
 // Tokens returns the token service of the instance selected on ctx,
@@ -296,28 +341,43 @@ func (r *Registry) Tokens(ctx context.Context) (*auth.TokenService, error) {
 // TokensFor returns an explicit instance's token service. Services are cached
 // per instance id forever, like engines.
 func (r *Registry) TokensFor(ctx context.Context, id string) (*auth.TokenService, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ts, ok := r.tokens[id]; ok {
+	r.mu.RLock()
+	ts, ok := r.tokens[id]
+	r.mu.RUnlock()
+	if ok {
 		return ts, nil
 	}
-	keys, err := r.cfg.Resolver.JWT(ctx, id)
+	v, err, _ := r.building.Do("tokens:"+id, func() (any, error) {
+		r.mu.RLock()
+		ts, ok := r.tokens[id]
+		r.mu.RUnlock()
+		if ok {
+			return ts, nil
+		}
+		keys, err := r.cfg.Resolver.JWT(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("instances: JWT keys for instance %q: %w", id, err)
+		}
+		ts, err = auth.NewTokenServiceWithKeys(r.cfg.AuthConfig, keys)
+		if err != nil {
+			return nil, fmt.Errorf("instances: token service for instance %q: %w", id, err)
+		}
+		fp := keyFingerprint(keys)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if owner, dup := r.keyOwner[fp]; dup && owner != id {
+			r.log.Warn("instances: two instances share JWT key material; "+
+				"tokens of one verify at the other", "instance", id, "other", owner)
+		} else if !dup {
+			r.keyOwner[fp] = id
+		}
+		r.tokens[id] = ts
+		return ts, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("instances: JWT keys for instance %q: %w", id, err)
+		return nil, err
 	}
-	ts, err := auth.NewTokenServiceWithKeys(r.cfg.AuthConfig, keys)
-	if err != nil {
-		return nil, fmt.Errorf("instances: token service for instance %q: %w", id, err)
-	}
-	fp := keyFingerprint(keys)
-	if owner, dup := r.keyOwner[fp]; dup && owner != id {
-		r.log.Warn("instances: two instances share JWT key material; "+
-			"tokens of one verify at the other", "instance", id, "other", owner)
-	} else if !dup {
-		r.keyOwner[fp] = id
-	}
-	r.tokens[id] = ts
-	return ts, nil
+	return v.(*auth.TokenService), nil
 }
 
 // Verify checks a token against the key material of the instance selected on

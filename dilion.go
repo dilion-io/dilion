@@ -419,6 +419,15 @@ func NewServer(opts ...Option) (*Server, error) {
 	// Secrets. Ephemeral fallbacks keep the zero-config path working but are
 	// never acceptable in production, so they are loud.
 	masterKey := cfg.masterKey
+	if len(masterKey) == 0 && cfg.resolver != nil {
+		// With a resolver the instances bring their own KMS, and the master
+		// key's remaining job is the tombstone key behind every instance's
+		// erasure registry and search index. An ephemeral one would change
+		// on every restart: erased users would stop being recognised and
+		// indexed fields stop matching, silently.
+		s.closeOwnedPool()
+		return nil, errors.New("dilion: WithInstanceResolver needs WithMasterKey: it derives the tombstone and search keys, which must survive restarts")
+	}
 	if len(masterKey) == 0 {
 		k, err := randomKey()
 		if err != nil {

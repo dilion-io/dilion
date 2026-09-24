@@ -83,6 +83,34 @@ var oidcCache = &oidcCacheType{
 	now:       func() time.Time { return time.Now().UTC() },
 }
 
+// maxOIDCCacheEntries bounds each of the caches. Instance admins register
+// providers with issuers and key sets of their choosing, so without a bound
+// the cache would grow for as long as they keep adding them.
+const maxOIDCCacheEntries = 1024
+
+// pruneCache makes room for one more entry in a full cache: expired entries
+// go first, and if none has expired, the oldest one does.
+func pruneCache[V any](m map[string]V, now time.Time, ttl time.Duration, fetched func(V) time.Time) {
+	if len(m) < maxOIDCCacheEntries {
+		return
+	}
+	var oldestKey string
+	var oldest time.Time
+	for k, v := range m {
+		at := fetched(v)
+		if now.Sub(at) >= ttl {
+			delete(m, k)
+			continue
+		}
+		if oldestKey == "" || at.Before(oldest) {
+			oldestKey, oldest = k, at
+		}
+	}
+	if len(m) >= maxOIDCCacheEntries {
+		delete(m, oldestKey)
+	}
+}
+
 // resetOIDCCache drops every cached document (tests only).
 func resetOIDCCache() {
 	oidcCache.mu.Lock()
@@ -116,6 +144,7 @@ func (c *oidcCacheType) discover(ctx context.Context, hc *http.Client, issuer st
 	}
 
 	c.mu.Lock()
+	pruneCache(c.discovery, c.now(), discoveryTTL, func(e discoveryEntry) time.Time { return e.fetchedAt })
 	c.discovery[issuer] = discoveryEntry{doc: doc, fetchedAt: c.now()}
 	c.mu.Unlock()
 	return doc, nil
@@ -150,6 +179,7 @@ func (c *oidcCacheType) keys(ctx context.Context, hc *http.Client, jwksURI strin
 	}
 
 	c.mu.Lock()
+	pruneCache(c.jwks, c.now(), jwksTTL, func(e jwksEntry) time.Time { return e.fetchedAt })
 	c.jwks[jwksURI] = jwksEntry{keys: keys, fetchedAt: c.now()}
 	c.mu.Unlock()
 	return keys, nil

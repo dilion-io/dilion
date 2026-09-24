@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -166,5 +167,76 @@ func TestRegistryTokensAreBoundToInstance(t *testing.T) {
 	}
 	if _, err := reg.Tokens(ports.ContextWithInstance(context.Background(), "nope")); err == nil {
 		t.Error("Tokens for an unknown instance succeeded")
+	}
+}
+
+// slowResolver answers JWT for "slow" only once released.
+type slowResolver struct {
+	twoKeyResolver
+	entered, release chan struct{}
+}
+
+func (r slowResolver) JWT(ctx context.Context, id string) (ports.JWTKeys, error) {
+	if id == "slow" {
+		close(r.entered)
+		<-r.release
+		return ports.JWTKeys{Secret: "slow-secret-slow-secret-slow-sec"}, nil
+	}
+	return r.twoKeyResolver.JWT(ctx, id)
+}
+
+// A resolver call that hangs for one instance must not hold up the others:
+// the registry resolves outside its lock.
+func TestRegistryDoesNotSerializeInstancesOnResolverIO(t *testing.T) {
+	res := slowResolver{
+		twoKeyResolver: twoKeyResolver{
+			StaticResolver: NewStaticResolver(ports.DefaultInstanceID, nil, nil, ports.JWTKeys{}, nil, nil),
+			keys:           map[string]ports.JWTKeys{"h1": {Secret: "h1-secret-h1-secret-h1-secret-h1"}},
+		},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	reg, err := New(Config{Resolver: res})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowDone := make(chan error, 1)
+	go func() {
+		_, err := reg.TokensFor(context.Background(), "slow")
+		slowDone <- err
+	}()
+	<-res.entered // the slow instance is now inside the resolver
+	fast := make(chan error, 1)
+	go func() {
+		_, err := reg.TokensFor(context.Background(), "h1")
+		fast <- err
+	}()
+	select {
+	case err := <-fast:
+		if err != nil {
+			t.Fatalf("h1: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("h1 waited on another instance's resolver call")
+	}
+	close(res.release)
+	if err := <-slowDone; err != nil {
+		t.Fatalf("slow: %v", err)
+	}
+}
+
+// Each instance's tombstone key is its own; the default instance keeps the
+// deployment key, so single-instance data stays valid.
+func TestInstanceTombstoneKey(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	if got := InstanceTombstoneKey(key, ports.DefaultInstanceID); string(got) != string(key) {
+		t.Error("the default instance's key changed")
+	}
+	a, b := InstanceTombstoneKey(key, "a"), InstanceTombstoneKey(key, "b")
+	if string(a) == string(b) || string(a) == string(key) {
+		t.Error("instances share a tombstone key")
+	}
+	if string(InstanceTombstoneKey(key, "a")) != string(a) {
+		t.Error("the derivation is not stable")
 	}
 }
