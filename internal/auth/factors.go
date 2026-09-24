@@ -449,25 +449,28 @@ func (a *api) verifyFactor(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	switch factor.FactorType {
-	case FactorTypeTOTP:
-		if !a.cfg.MFA.TOTP.VerifyEnabled {
-			return unprocessableEntityError(ErrorCodeMFATOTPVerifyDisabled, "MFA verification is disabled for TOTP")
+	// A factor code is six digits: counted per factor (attempts.go).
+	return a.throttled(ctx, attemptFactor, factor.ID, func() error {
+		switch factor.FactorType {
+		case FactorTypeTOTP:
+			if !a.cfg.MFA.TOTP.VerifyEnabled {
+				return unprocessableEntityError(ErrorCodeMFATOTPVerifyDisabled, "MFA verification is disabled for TOTP")
+			}
+			return a.verifyTOTPFactor(w, r, mc, factor, params)
+		case FactorTypePhone:
+			if !a.cfg.MFA.Phone.VerifyEnabled {
+				return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
+			}
+			return a.verifyPhoneFactor(w, r, mc, factor, params)
+		case FactorTypeWebAuthn:
+			if !a.cfg.MFA.WebAuthn.VerifyEnabled {
+				return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
+			}
+			return a.verifyWebAuthnFactor(w, r, mc, factor, params)
+		default:
+			return badRequestError(ErrorCodeValidationFailed, "factor_type needs to be totp, phone, or webauthn")
 		}
-		return a.verifyTOTPFactor(w, r, mc, factor, params)
-	case FactorTypePhone:
-		if !a.cfg.MFA.Phone.VerifyEnabled {
-			return unprocessableEntityError(ErrorCodeMFAPhoneVerifyDisabled, "MFA verification is disabled for Phone")
-		}
-		return a.verifyPhoneFactor(w, r, mc, factor, params)
-	case FactorTypeWebAuthn:
-		if !a.cfg.MFA.WebAuthn.VerifyEnabled {
-			return unprocessableEntityError(ErrorCodeMFAWebAuthnVerifyDisabled, "MFA verification is disabled for WebAuthn")
-		}
-		return a.verifyWebAuthnFactor(w, r, mc, factor, params)
-	default:
-		return badRequestError(ErrorCodeValidationFailed, "factor_type needs to be totp, phone, or webauthn")
-	}
+	})
 }
 
 // verifyTOTPFactor validates a code against the factor's shared secret and, on

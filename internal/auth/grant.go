@@ -148,36 +148,44 @@ func (a *api) passwordGrant(w http.ResponseWriter, r *http.Request) error {
 		return perr
 	}
 
-	var (
-		user *User
-		err  error
-	)
+	// Guessing spread over many addresses is caught per account (attempts.go).
+	var user *User
+	account := aud + ":" + params.Email
 	if params.Phone != "" {
-		if !a.phoneProviderEnabled() {
-			return unprocessableEntityError(ErrorCodePhoneProviderDisabled, "Phone logins are disabled")
+		account = aud + ":" + formatPhoneNumber(params.Phone)
+	}
+	if terr := a.throttled(ctx, attemptPassword, account, func() error {
+		var err error
+		if params.Phone != "" {
+			if !a.phoneProviderEnabled() {
+				return unprocessableEntityError(ErrorCodePhoneProviderDisabled, "Phone logins are disabled")
+			}
+			// Upstream NORMALIZES but does not validate here (formatPhoneNumber, not
+			// validatePhone): a malformed number simply finds no user and gets the
+			// same invalid_credentials answer as a wrong password, so the login
+			// endpoint never reveals which numbers are well-formed, let alone
+			// registered.
+			params.Phone = formatPhoneNumber(params.Phone)
+			user, err = findUserByPhone(ctx, pool, params.Phone, aud)
+		} else {
+			user, err = findUserByEmail(ctx, pool, params.Email, aud)
 		}
-		// Upstream NORMALIZES but does not validate here (formatPhoneNumber, not
-		// validatePhone): a malformed number simply finds no user and gets the
-		// same invalid_credentials answer as a wrong password, so the login
-		// endpoint never reveals which numbers are well-formed, let alone
-		// registered.
-		params.Phone = formatPhoneNumber(params.Phone)
-		user, err = findUserByPhone(ctx, pool, params.Phone, aud)
-	} else {
-		user, err = findUserByEmail(ctx, pool, params.Email, aud)
-	}
-	if err != nil && !isNoRows(err) {
-		return internalServerError("Database error querying schema").withInternal(err)
-	}
-	if user == nil || user.DeletedAt != nil {
-		// Identical body to a wrong password: no user-enumeration oracle.
-		return badRequestError(ErrorCodeInvalidCredentials, "%s", InvalidLoginMessage)
-	}
-	if user.IsBanned(a.now()) {
-		return forbiddenError(ErrorCodeUserBanned, "User is banned")
-	}
-	if user.EncryptedPassword == nil || ComparePassword(*user.EncryptedPassword, params.Password) != nil {
-		return badRequestError(ErrorCodeInvalidCredentials, "%s", InvalidLoginMessage)
+		if err != nil && !isNoRows(err) {
+			return internalServerError("Database error querying schema").withInternal(err)
+		}
+		if user == nil || user.DeletedAt != nil {
+			// Identical body to a wrong password: no user-enumeration oracle.
+			return badRequestError(ErrorCodeInvalidCredentials, "%s", InvalidLoginMessage)
+		}
+		if user.IsBanned(a.now()) {
+			return forbiddenError(ErrorCodeUserBanned, "User is banned")
+		}
+		if user.EncryptedPassword == nil || ComparePassword(*user.EncryptedPassword, params.Password) != nil {
+			return badRequestError(ErrorCodeInvalidCredentials, "%s", InvalidLoginMessage)
+		}
+		return nil
+	}); terr != nil {
+		return terr
 	}
 	// The credential is good, but the strength policy may have been tightened
 	// (or the password may have entered the HIBP corpus) since it was set.

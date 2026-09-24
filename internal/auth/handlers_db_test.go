@@ -165,7 +165,7 @@ func applySchema(t *testing.T, pool *pgxpool.Pool) {
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	clearTables(t, pool, "auth.users", "auth.sessions", "auth.refresh_tokens", "auth.identities",
-		"dilion_privacy.outbox", "dilion_auth.hooks")
+		"dilion_privacy.outbox", "dilion_auth.hooks", "dilion_auth.auth_attempts")
 }
 
 // appliedSchemas records the schema helpers that already ran in this test

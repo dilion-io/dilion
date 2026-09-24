@@ -251,7 +251,12 @@ func (a *api) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 		if params.usesTokenHash() {
 			user, terr = a.verifyTokenHash(ctx, tx, params)
 		} else {
-			user, terr = a.verifyUserAndToken(ctx, tx, params, aud)
+			// A typed OTP is six digits: counted per address (attempts.go).
+			terr = a.throttled(ctx, attemptOTP, aud+":"+params.Email+params.Phone, func() error {
+				var verr error
+				user, verr = a.verifyUserAndToken(ctx, tx, params, aud)
+				return verr
+			})
 		}
 		if terr != nil {
 			return terr

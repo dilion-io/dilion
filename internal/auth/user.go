@@ -251,7 +251,9 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) error {
 		// authorized: a failed update must not spend it, a successful one must
 		// not leave it reusable.
 		if passwordChanged && params.Nonce != "" {
-			if verr := a.verifyReauthentication(ctx, tx, params.Nonce, user); verr != nil {
+			if verr := a.throttled(ctx, attemptNonce, user.ID, func() error {
+				return a.verifyReauthentication(ctx, tx, params.Nonce, user)
+			}); verr != nil {
 				return verr
 			}
 		}
