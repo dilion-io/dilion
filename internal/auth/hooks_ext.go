@@ -132,7 +132,7 @@ func (a *api) runBeforeUserCreated(ctx context.Context, tx querier, u *User) err
 		return nil
 	}
 	in := &BeforeUserCreatedInput{
-		Metadata: newHookMetadata(nil, HookNameBeforeUserCreated),
+		Metadata: newHookMetadata(ctx, nil, HookNameBeforeUserCreated),
 		User:     u,
 	}
 	return a.runExtHook(ctx, cfg, tx, in, &BeforeUserCreatedOutput{})
@@ -149,7 +149,7 @@ func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
 		return
 	}
 	in := &AfterUserCreatedInput{
-		Metadata: newHookMetadata(nil, HookNameAfterUserCreated),
+		Metadata: newHookMetadata(ctx, nil, HookNameAfterUserCreated),
 		User:     u,
 	}
 	if err := a.runExtHook(ctx, cfg, nil, in, &AfterUserCreatedOutput{}); err != nil {
@@ -173,7 +173,7 @@ func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (ha
 		return false, nil
 	}
 	in := &SendEmailInput{
-		Metadata:  newHookMetadata(nil, HookNameSendEmail),
+		Metadata:  newHookMetadata(ctx, nil, HookNameSendEmail),
 		User:      u,
 		EmailData: data,
 	}
@@ -191,7 +191,7 @@ func (a *api) sendSMSViaHook(ctx context.Context, u *User, sms SMS) (handled boo
 		return false, nil
 	}
 	in := &SendSMSInput{
-		Metadata: newHookMetadata(nil, HookNameSendSMS),
+		Metadata: newHookMetadata(ctx, nil, HookNameSendSMS),
 		User:     u,
 		SMS:      sms,
 	}
@@ -224,7 +224,7 @@ func (a *api) runMFAVerificationHook(ctx context.Context, userID, factorID, fact
 		return true, nil
 	}
 	in := &MFAVerificationAttemptInput{
-		Metadata:   newHookMetadata(nil, HookNameMFAVerification),
+		Metadata:   newHookMetadata(ctx, nil, HookNameMFAVerification),
 		UserID:     userID,
 		FactorID:   factorID,
 		FactorType: factorType,
@@ -260,7 +260,7 @@ func (a *api) runPasswordVerificationHook(ctx context.Context, userID string, va
 		return true, nil
 	}
 	in := &PasswordVerificationAttemptInput{
-		Metadata: newHookMetadata(nil, HookNamePasswordVerification),
+		Metadata: newHookMetadata(ctx, nil, HookNamePasswordVerification),
 		UserID:   userID,
 		Valid:    valid,
 	}

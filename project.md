@@ -393,11 +393,14 @@ Auth Engine, Account Service, Privacy Service, Orchestrator는 모두 `dilion.Ne
 {
   "event": "privacy.delete",
   "id": "evt_...",
+  "instance_id": "default",
   "request_id": "pr_123",
   "user_id": "2d5f7f...",
   "requested_at": "..."
 }
 ```
+
+`instance_id`는 이벤트가 발생한 인스턴스입니다. 여러 인스턴스가 한 수신측을 공유할 수 있으므로 모든 이벤트에 들어가며, 서명 대상인 본문 안에 있어 헤더처럼 재전송 시 바꿔치기될 수 없습니다. 작업 payload가 같은 키를 담아도 덮어쓰지 못합니다. in-process connector는 같은 값을 `ConnectorTask.InstanceID`로 받습니다. 인증 쪽 외부 훅(send_email, custom_access_token 등)은 upstream 봉투의 `metadata`에 `dilion_instance_id`로 같은 값을 싣고, in-process 훅은 `ports.InstanceFromContext(ctx)`로 읽습니다.
 
 수신측 응답은 `{ "request_id": "pr_123", "status": "completed" }` 형태이되, **HTTP 200을 삭제 증빙으로 간주하지 않습니다.** 별도의 execution receipt(PrivacyTask 기록)를 증빙으로 남깁니다.
 

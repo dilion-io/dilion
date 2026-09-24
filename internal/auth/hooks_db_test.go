@@ -1,17 +1,21 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 // applyHookMigrations installs the feature migrations the signup path touches
@@ -76,7 +80,7 @@ func TestHookPGDriverInvokesFunction(t *testing.T) {
 	cfg := HookEndpointConfig{Enabled: true, URI: "pg-functions://dilion/hooktest/custom_access_token"}
 
 	in := &CustomAccessTokenInput{
-		Metadata: newHookMetadata(nil, HookNameCustomAccessToken),
+		Metadata: newHookMetadata(context.Background(), nil, HookNameCustomAccessToken),
 		UserID:   uuid.NewString(),
 		Claims:   map[string]any{"role": "authenticated"},
 	}
@@ -249,5 +253,64 @@ func TestSendSMSHookSuppressesProvider(t *testing.T) {
 	}
 	if atomic.LoadInt32(&hits) == 0 {
 		t.Fatal("send_sms hook was not called")
+	}
+}
+
+// Hook endpoints are configured once per process, so every instance calls the
+// same URL. The payload's metadata names the instance the event happened in —
+// the one selected on the request — and always does, "default" included, so a
+// shared receiver can route without special cases.
+func TestHookMetadataCarriesInstance(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		bodies []map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := DefaultConfig()
+	cfg.Mailer.Autoconfirm = false // force a confirmation email through the hook
+	cfg.Hooks.SendEmail = HookEndpointConfig{Enabled: true, URI: srv.URL, Secrets: []string{testHookSecret}}
+	env := newTestEnvWithConfig(t, cfg)
+	applyHookMigrations(t, env.pool)
+
+	signup := func(email, instance string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"email": email, "password": "correct-horse-battery"})
+		req := httptest.NewRequest(http.MethodPost, "/signup", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		if instance != "" {
+			req = req.WithContext(ports.ContextWithInstance(req.Context(), instance))
+		}
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("signup %s: status = %d; body = %s", email, rec.Code, rec.Body.String())
+		}
+	}
+	signup("single@example.com", "")
+	signup("tenant@example.com", "tenant-a")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("hook calls = %d, want 2", len(bodies))
+	}
+	for i, want := range []string{ports.DefaultInstanceID, "tenant-a"} {
+		meta, _ := bodies[i]["metadata"].(map[string]any)
+		if got := meta["dilion_instance_id"]; got != want {
+			t.Errorf("call %d: metadata.dilion_instance_id = %v, want %q (metadata %v)", i, got, want, meta)
+		}
+		if meta["name"] != HookNameSendEmail {
+			t.Errorf("call %d: metadata.name = %v, upstream members must be unchanged", i, meta["name"])
+		}
 	}
 }

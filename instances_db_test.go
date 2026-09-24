@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,7 +100,7 @@ func testPool(t *testing.T, envKey, fallback string) *pgxpool.Pool {
 }
 
 // twoInstanceServer builds a migrated two-instance server plus its pools.
-func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
+func twoInstanceServer(t *testing.T, extra ...Option) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 	t.Helper()
 	if os.Getenv("DILION_TEST_DB") == "" {
 		t.Skip("DILION_TEST_DB not set")
@@ -128,12 +129,12 @@ func twoInstanceServer(t *testing.T) (*Server, *pgxpool.Pool, *pgxpool.Pool) {
 		pii: map[string][]byte{"h1": h1PIIFields}, // h2: free-form
 	}
 
-	srv, err := NewServer(
+	srv, err := NewServer(append([]Option{
 		WithInstanceResolver(res),
 		WithMasterKey(key),
 		WithJWTSecret([]byte("test-secret-test-secret-test-sec")),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-	)
+	}, extra...)...)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -507,3 +508,43 @@ func TestMigrateInstance(t *testing.T) {
 		t.Errorf("error = %v, want it to name the instance", err)
 	}
 }
+
+// Hooks are registered once for the whole server. An in-process hook tells the
+// instances apart by its context, which carries the instance the event
+// happened in — not whichever instance happens to be the default.
+func TestHooksSeeTheirInstance(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	srv, h1, h2 := twoInstanceServer(t, WithHook(AfterSignup,
+		func(ctx context.Context, _ map[string]any) (map[string]any, error) {
+			mu.Lock()
+			seen = append(seen, ports.InstanceFromContext(ctx))
+			mu.Unlock()
+			return nil, nil
+		}))
+	email := "hook-" + uuid.NewString()[:8] + "@example.com"
+	t.Cleanup(func() {
+		for _, p := range []*pgxpool.Pool{h1, h2} {
+			_, _ = p.Exec(context.Background(), `delete from auth.users where email = $1`, email)
+		}
+	})
+
+	body := strings.NewReader(`{"email":"` + email + `","password":"correct-horse-battery"}`)
+	req := httptest.NewRequest(http.MethodPost, "/auth/v1/signup", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ports.ContextWithInstance(req.Context(), "h2"))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signup on h2 = %d; body = %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != "h2" {
+		t.Errorf("AfterSignup saw instances %v, want [h2]", seen)
+	}
+}
+

@@ -22,11 +22,14 @@ package auth
 // transport a deployment configures.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 // Hook names. The strings are upstream's v0hooks.Name values and travel in the
@@ -55,22 +58,36 @@ const (
 // hookMetadata is upstream v0hooks.Metadata: the envelope every hook payload
 // carries. IPAddress is omitempty because the token-issuance call site has no
 // *http.Request to read it from (see the deviation note on newHookMetadata).
+//
+// DILION EXTENSION: dilion_instance_id names the instance the event happened
+// in. Hook endpoints are configured once per process, so in a multi-instance
+// deployment every instance calls the same URL with the same secret, and
+// without it a receiver cannot tell whose user signed up or whose email to
+// send. It is inside the signed body rather than in a header on purpose: the
+// Standard Webhooks signature covers the body only, so a header could be
+// rewritten on a replayed request without breaking the signature. The prefix
+// keeps it apart from upstream's own members (project.md §2.2). It is always
+// present — "default" in a single-instance deployment — so a receiver never
+// has to special-case its absence.
 type hookMetadata struct {
-	UUID      string    `json:"uuid"`
-	Time      time.Time `json:"time"`
-	Name      string    `json:"name,omitempty"`
-	IPAddress string    `json:"ip_address,omitempty"`
+	UUID       string    `json:"uuid"`
+	Time       time.Time `json:"time"`
+	Name       string    `json:"name,omitempty"`
+	IPAddress  string    `json:"ip_address,omitempty"`
+	InstanceID string    `json:"dilion_instance_id"`
 }
 
 // newHookMetadata builds the metadata envelope. r may be nil: unlike upstream —
 // which always threads the *http.Request into NewMetadata — Dilion issues access
 // tokens from call sites (issueAccessToken) that carry no request, so the IP is
-// simply omitted there. The UUID and time are always present.
-func newHookMetadata(r *http.Request, name string) *hookMetadata {
+// simply omitted there. The UUID, time and instance are always present; the
+// instance is the one selected on ctx.
+func newHookMetadata(ctx context.Context, r *http.Request, name string) *hookMetadata {
 	m := &hookMetadata{
-		UUID: uuid.NewString(),
-		Time: time.Now().UTC(),
-		Name: name,
+		UUID:       uuid.NewString(),
+		Time:       time.Now().UTC(),
+		Name:       name,
+		InstanceID: ports.InstanceFromContext(ctx),
 	}
 	if r != nil {
 		m.IPAddress = clientIP(r)

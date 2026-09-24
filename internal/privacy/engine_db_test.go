@@ -223,6 +223,12 @@ type testEnv struct {
 
 func newTestEngine(t *testing.T, policyYAML string) *testEnv {
 	t.Helper()
+	return newTestEngineWith(t, policyYAML, "", nil)
+}
+
+// newTestEngineWith is newTestEngine for a named instance with connectors.
+func newTestEngineWith(t *testing.T, policyYAML, instanceID string, connectors map[string]ports.Connector) *testEnv {
+	t.Helper()
 	pool := testPool(t)
 	clock := &testClock{t: time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)}
 	kms := newFakeKMS(pool)
@@ -234,6 +240,8 @@ func newTestEngine(t *testing.T, policyYAML string) *testEnv {
 		Clock:        clock,
 		PolicyYAML:   []byte(policyYAML),
 		TombstoneKey: []byte("test-tombstone-key"),
+		InstanceID:   instanceID,
+		Connectors:   connectors,
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -1324,5 +1332,95 @@ func TestBeforeUserDeleteHookRejectsCreation(t *testing.T) {
 	})
 	if _, err := env.e.CreateRequest(env.ctx, CreateRequestInput{UserID: user, Type: RequestDeletion}); !errors.Is(err, ErrPolicyViolation) {
 		t.Fatalf("err = %v, want ErrPolicyViolation", err)
+	}
+}
+
+// recordingConnector keeps every task it is asked to execute.
+type recordingConnector struct {
+	mu    sync.Mutex
+	tasks []ports.ConnectorTask
+}
+
+func (c *recordingConnector) Execute(_ context.Context, task ports.ConnectorTask) (ports.ConnectorReceipt, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tasks = append(c.tasks, task)
+	return ports.ConnectorReceipt{TaskID: task.TaskID, Status: "completed"}, nil
+}
+
+// Connectors are shared by every instance's engine and a webhook receiver may
+// be too, so everything an engine sends out names the instance it serves: the
+// webhook body (inside the signed document) and the connector task. A task's
+// own payload cannot claim a different instance.
+func TestOutgoingEventsCarryInstance(t *testing.T) {
+	if got := newTestEngine(t, "").e.instanceID; got != ports.DefaultInstanceID {
+		t.Errorf("unnamed engine instance = %q, want %q", got, ports.DefaultInstanceID)
+	}
+
+	conn := &recordingConnector{}
+	env := newTestEngineWith(t, "", "tenant-a", map[string]ports.Connector{"crm": conn})
+	user := env.newUser(t)
+
+	var (
+		mu      sync.Mutex
+		webhook map[string]any
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var doc map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&doc)
+		mu.Lock()
+		webhook = doc
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if _, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
+		Type: DestinationWebhook, Name: "hook", Config: map[string]any{"url": srv.URL}, Secret: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	connDst, err := env.e.CreateDestination(env.ctx, CreateDestinationInput{
+		Type: DestinationConnector, Name: "crm", Config: map[string]any{"connector": "crm"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The webhook: a reconfirm event whose payload tries to name another
+	// instance.
+	payload := fmt.Sprintf(`{"user_id":%q,"purpose":"marketing.email","instance_id":"tenant-b"}`, user)
+	if _, err := env.pool.Exec(env.ctx, `insert into dilion_privacy.outbox (event_type, aggregate_id, payload)
+		values ('consent.reconfirm_due', $1, $2::jsonb)`, user, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.e.dispatchOutboxOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The connector: an erasure task addressed to its destination.
+	if _, err := env.pool.Exec(env.ctx, `insert into dilion_privacy.tasks
+		(id, request_id, user_id, destination_id, action, status, created_at, next_attempt_at, payload)
+		values ('tsk_instance_test', 'req_instance_test', $1::uuid, $2, 'DELETE', 'pending', $3, $3, '{}'::jsonb)`,
+		user, connDst.ID, env.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.e.runTasksOnce(env.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if webhook == nil {
+		t.Fatal("the webhook was not delivered")
+	}
+	if got := webhook["instance_id"]; got != "tenant-a" {
+		t.Errorf("webhook instance_id = %v, want tenant-a (the payload's tenant-b must not win)", got)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.tasks) != 1 {
+		t.Fatalf("connector tasks = %d, want 1", len(conn.tasks))
+	}
+	if got := conn.tasks[0].InstanceID; got != "tenant-a" {
+		t.Errorf("connector task instance = %q, want tenant-a", got)
 	}
 }

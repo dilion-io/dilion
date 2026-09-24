@@ -110,6 +110,9 @@ const (
 // HookFunc receives a mutable payload. Validating hooks reject by returning an
 // error; mutating hooks return a replacement payload (nil = unchanged).
 //
+// Hooks are registered once and run for every instance: ctx carries the
+// instance the event happened in, as ports.InstanceFromContext(ctx).
+//
 // TokenClaims is the one point with a fixed payload shape, shared with the
 // external custom_access_token hook so that both see the same thing:
 //
@@ -129,6 +132,10 @@ type HookFunc func(ctx context.Context, payload map[string]any) (map[string]any,
 // ---- Connectors (§3.1) ----
 
 type ConnectorTask struct {
+	// InstanceID is the instance the task belongs to. Connectors are
+	// registered once and shared by every instance's compliance engine, so a
+	// connector serving several instances tells them apart by this.
+	InstanceID    string
 	TaskID        string
 	RequestID     string
 	UserID        string

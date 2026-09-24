@@ -272,6 +272,7 @@ func (r *Registry) EngineFor(ctx context.Context, id string) (*privacy.Engine, e
 		PIIFieldsYAML: pii,
 		Connectors:    r.cfg.Connectors,
 		TombstoneKey:  r.cfg.TombstoneKey,
+		InstanceID:    id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)

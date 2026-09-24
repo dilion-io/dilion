@@ -65,6 +65,11 @@ type EngineDeps struct {
 	PIIFieldsYAML []byte
 	Connectors    map[string]ports.Connector
 	TombstoneKey  []byte
+	// InstanceID is the instance this engine serves. It is stamped on every
+	// event the engine sends out — the webhook body and the connector task —
+	// because connectors are shared by every instance and a webhook receiver
+	// may be too. Empty means ports.DefaultInstanceID.
+	InstanceID string
 }
 
 // Engine implements Service.
@@ -81,6 +86,7 @@ type Engine struct {
 	piiFields       map[string]FieldHint // nil = free-form fields
 	connectors      map[string]ports.Connector
 	tombstoneKey    []byte
+	instanceID      string
 	http            *http.Client
 	log             *slog.Logger
 }
@@ -98,6 +104,9 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	}
 	if len(d.TombstoneKey) == 0 {
 		return nil, errors.New("privacy: EngineDeps.TombstoneKey is required (erasure registry tombstones)")
+	}
+	if d.InstanceID == "" {
+		d.InstanceID = ports.DefaultInstanceID
 	}
 	set, err := LoadPolicies(d.PolicyYAML)
 	if err != nil {
@@ -123,6 +132,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		piiFields:      fields,
 		connectors:     d.Connectors,
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
+		instanceID:     d.InstanceID,
 		http:           &http.Client{Timeout: 15 * time.Second},
 		log:            slog.Default().With("component", "privacy"),
 	}

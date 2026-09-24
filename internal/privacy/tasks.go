@@ -187,9 +187,14 @@ func (e *Engine) eventBody(ctx context.Context, t task) (map[string]any, error) 
 		return nil, fmt.Errorf("privacy: request lookup: %w", err)
 	}
 
+	// instance_id is set before the task's extra fields are merged in below,
+	// which never overwrite a key already present: a payload cannot claim
+	// another instance. It sits in the signed body, not a header, so it is
+	// covered by Dilion-Signature.
 	body := map[string]any{
 		"event":        event,
 		"id":           httpapi.NewID("evt"),
+		"instance_id":  e.instanceID,
 		"request_id":   t.RequestID,
 		"user_id":      t.UserID,
 		"requested_at": requestedAt.UTC().Format(time.RFC3339),
@@ -288,6 +293,7 @@ func (e *Engine) executeConnector(ctx context.Context, t task, dst *destinationR
 		return e.failTask(ctx, t, "CONNECTOR_NOT_REGISTERED", map[string]any{"connector": name}, true)
 	}
 	receipt, err := c.Execute(ctx, ports.ConnectorTask{
+		InstanceID:    e.instanceID,
 		TaskID:        t.ID,
 		RequestID:     t.RequestID,
 		UserID:        t.UserID,

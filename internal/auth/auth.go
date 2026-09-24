@@ -661,7 +661,7 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 
 	if cfg := a.cfg.Hooks.CustomAccessToken; cfg.Enabled {
 		in := &CustomAccessTokenInput{
-			Metadata:             newHookMetadata(nil, HookNameCustomAccessToken),
+			Metadata:             newHookMetadata(ctx, nil, HookNameCustomAccessToken),
 			UserID:               u.ID,
 			Claims:               claims,
 			AuthenticationMethod: authMethod,
