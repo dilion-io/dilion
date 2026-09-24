@@ -3451,6 +3451,159 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /auth/v1/admin/hooks:
+    get:
+      tags: [Admin]
+      operationId: authAdminListHooks
+      summary: List the auth hooks as they run for this instance
+      description: |
+        **Dilion extension.** Upstream configures its auth hooks per process (`GOTRUE_HOOK_*`).
+        A Dilion server serves many instances, so that configuration is the server-wide default and
+        each instance may replace it with its own setting (`dilion_auth.hooks`). This lists all
+        seven hooks with the setting in force here and where it comes from.
+
+        Requires a `service_role` JWT **or** a user access token whose actor holds the
+        `users.admin` RBAC permission.
+      responses:
+        '200':
+          description: Every hook, in a fixed order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hooks]
+                properties:
+                  hooks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HookSetting'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          $ref: '#/components/responses/NotAdmin'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/v1/admin/hooks/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/HookName'
+    get:
+      tags: [Admin]
+      operationId: authAdminGetHook
+      summary: Read one hook as it runs for this instance
+      responses:
+        '200':
+          description: The hook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookSetting'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          $ref: '#/components/responses/NotAdmin'
+        '404':
+          description: '`hook_not_found` — not one of the seven hook names.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Admin]
+      operationId: authAdminPutHook
+      summary: Set this instance's own setting for a hook
+      description: |
+        **Dilion extension.** The setting replaces the server-wide one whole — `enabled: false`
+        switches a server-wide hook off for this instance. The URI is `http(s)://…` or
+        `pg-functions://<db>/<schema>/<function>` (a function in this instance's own database).
+
+        The operator decides what is allowed:
+
+        - a hook the operator **locked** (`DILION_AUTH_HOOK_<NAME>_LOCKED`) answers
+          `403 hook_locked`;
+        - the operator's `AuthHookSetting` policy checks the URI now and before every call;
+        - by default an http(s) hook may only reach public addresses. Loopback, private,
+          link-local and other internal addresses are refused here and at connect time, unless
+          the policy exempts the URI.
+
+        `secrets` are Standard Webhooks keys (`v1,whsec_<base64>`) and are write-only. Leave the
+        field out to keep the stored ones; `[]` removes them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                uri:
+                  type: string
+                  description: Required when `enabled` is true.
+                  examples: ['https://hooks.example.com/send-email']
+                secrets:
+                  type: array
+                  items:
+                    type: string
+                  examples: [['v1,whsec_MDEyMzQ1Njc4OWFiY2RlZg==']]
+      responses:
+        '200':
+          description: The hook as it now runs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookSetting'
+        '400':
+          description: '`validation_failed` — a malformed URI or secret, a URI the policy rejects, or one that is not public.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`not_admin`, or `hook_locked` for a hook the operator locked.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: '`hook_not_found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Admin]
+      operationId: authAdminDeleteHook
+      summary: Return a hook to the server-wide setting
+      description: Removes this instance's setting. Answers `200` with the hook as it now runs, whether or not a setting existed.
+      responses:
+        '200':
+          description: The hook as it now runs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookSetting'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`not_admin`, or `hook_locked`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: '`hook_not_found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -5265,6 +5418,41 @@ components:
           type: boolean
       required: [sub]
 
+    HookName:
+      type: string
+      enum:
+        - custom_access_token
+        - send_email
+        - send_sms
+        - before_user_created
+        - after_user_created
+        - mfa_verification_attempt
+        - password_verification_attempt
+    HookSetting:
+      type: object
+      title: HookSetting
+      required: [name, source, enabled, uri, secrets_count, locked]
+      properties:
+        name:
+          $ref: '#/components/schemas/HookName'
+        source:
+          type: string
+          enum: [instance, server]
+          description: '`instance`: this instance''s own setting; `server`: the server-wide one.'
+        enabled:
+          type: boolean
+        uri:
+          type: string
+        secrets_count:
+          type: integer
+          description: The secrets themselves are never returned.
+        locked:
+          type: boolean
+          description: The operator pinned the server-wide setting; it cannot be replaced here.
+        updated_at:
+          type: string
+          format: date-time
+          description: When this instance's setting was last saved. Absent for the server setting.
     AuditLogEntry:
       type: object
       title: AuditLogEntry

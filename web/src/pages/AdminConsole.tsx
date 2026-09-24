@@ -4,6 +4,7 @@ import { CredentialModeSelect } from '../components/CredentialModeSelect'
 import { MissingTokenSetup } from '../components/DevTokenBanner'
 import type { AdminRoute } from '../lib/router'
 import { AdminUsersPage } from './AdminUsersPage'
+import { AdminHooksPage } from './AdminHooksPage'
 import { AdminRequestsPage } from './AdminRequestsPage'
 import { AdminDestinationsPage } from './AdminDestinationsPage'
 import { AdminHoldsPage } from './AdminHoldsPage'
@@ -15,6 +16,7 @@ import { AdminAuditPage } from './AdminAuditPage'
 
 const ADMIN_NAV: ReadonlyArray<{ route: AdminRoute; label: string; group: string }> = [
   { route: 'admin-users', label: 'Users', group: 'Auth' },
+  { route: 'admin-hooks', label: 'Hooks', group: 'Auth' },
   { route: 'admin-requests', label: 'Requests', group: 'Privacy' },
   { route: 'admin-destinations', label: 'Destinations', group: 'Privacy' },
   { route: 'admin-holds', label: 'Legal holds', group: 'Privacy' },
@@ -29,6 +31,8 @@ function screen(route: AdminRoute) {
   switch (route) {
     case 'admin-users':
       return <AdminUsersPage />
+    case 'admin-hooks':
+      return <AdminHooksPage />
     case 'admin-requests':
       return <AdminRequestsPage />
     case 'admin-destinations':

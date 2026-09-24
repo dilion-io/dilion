@@ -520,14 +520,27 @@ type MFAConfig struct {
 // pg-functions://<db>/<schema>.<func> -> a Postgres function called in-tx.
 // Both drivers are implemented (hooks_http.go, hooks_pg.go) and dispatched from
 // hooks_ext.go; Enabled/URI/Secrets are all consumed there.
+//
+// This is the server-wide setting. An instance admin can replace it for their
+// own instance through /admin/hooks (hooks_instance.go) unless Locked is set.
 type HookEndpointConfig struct {
 	// Enabled mirrors GOTRUE_HOOK_<NAME>_ENABLED (default false).
 	Enabled bool `json:"enabled"`
 	// URI mirrors GOTRUE_HOOK_<NAME>_URI (http(s):// or pg-functions://...).
 	URI string `json:"uri"`
-	// Secrets mirrors GOTRUE_HOOK_<NAME>_SECRETS (v1,whsec_... — HMAC signing,
-	// supports rotation as a comma list). HTTP driver only.
+	// Secrets mirrors GOTRUE_HOOK_<NAME>_SECRETS (v1,whsec_... — HMAC signing).
+	// Several secrets, for rotation, are separated by "|" as upstream does: a
+	// secret itself contains a comma. HTTP driver only.
 	Secrets []string `json:"-"`
+	// Locked (DILION_AUTH_HOOK_<NAME>_LOCKED, Dilion extension) keeps this
+	// setting in force for every instance: /admin/hooks cannot replace or
+	// disable it, and any instance setting already stored is ignored.
+	Locked bool `json:"locked"`
+
+	// ssrfGuard is set on an instance setting's http(s) hook whose URL the
+	// operator's policy did not exempt: the driver then refuses to connect to a
+	// non-public address. Never set on the server-wide setting.
+	ssrfGuard bool
 }
 
 // HooksConfig mirrors upstream conf.HookConfiguration. Each field is one hook
@@ -1274,14 +1287,35 @@ func lookupEnv(name string) (string, bool) {
 }
 
 // parseHook fills a HookEndpointConfig from GOTRUE_<prefix>_{ENABLED,URI,SECRETS}
-// (DILION_AUTH_<prefix>_* preferred). Enabling a hook without a URI is fatal.
+// and DILION_AUTH_<prefix>_LOCKED (DILION_AUTH_<prefix>_* preferred). Enabling a
+// hook without a URI, or a secret that cannot sign, is fatal.
 func parseHook(h *HookEndpointConfig, prefix string, fail func(string, ...any)) {
 	h.Enabled = envBool(prefix+"_ENABLED", h.Enabled, fail)
 	h.URI = envString(prefix+"_URI", h.URI)
-	h.Secrets = envStringSlice(prefix+"_SECRETS", h.Secrets)
+	if v, ok := lookupEnv(prefix + "_SECRETS"); ok {
+		h.Secrets = splitHookSecrets(v)
+	}
+	h.Locked = envBool(prefix+"_LOCKED", h.Locked, fail)
 	if h.Enabled && strings.TrimSpace(h.URI) == "" {
 		fail("hook %s enabled but %s_URI is empty", prefix, prefix)
 	}
+	for _, s := range h.Secrets {
+		if _, err := decodeHookSecret(s); err != nil {
+			fail("hook %s: %s_SECRETS: %v (separate several secrets with |)", prefix, prefix, err)
+		}
+	}
+}
+
+// splitHookSecrets splits a secrets list on "|", upstream's HookSecrets
+// separator. A comma cannot separate them: every secret is "v1,whsec_...".
+func splitHookSecrets(v string) []string {
+	out := []string{}
+	for _, part := range strings.Split(v, "|") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envString(name, def string) string {

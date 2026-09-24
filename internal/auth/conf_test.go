@@ -2,6 +2,7 @@ package auth
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -343,5 +344,38 @@ func TestGlobPatterns(t *testing.T) {
 	}
 	if _, err := compileGlob("a{b"); err == nil {
 		t.Error("compileGlob accepted an unmatched {")
+	}
+}
+
+// A webhook secret is "v1,whsec_...", so the list of them cannot be
+// comma-separated: splitting on "," tore every secret in two and each hook call
+// failed with "Error generating hook signatures". Upstream separates them
+// with "|".
+func TestHookSecretsSplitOnPipe(t *testing.T) {
+	const a, b = "v1,whsec_MDEyMzQ1Njc4OWFiY2RlZg==", "v1,whsec_ZmVkY2JhOTg3NjU0MzIxMA=="
+	t.Setenv("DILION_AUTH_HOOK_SEND_EMAIL_ENABLED", "true")
+	t.Setenv("DILION_AUTH_HOOK_SEND_EMAIL_URI", "https://hooks.example.com/send-email")
+	t.Setenv("DILION_AUTH_HOOK_SEND_EMAIL_SECRETS", a+" | "+b)
+	t.Setenv("DILION_AUTH_HOOK_SEND_EMAIL_LOCKED", "true")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := c.Hooks.SendEmail.Secrets; len(got) != 2 || got[0] != a || got[1] != b {
+		t.Fatalf("secrets = %q, want [%q %q]", got, a, b)
+	}
+	if !c.Hooks.SendEmail.Locked {
+		t.Error("DILION_AUTH_HOOK_SEND_EMAIL_LOCKED was not read")
+	}
+	if _, err := signHookPayload(c.Hooks.SendEmail.Secrets, "msg", time.Now(), []byte("{}")); err != nil {
+		t.Errorf("configured secrets cannot sign: %v", err)
+	}
+}
+
+// A secret that cannot sign fails at startup, not on the first hook call.
+func TestHookSecretsRejectedAtLoad(t *testing.T) {
+	t.Setenv("DILION_AUTH_HOOK_SEND_EMAIL_SECRETS", "whsec_MDEyMzQ1Njc4OWFiY2RlZg==")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "HOOK_SEND_EMAIL_SECRETS") {
+		t.Fatalf("LoadConfig error = %v, want one naming HOOK_SEND_EMAIL_SECRETS", err)
 	}
 }

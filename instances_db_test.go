@@ -548,3 +548,61 @@ func TestHooksSeeTheirInstance(t *testing.T) {
 	}
 }
 
+// An auth hook set through one instance's /admin/hooks runs for that instance
+// only: the setting lives in the instance's own database.
+func TestAuthHookSettingIsPerInstance(t *testing.T) {
+	srv, h1, h2 := twoInstanceServer(t)
+	emails := []string{"hooked-" + uuid.NewString()[:8] + "@example.com", "free-" + uuid.NewString()[:8] + "@example.com"}
+	t.Cleanup(func() {
+		for _, p := range []*pgxpool.Pool{h1, h2} {
+			_, _ = p.Exec(context.Background(), `delete from dilion_auth.hooks`)
+			_, _ = p.Exec(context.Background(), `delete from auth.users where email = any($1)`, emails)
+		}
+	})
+	if _, err := h1.Exec(context.Background(), `
+		create schema if not exists hooktest;
+		create or replace function hooktest.h1_only(input jsonb) returns jsonb language sql as $$
+			select '{"error":{"http_code":403,"message":"h1 says no"}}'::jsonb
+		$$;`); err != nil {
+		t.Fatalf("create h1 hook function: %v", err)
+	}
+
+	send := func(instance, method, path, body string) *httptest.ResponseRecorder {
+		tokens, err := srv.instances.TokensFor(context.Background(), instance)
+		if err != nil {
+			t.Fatalf("tokens %s: %v", instance, err)
+		}
+		token, err := tokens.Sign(context.Background(), ports.Claims{
+			Subject: uuid.NewString(), Role: "service_role", Audience: "authenticated",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("sign %s: %v", instance, err)
+		}
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req = req.WithContext(ports.ContextWithInstance(req.Context(), instance))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	signup := func(instance, email string) int {
+		return send(instance, http.MethodPost, "/auth/v1/signup",
+			`{"email":"`+email+`","password":"correct-horse-battery"}`).Code
+	}
+
+	if rec := send("h1", http.MethodPut, "/auth/v1/admin/hooks/before_user_created",
+		`{"enabled":true,"uri":"pg-functions://dilion/hooktest/h1_only"}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT on h1 = %d %s", rec.Code, rec.Body.String())
+	}
+	if code := signup("h1", emails[0]); code != http.StatusForbidden {
+		t.Errorf("signup on h1 = %d, want its hook's 403", code)
+	}
+	if code := signup("h2", emails[1]); code != http.StatusOK {
+		t.Errorf("signup on h2 = %d, want 200: h1's hook must not run there", code)
+	}
+	if rec := send("h2", http.MethodGet, "/auth/v1/admin/hooks/before_user_created", ""); !strings.Contains(rec.Body.String(), `"source":"server"`) {
+		t.Errorf("h2 view = %s, want the server setting", rec.Body.String())
+	}
+}

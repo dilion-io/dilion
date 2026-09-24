@@ -90,6 +90,9 @@ func (a *api) runHTTPHook(ctx context.Context, cfg HookEndpointConfig, in any) (
 	}
 
 	client := &http.Client{Timeout: httpHookTimeout}
+	if cfg.ssrfGuard {
+		client.Transport = guardedHookTransport
+	}
 	ctx, cancel := context.WithTimeout(ctx, httpHookTimeout)
 	defer cancel()
 
@@ -115,6 +118,10 @@ func (a *api) runHTTPHook(ctx context.Context, cfg HookEndpointConfig, in any) (
 
 		rsp, derr := client.Do(req)
 		if derr != nil {
+			if errors.Is(derr, errNonPublicAddress) {
+				// Not transient: retrying would dial the same address.
+				return nil, internalServerError("Hook URI does not resolve to a public address").withInternal(derr)
+			}
 			if errors.Is(derr, context.DeadlineExceeded) {
 				return nil, unprocessableEntityError(ErrorCodeHookTimeout,
 					"Failed to reach hook within maximum time of %.0f seconds", httpHookTimeout.Seconds())

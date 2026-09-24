@@ -150,7 +150,7 @@ func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
 		`truncate auth.users, auth.sessions, auth.refresh_tokens, auth.identities,
-		          dilion_privacy.outbox restart identity cascade`); err != nil {
+		          dilion_privacy.outbox, dilion_auth.hooks restart identity cascade`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 }

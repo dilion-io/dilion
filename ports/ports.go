@@ -105,6 +105,7 @@ const (
 	ConsentChanged    HookPoint = "consent_changed"     // observing
 	ConsentReconfirm  HookPoint = "consent_reconfirm"   // observing (확인 고지 이벤트)
 	PIIReveal         HookPoint = "pii_reveal"          // validating
+	AuthHookSetting   HookPoint = "auth_hook_setting"   // validating + mutating (see below)
 )
 
 // HookFunc receives a mutable payload. Validating hooks reject by returning an
@@ -127,6 +128,25 @@ const (
 // silently dropping every custom claim. The reserved claims (sub, aud, exp,
 // iat, iss, role, email) are visible but not writable: signing re-asserts them,
 // so a hook cannot forge identity, role, audience or lifetime.
+//
+// AuthHookSetting is the operator's policy for the auth hooks an instance admin
+// configures for their own instance (/auth/v1/admin/hooks). It runs when a
+// setting is saved and again before every call made with it, so a policy
+// change applies to settings already stored. The payload is
+//
+//	{
+//	  "hook":            "send_email" | "before_user_created" | ...,
+//	  "uri":             "https://..." | "pg-functions://...",
+//	  "ssrf_protection": true
+//	}
+//
+// Returning an error rejects the setting (a 400 on save, a failed hook call
+// afterwards). ssrf_protection arrives true for an http(s) URI and false for a
+// pg-functions one; while it is true the call refuses to connect to loopback,
+// private, link-local and other non-public addresses. A hook returns the
+// payload with "ssrf_protection": false to exempt a URI it trusts, such as a
+// receiver inside the operator's own network. The server-wide hooks set by
+// configuration are the operator's own and never pass through this point.
 type HookFunc func(ctx context.Context, payload map[string]any) (map[string]any, error)
 
 // ---- Connectors (§3.1) ----

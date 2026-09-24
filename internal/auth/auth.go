@@ -659,7 +659,11 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		return "", time.Time{}, err
 	}
 
-	if cfg := a.cfg.Hooks.CustomAccessToken; cfg.Enabled {
+	cfg, err := a.hookConfig(ctx, q, hookCustomAccessToken)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if cfg.Enabled {
 		in := &CustomAccessTokenInput{
 			Metadata:             newHookMetadata(ctx, nil, HookNameCustomAccessToken),
 			UserID:               u.ID,

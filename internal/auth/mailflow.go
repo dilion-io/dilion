@@ -496,7 +496,10 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	}
 	// send_email (external hook) owns delivery of BOTH the new-address and (when
 	// secure email change is on) the current-address confirmations.
-	emailChangeHooked := a.cfg.Hooks.SendEmail.Enabled
+	emailChangeHooked, err := a.hookEnabled(ctx, tx, hookSendEmail)
+	if err != nil {
+		return nil, nil, err
+	}
 	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
 		Token:           otpNew,
 		TokenHash:       hashNew,

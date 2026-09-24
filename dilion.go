@@ -98,6 +98,7 @@ const (
 	AfterErasure      = ports.AfterErasure
 	ConsentChanged    = ports.ConsentChanged
 	ConsentReconfirm  = ports.ConsentReconfirm
+	AuthHookSetting   = ports.AuthHookSetting
 	PIIReveal         = ports.PIIReveal
 )
 

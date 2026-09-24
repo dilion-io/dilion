@@ -203,7 +203,7 @@ func TestMigrateEmbedded(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate (idempotent run): %v", err)
 	}
-	for _, s := range []string{"auth", "dilion_privacy", "dilion_pii", "dilion_authz", "dilion_audit"} {
+	for _, s := range []string{"auth", "dilion_auth", "dilion_privacy", "dilion_pii", "dilion_authz", "dilion_audit"} {
 		var exists bool
 		if err := pool.QueryRow(ctx,
 			"select exists (select 1 from information_schema.schemata where schema_name = $1)", s).Scan(&exists); err != nil {

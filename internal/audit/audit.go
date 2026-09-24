@@ -62,6 +62,10 @@ const (
 	ActionDestinationChanged = "DESTINATION_CHANGED"
 	ActionDestinationRead    = "DESTINATION_READ"
 
+	// AUTH_HOOK_CHANGED is an instance's auth hook setting being set or removed
+	// (/auth/v1/admin/hooks): the hook then receives user data.
+	ActionAuthHookChanged = "AUTH_HOOK_CHANGED"
+
 	ActionRoleGranted = "ROLE_GRANTED"
 	ActionRoleRevoked = "ROLE_REVOKED"
 	// Definition changes are permission changes too ("매우 민감", §5.2).

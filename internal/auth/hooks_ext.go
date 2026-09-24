@@ -1,7 +1,9 @@
 package auth
 
 // External auth hooks: the Supabase-compatible extension points invoked at fixed
-// lifecycle moments and configured by URI (Config.Hooks, conf.go).
+// lifecycle moments and configured by URI (Config.Hooks, conf.go). Every call
+// site reads its setting through a.hookConfig, because an instance may replace
+// the server-wide one (hooks_instance.go).
 //
 // These are DISTINCT from Dilion's in-process ports.Hooks (a.runHook /
 // a.observeHook in auth.go), which are compiled-in collaborators. An external
@@ -127,7 +129,10 @@ func (a *api) runExtHook(ctx context.Context, cfg HookEndpointConfig, tx querier
 // status and message the hook chose. tx is the signup transaction, threaded so a
 // pg-functions hook sees the in-progress row context. A no-op when disabled.
 func (a *api) runBeforeUserCreated(ctx context.Context, tx querier, u *User) error {
-	cfg := a.cfg.Hooks.BeforeUserCreated
+	cfg, err := a.hookConfig(ctx, tx, hookBeforeUserCreated)
+	if err != nil {
+		return err
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -144,7 +149,11 @@ func (a *api) runBeforeUserCreated(ctx context.Context, tx querier, u *User) err
 // logged, never surfaced, so an observer cannot break signup. A no-op when
 // disabled.
 func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
-	cfg := a.cfg.Hooks.AfterUserCreated
+	cfg, err := a.hookConfig(ctx, nil, hookAfterUserCreated)
+	if err != nil {
+		a.log.WarnContext(ctx, "auth: after_user_created hook failed", "error", err.Error())
+		return
+	}
 	if !cfg.Enabled {
 		return
 	}
@@ -168,7 +177,10 @@ func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
 // disabled it returns handled=false and the caller proceeds with the built-in
 // mailer.
 func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (handled bool, err error) {
-	cfg := a.cfg.Hooks.SendEmail
+	cfg, err := a.hookConfig(ctx, nil, hookSendEmail)
+	if err != nil {
+		return true, err
+	}
 	if !cfg.Enabled {
 		return false, nil
 	}
@@ -186,7 +198,10 @@ func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (ha
 // sendSMSViaHook is sendEmailViaHook's twin for the send_sms hook. When enabled
 // the hook OWNS SMS delivery and the built-in provider is skipped.
 func (a *api) sendSMSViaHook(ctx context.Context, u *User, sms SMS) (handled bool, err error) {
-	cfg := a.cfg.Hooks.SendSMS
+	cfg, err := a.hookConfig(ctx, nil, hookSendSMS)
+	if err != nil {
+		return true, err
+	}
 	if !cfg.Enabled {
 		return false, nil
 	}
@@ -219,7 +234,10 @@ func (a *api) sendSMSViaHook(ctx context.Context, u *User, sms SMS) (handled boo
 // of completing the challenge. userID/factorID are the UUIDs of the user and the
 // factor; factorType is "totp" | "phone" | "webauthn".
 func (a *api) runMFAVerificationHook(ctx context.Context, userID, factorID, factorType string, valid bool) (bool, error) {
-	cfg := a.cfg.Hooks.MFAVerificationAttempt
+	cfg, err := a.hookConfig(ctx, nil, hookMFAVerificationAttempt)
+	if err != nil {
+		return false, err
+	}
 	if !cfg.Enabled {
 		return true, nil
 	}
@@ -255,7 +273,10 @@ func (a *api) runMFAVerificationHook(ctx context.Context, userID, factorID, fact
 // sessions on repeated failures); that side effect is left to the grant owner —
 // this seam returns only the allow/deny decision and the message.
 func (a *api) runPasswordVerificationHook(ctx context.Context, userID string, valid bool) (bool, error) {
-	cfg := a.cfg.Hooks.PasswordVerificationAttempt
+	cfg, err := a.hookConfig(ctx, nil, hookPasswordVerificationAttempt)
+	if err != nil {
+		return false, err
+	}
 	if !cfg.Enabled {
 		return true, nil
 	}

@@ -9,6 +9,7 @@ export const USER_ROUTES = ['signin', 'account', 'privacy', 'docs'] as const
  */
 export const ADMIN_ROUTES = [
   'admin-users',
+  'admin-hooks',
   'admin-requests',
   'admin-destinations',
   'admin-holds',

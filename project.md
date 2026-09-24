@@ -110,6 +110,10 @@ srv := dilion.NewServer(
 - **코드로 정의하는 ID 연동 (커스터마이징 전용):** 테넌트별 IdP 등록과 OAuth 클라이언트를 이미 자기 데이터로 알고 있는 플랫폼이 이를 인스턴스 DB마다 복제하지 않도록, 두 방향 모두 코드 소스를 **DB보다 먼저** 조회합니다. 소스가 `(nil, nil)`을 돌려주면 기존 경로로 넘어가고, 오류는 요청을 실패시킵니다(넘어가지 않음).
   - **RP 쪽 — `WithProviderSource`:** 인스턴스별 OIDC provider(issuer, client_id/secret, redirect_uri, scopes)를 돌려줍니다. 내장 provider와 `auth.custom_oauth_providers`보다 먼저 봅니다. redirect_uri가 비어 있으면 요청이 들어온 호스트의 `/callback`으로 유도하므로 정의 하나로 모든 테넌트 호스트를 처리합니다. IdP 쪽으로도 OAuth 2.1 클라이언트로 동작해, 인가 요청마다 PKCE(S256) challenge를 보내고 토큰 교환은 HTTP Basic으로 인증하되 거부되면 본문 방식으로 한 번 재시도합니다. 저장된 커스텀 provider도 `pkce_enabled`(기본 true)에 따라 같은 PKCE를 씁니다. `LinkBySubject`를 켜면 IdP의 `sub`가 곧 로컬 user id가 되어 email이 아닌 id로 사용자를 찾거나 그 id로 생성합니다. 이는 provider에게 인스턴스의 모든 계정에 대한 권한을 주는 것이므로 **코드로 정의한 provider에서만** 허용하고, 관리 API로 등록하는 provider에는 두지 않습니다.
   - **IdP 쪽 — `WithOAuthClientResolver`:** OAuth 2.1 서버의 클라이언트(secret 검증, redirect 대상 판정, first-party 여부)를 함수가 결정합니다. `auth.oauth_clients`보다 먼저 봅니다. first-party 클라이언트는 동의 단계를 건너뛰되 로그인은 여전히 요구합니다. 인가·동의·세션이 `oauth_clients(id)`를 FK로 참조하므로, 코드 클라이언트는 첫 인가 때 **soft-delete된 그림자 행**을 남깁니다. 모든 조회가 `deleted_at`을 거르므로 이 행은 저장 클라이언트로 검증될 수 없고 관리 API에도 보이지 않으며, 스키마의 upstream 호환성은 그대로 유지됩니다.
+- **인스턴스별 인증 훅 (확장):** upstream은 send_email, before_user_created 같은 외부 인증 훅을 프로세스 단위(`GOTRUE_HOOK_*`)로 설정합니다. Dilion 서버는 여러 인스턴스를 서비스하므로 이 설정은 서버 전체의 기본값이고, 인스턴스 관리자(`users.admin`)는 `/auth/v1/admin/hooks/{name}`으로 자기 인스턴스의 설정을 둘 수 있습니다. 설정은 인스턴스 DB의 `dilion_auth.hooks`에 저장되며, 행이 있으면 서버 설정을 통째로 대체합니다(`enabled=false`로 서버 훅을 끄는 것 포함). DELETE하면 서버 설정으로 돌아갑니다. http(s)와 `pg-functions://` 모두 허용합니다. pg 함수는 인스턴스 자신의 DB에서 실행되고, 인스턴스 관리자는 그 DB를 이미 완전히 통제하기 때문입니다. secret은 쓰기 전용이고 개수만 보고합니다. 운영자의 통제 수단은 두 가지입니다.
+  - **`DILION_AUTH_HOOK_<NAME>_LOCKED`** (`HookEndpointConfig.Locked`): 서버 설정을 고정합니다. 관리 API의 쓰기는 403 `hook_locked`로 거부되고, 이미 저장된 행도 무시됩니다.
+  - **`AuthHookSetting` 훅 지점:** 인스턴스가 쓰는 URI를 저장할 때와 **매 호출 직전에** 검사하므로, 정책을 바꾸면 이미 저장된 설정에도 곧바로 적용됩니다. 오류를 돌려주면 거부됩니다. 기본값은 SSRF 방어입니다. http(s) 훅은 loopback·사설·link-local·CGNAT 등 공인 주소가 아닌 곳에 연결하지 않으며, 이 검사는 DNS 해석 뒤 실제로 연결하는 주소에 대해 하므로 DNS rebinding과 redirect도 막습니다. 정책 훅이 `"ssrf_protection": false`를 돌려주면 그 URI는 예외가 됩니다(운영자 내부망의 수신측 등). 서버 설정의 훅은 운영자 자신의 것이므로 이 검사를 거치지 않습니다.
+  - 여러 secret은 upstream처럼 `|`로 구분합니다(`v1,whsec_a|v1,whsec_b`). secret 자체에 쉼표가 있기 때문이며, 서명할 수 없는 secret은 시작 시점에 설정 오류로 거부됩니다.
 - hook에서의 실패가 호환 표면의 semantics를 깨지 않도록, hook 오류 처리 정책(fail-open/fail-closed)을 지점별로 명시합니다.
 
 ### 2.5 계정 삭제와 컴플라이언스 삭제의 분리 (Transactional Outbox)
@@ -452,6 +456,7 @@ auth.webauthn_credentials / auth.webauthn_challenges   -- Passkey (upstream 스�
 
 -- 확장 인증 (dilion prefix)
 dilion_auth.opaque_records (user_id, registration_record, ...)   -- OPAQUE (RFC 9807)
+dilion_auth.hooks (name, enabled, uri, secrets[])                -- 인스턴스별 인증 훅 설정 (§2.4)
 
 -- PII Vault
 dilion_pii.user_profiles (user_id, name, address, ...)   -- KMS 관리 키로 암호화 저장

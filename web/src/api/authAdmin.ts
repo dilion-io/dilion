@@ -172,3 +172,72 @@ export async function deleteAuthUser(userId: string, softDelete = false): Promis
   const { error } = await authAdmin.deleteUser(userId, softDelete)
   if (error) throw new AuthAdminError(error)
 }
+
+/**
+ * Per-instance auth hooks (`/auth/v1/admin/hooks`) — a Dilion extension, so
+ * supabase-js has no method for it. It is called with the same management
+ * credential and answers the same gotrue error envelope.
+ */
+export type AuthHookName =
+  | 'custom_access_token'
+  | 'send_email'
+  | 'send_sms'
+  | 'before_user_created'
+  | 'after_user_created'
+  | 'mfa_verification_attempt'
+  | 'password_verification_attempt'
+
+export type AuthHookSetting = {
+  name: AuthHookName
+  /** `instance`: this instance's own setting; `server`: the server-wide one. */
+  source: 'instance' | 'server'
+  enabled: boolean
+  uri: string
+  /** Secrets are write-only; only their number comes back. */
+  secrets_count: number
+  /** The operator pinned the server-wide setting: it cannot be replaced here. */
+  locked: boolean
+  updated_at?: string
+}
+
+export type AuthHookSettingBody = {
+  enabled: boolean
+  uri?: string
+  /** Omit to keep the stored secrets; `[]` removes them. */
+  secrets?: string[]
+}
+
+async function hooksCall<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await adminFetch(`${window.location.origin}/auth/v1/admin/hooks${path}`, {
+    ...init,
+    headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
+  })
+  const body: unknown = await res.json().catch(() => null)
+  if (!res.ok) {
+    const e = (body ?? {}) as { error_code?: string; msg?: string }
+    throw new AuthAdminError({
+      status: res.status,
+      code: e.error_code,
+      message: e.msg ?? `HTTP ${res.status}`,
+    })
+  }
+  return body as T
+}
+
+/** `GET /auth/v1/admin/hooks` — every hook as it runs for this instance. */
+export async function listAuthHooks(): Promise<AuthHookSetting[]> {
+  return (await hooksCall<{ hooks: AuthHookSetting[] }>('')).hooks
+}
+
+/** `PUT /auth/v1/admin/hooks/{name}` — set this instance's own setting. */
+export function putAuthHook(
+  name: AuthHookName,
+  body: AuthHookSettingBody,
+): Promise<AuthHookSetting> {
+  return hooksCall(`/${name}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** `DELETE /auth/v1/admin/hooks/{name}` — back to the server-wide setting. */
+export function deleteAuthHook(name: AuthHookName): Promise<AuthHookSetting> {
+  return hooksCall(`/${name}`, { method: 'DELETE' })
+}

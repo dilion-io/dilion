@@ -209,7 +209,11 @@ func (a *api) opaqueSignupFinish(w http.ResponseWriter, r *http.Request) error {
 		if !signup.Autoconfirm {
 			// Reuse confirmation tokens, delivery hooks, redirect allow-list and
 			// /verify. Missing delivery configuration must not strand a new user.
-			if a.mailer == nil && !a.cfg.Hooks.SendEmail.Enabled {
+			hooked, err := a.hookEnabled(ctx, tx, hookSendEmail)
+			if err != nil {
+				return err
+			}
+			if a.mailer == nil && !hooked {
 				return internalServerError("Email delivery must be configured for OPAQUE signup")
 			}
 			if _, err := a.sendConfirmation(ctx, tx, r, user, signup.RedirectTo, false); err != nil {
