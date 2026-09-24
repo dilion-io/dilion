@@ -34,12 +34,13 @@ jobs:
       - name: Resolve translation credentials
         uses: ./.github/actions/anthropic-credentials
         with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           federation-json-template: ${{ secrets.ANTHROPIC_FEDERATION_JSON_TEMPLATE }}
       - run: npm install --global @anthropic-ai/claude-code@2.1.263
       - name: Translate with claude -p
         env:
-          # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN come from the resolve step via GITHUB_ENV.
+          # CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN come from the resolve step via GITHUB_ENV.
           README_TRANSLATION_MODEL: ${{ vars.README_TRANSLATION_MODEL || 'sonnet' }}
           README_TRANSLATION_MAX_BUDGET_USD: '3'
         run: node scripts/translate-readme.mjs

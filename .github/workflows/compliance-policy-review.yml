@@ -44,12 +44,13 @@ jobs:
       - name: Resolve Claude credentials
         uses: ./.github/actions/anthropic-credentials
         with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           federation-json-template: ${{ secrets.ANTHROPIC_FEDERATION_JSON_TEMPLATE }}
       - run: npm install --global @anthropic-ai/claude-code@2.1.263
       - name: Review with claude -p
         env:
-          # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN come from the resolve step via GITHUB_ENV.
+          # CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN come from the resolve step via GITHUB_ENV.
           COMPLIANCE_REVIEW_MODEL: ${{ vars.COMPLIANCE_REVIEW_MODEL || 'opus' }}
           COMPLIANCE_REVIEW_MAX_BUDGET_USD: ${{ vars.COMPLIANCE_REVIEW_MAX_BUDGET_USD || '10' }}
         run: node scripts/review-compliance-policies.mjs --out "$RUNNER_TEMP/compliance-review"

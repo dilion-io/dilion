@@ -1,9 +1,13 @@
 name: Resolve Anthropic credentials
 description: >
-  Exports ANTHROPIC_API_KEY, or a workload-identity-federated ANTHROPIC_AUTH_TOKEN,
-  to GITHUB_ENV for later claude -p steps. Federation needs `id-token: write`.
+  Exports CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or a workload-identity-federated
+  ANTHROPIC_AUTH_TOKEN (first one available) to GITHUB_ENV for later claude -p steps. Federation needs `id-token: write`.
 
 inputs:
+  oauth-token:
+    description: The CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token). Wins over everything else.
+    required: false
+    default: ''
   api-key:
     description: The ANTHROPIC_API_KEY secret. Wins over federation when set.
     required: false
@@ -22,6 +26,7 @@ runs:
   steps:
     - shell: bash
       env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.oauth-token }}
         ANTHROPIC_API_KEY: ${{ inputs.api-key }}
         FEDERATION_JSON_TEMPLATE: ${{ inputs.federation-json-template }}
         FEDERATION_AUDIENCE: ${{ inputs.federation-audience }}
@@ -33,7 +38,16 @@ runs:
           { printf '%s<<__CREDENTIAL_EOF__\n%s\n__CREDENTIAL_EOF__\n' "$1" "$2"; } >> "$GITHUB_ENV"
         }
 
-        # An explicit API key always wins; it also outranks federation inside the SDKs.
+        # A subscription OAuth token avoids per-call API billing, so it wins over both
+        # the API key and federation. Nothing else is exported: the CLI would prefer
+        # an API key over the OAuth token if both were present.
+        if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+          put_env CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN"
+          echo 'Authenticating with the CLAUDE_CODE_OAUTH_TOKEN secret.'
+          exit 0
+        fi
+
+        # Otherwise an explicit API key wins; it also outranks federation inside the SDKs.
         if [ -n "$ANTHROPIC_API_KEY" ]; then
           put_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
           echo 'Authenticating with the ANTHROPIC_API_KEY secret.'
@@ -41,7 +55,7 @@ runs:
         fi
 
         if [ -z "$FEDERATION_JSON_TEMPLATE" ]; then
-          echo '::error::Set the ANTHROPIC_API_KEY or ANTHROPIC_FEDERATION_JSON_TEMPLATE secret to enable Claude jobs.'
+          echo '::error::Set the CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY or ANTHROPIC_FEDERATION_JSON_TEMPLATE secret to enable Claude jobs.'
           exit 1
         fi
         if ! printf '%s' "$FEDERATION_JSON_TEMPLATE" | jq -e 'type == "object"' > /dev/null; then
