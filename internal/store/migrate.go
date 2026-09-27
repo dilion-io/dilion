@@ -16,8 +16,8 @@ import (
 	"github.com/dilion-io/dilion/migrations"
 )
 
-// migrationsTable tracks which files have been applied.
-const migrationsTable = "public.schema_migrations"
+// migrationsTable tracks Dilion's files separately from other applications.
+const migrationsTable = "dilion_meta.schema_migrations"
 
 // advisoryLockKey serialises migration runs across processes. Arbitrary but
 // stable constant ("dilion" hashed by hand); never change it.
@@ -25,7 +25,7 @@ const advisoryLockKey int64 = 7264121035148
 
 // Migrate applies every embedded migration that has not been applied yet, in
 // lexicographic filename order, each file in its own transaction. Applied files
-// are recorded in public.schema_migrations. It is safe to call concurrently:
+// are recorded in dilion_meta.schema_migrations. It is safe to call concurrently:
 // runs are serialised with a Postgres advisory lock.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return migrateFS(ctx, pool, migrations.FS, migrationsTable)
@@ -101,6 +101,11 @@ func sqlFiles(fsys fs.FS) ([]string, error) {
 }
 
 func ensureMigrationsTable(ctx context.Context, conn pgxConn, table string) error {
+	if table == migrationsTable {
+		if _, err := conn.Exec(ctx, "create schema if not exists dilion_meta"); err != nil {
+			return fmt.Errorf("store: migrate: create dilion_meta schema: %w", err)
+		}
+	}
 	const q = `create table if not exists %s (
 	filename   text primary key,
 	applied_at timestamptz not null default now()

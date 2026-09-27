@@ -30,7 +30,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 }
 
 // throwawaySchema creates an empty schema dropped at the end of the test, so
-// runner tests never touch public.schema_migrations or a domain schema.
+// runner tests never touch Dilion's migration table or a domain schema.
 func throwawaySchema(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	ctx := context.Background()
@@ -214,7 +214,7 @@ func TestMigrateEmbedded(t *testing.T) {
 		}
 	}
 	var n int
-	if err := pool.QueryRow(ctx, "select count(*) from public.schema_migrations where filename = '0001_core.sql'").Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, "select count(*) from "+migrationsTable+" where filename = '0001_core.sql'").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

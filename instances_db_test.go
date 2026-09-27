@@ -169,7 +169,7 @@ func TestMigrateAppliesToEveryInstance(t *testing.T) {
 	for name, pool := range map[string]*pgxpool.Pool{"h1": h1, "h2": h2} {
 		var applied int
 		if err := pool.QueryRow(context.Background(),
-			`select count(*) from public.schema_migrations`).Scan(&applied); err != nil {
+			`select count(*) from dilion_meta.schema_migrations`).Scan(&applied); err != nil {
 			t.Fatalf("%s: schema_migrations: %v", name, err)
 		}
 		if applied == 0 {
