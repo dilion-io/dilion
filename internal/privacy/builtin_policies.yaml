@@ -64,7 +64,7 @@ compliance:
           basis: "45 CFR §164.316(b)(2)(i)"
         - domain: consent-evidence
           period: P6Y
-          from: created
+          from: erasure
           action: CRYPTO_SHRED
           basis: "45 CFR §164.530(j)(2)"
       consent:
