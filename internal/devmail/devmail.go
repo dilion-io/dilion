@@ -30,9 +30,11 @@ func NewMailer(log *slog.Logger) *Mailer {
 // Send logs the message and always succeeds.
 func (m *Mailer) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
 	m.log.InfoContext(ctx, "dev mailer: email not sent (no mailer configured)",
+		"instance", ports.InstanceFromContext(ctx),
 		"to", MaskEmail(to), "subject", subject,
 		"text_bytes", len(textBody), "html_bytes", len(htmlBody))
-	m.log.DebugContext(ctx, "dev mailer: body", "to", MaskEmail(to), "text", textBody, "html", htmlBody)
+	m.log.DebugContext(ctx, "dev mailer: body", "instance", ports.InstanceFromContext(ctx),
+		"to", MaskEmail(to), "text", textBody, "html", htmlBody)
 	return nil
 }
 
@@ -51,8 +53,9 @@ func NewSMS(log *slog.Logger) *SMS {
 // Send logs the message and always succeeds.
 func (s *SMS) Send(ctx context.Context, to, body string) error {
 	s.log.InfoContext(ctx, "dev sms: message not sent (no sms sender configured)",
-		"to", MaskPhone(to), "body_bytes", len(body))
-	s.log.DebugContext(ctx, "dev sms: body", "to", MaskPhone(to), "body", body)
+		"instance", ports.InstanceFromContext(ctx), "to", MaskPhone(to), "body_bytes", len(body))
+	s.log.DebugContext(ctx, "dev sms: body", "instance", ports.InstanceFromContext(ctx),
+		"to", MaskPhone(to), "body", body)
 	return nil
 }
 
