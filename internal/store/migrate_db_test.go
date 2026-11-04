@@ -1,14 +1,19 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 // testPool connects to $DILION_TEST_DB, skipping when it is unset.
@@ -190,6 +195,24 @@ func TestMigrateFailedFileRollsBackAndStopsRun(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatalf("%s rows = %d, want 3", table, n)
+	}
+}
+
+func TestMigrateLogIncludesInstance(t *testing.T) {
+	pool := testPool(t)
+	schema := throwawaySchema(t, pool)
+	ctx := ports.ContextWithInstance(context.Background(), "tenant-a")
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	if err := migrateFS(ctx, pool, fstest.MapFS{
+		"0001_test.sql": &fstest.MapFile{Data: []byte("select 1")},
+	}, schema+".schema_migrations"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"instance":"tenant-a"`) {
+		t.Fatalf("migration log missing instance: %s", buf.String())
 	}
 }
 

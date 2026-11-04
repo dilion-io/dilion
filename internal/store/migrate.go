@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/migrations"
+	"github.com/dilion-io/dilion/ports"
 )
 
 // migrationsTable tracks Dilion's files separately from other applications.
@@ -55,7 +56,7 @@ func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string
 	defer func() {
 		// Best effort: the lock is also released when the session ends.
 		if _, err := conn.Exec(context.WithoutCancel(ctx), "select pg_advisory_unlock($1)", advisoryLockKey); err != nil {
-			slog.Warn("store: advisory unlock failed", "error", err)
+			slog.WarnContext(ctx, "store: advisory unlock failed", "instance", ports.InstanceFromContext(ctx), "error", err)
 		}
 	}()
 
@@ -78,7 +79,7 @@ func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string
 		if err := applyOne(ctx, conn, table, name, string(body)); err != nil {
 			return err
 		}
-		slog.Info("migration applied", "file", name)
+		slog.InfoContext(ctx, "migration applied", "instance", ports.InstanceFromContext(ctx), "file", name)
 	}
 	return nil
 }
