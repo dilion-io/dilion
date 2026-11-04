@@ -32,7 +32,7 @@ const cleanupBatch = 5000
 // instances started together do not all sweep at once.
 func (a *api) RunCleanup(ctx context.Context) {
 	if !a.cfg.CleanupEnabled {
-		a.log.InfoContext(ctx, "auth: database cleanup disabled")
+		a.logFor(ctx).InfoContext(ctx, "auth: database cleanup disabled")
 		return
 	}
 	interval := a.cfg.CleanupInterval
@@ -51,9 +51,9 @@ func (a *api) RunCleanup(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			a.log.WarnContext(ctx, "auth: cleanup pass failed", slog.String("error", err.Error()))
+			a.logFor(ctx).WarnContext(ctx, "auth: cleanup pass failed", slog.String("error", err.Error()))
 		} else if n > 0 {
-			a.log.InfoContext(ctx, "auth: cleanup removed expired rows", slog.Int64("rows", n))
+			a.logFor(ctx).InfoContext(ctx, "auth: cleanup removed expired rows", slog.Int64("rows", n))
 		}
 
 		timer.Reset(interval)

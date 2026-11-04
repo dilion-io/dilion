@@ -342,7 +342,7 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 		return internalServerError("Error building the provider authorization URL")
 	}
 
-	a.log.InfoContext(ctx, "auth: redirecting to external provider",
+	a.logFor(ctx).InfoContext(ctx, "auth: redirecting to external provider",
 		slog.String("provider", providerType), slog.String("flow_state", fs.ID))
 
 	// skip_http_redirect answers with the URL instead of a 302 — upstream does
@@ -412,11 +412,11 @@ func (a *api) redirectExternalError(w http.ResponseWriter, r *http.Request, rurl
 func (a *api) logRedirectError(r *http.Request, err error) {
 	he, ok := err.(*HTTPError)
 	if ok && he.HTTPStatus < http.StatusInternalServerError {
-		a.log.InfoContext(r.Context(), "auth: external provider flow failed",
+		a.logFor(r.Context()).InfoContext(r.Context(), "auth: external provider flow failed",
 			slog.String("error", he.Error()))
 		return
 	}
-	a.log.ErrorContext(r.Context(), "auth: external provider flow failed",
+	a.logFor(r.Context()).ErrorContext(r.Context(), "auth: external provider flow failed",
 		slog.String("error", err.Error()))
 }
 

@@ -223,6 +223,12 @@ func newAPI(d Deps) *api {
 	return a
 }
 
+// logFor tags request and cleanup logs with the selected instance. The auth
+// API is shared across instances, so its base logger cannot hold a fixed id.
+func (a *api) logFor(ctx context.Context) *slog.Logger {
+	return a.log.With("instance", ports.InstanceFromContext(ctx))
+}
+
 // defaultOutboundNetworks is the outbound allowance of a mount whose Deps
 // sets none: nothing but the public internet. This package's tests widen it
 // to loopback, where their fake providers listen (main_test.go).
@@ -682,7 +688,7 @@ func (a *api) checkAdminUser(ctx context.Context, claims *ports.Claims) error {
 	}
 	ok, err := a.authz.Can(ctx, ports.Actor{ID: claims.Subject, Type: ActorTypeUser}, PermUsersAdmin, "auth/admin")
 	if err != nil {
-		a.log.ErrorContext(ctx, "auth: admin authorization check failed",
+		a.logFor(ctx).ErrorContext(ctx, "auth: admin authorization check failed",
 			slog.String("actor_id", claims.Subject), slog.String("error", err.Error()))
 		return denied
 	}
@@ -776,7 +782,7 @@ func (a *api) runHook(ctx context.Context, point ports.HookPoint, payload map[st
 // so an observer cannot break the compatibility surface (project.md §2.4).
 func (a *api) observeHook(ctx context.Context, point ports.HookPoint, payload map[string]any) {
 	if _, err := a.runHook(ctx, point, payload); err != nil {
-		a.log.WarnContext(ctx, "auth: observing hook failed",
+		a.logFor(ctx).WarnContext(ctx, "auth: observing hook failed",
 			slog.String("hook", string(point)), slog.String("error", err.Error()))
 	}
 }
@@ -788,7 +794,7 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 		return
 	}
 	if err := a.mailer.Send(ctx, to, subject, body, ""); err != nil {
-		a.log.WarnContext(ctx, "auth: mail delivery failed",
+		a.logFor(ctx).WarnContext(ctx, "auth: mail delivery failed",
 			slog.String("subject", subject), slog.String("error", err.Error()))
 	}
 }

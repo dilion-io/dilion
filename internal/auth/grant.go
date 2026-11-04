@@ -201,7 +201,7 @@ func (a *api) passwordGrant(w http.ResponseWriter, r *http.Request) error {
 		if wpe, ok := herr.internal.(*WeakPasswordError); ok {
 			weakPassword = wpe
 		} else {
-			a.log.WarnContext(ctx, "auth: password strength check on sign-in failed",
+			a.logFor(ctx).WarnContext(ctx, "auth: password strength check on sign-in failed",
 				"error", herr)
 		}
 	}
@@ -397,7 +397,7 @@ func (a *api) handleRefreshTokenReuse(ctx context.Context, tx querier, r *http.R
 			if uerr != nil {
 				return nil, uerr
 			}
-			a.log.InfoContext(ctx, "auth: refresh token reused inside the reuse interval, returning the active token",
+			a.logFor(ctx).InfoContext(ctx, "auth: refresh token reused inside the reuse interval, returning the active token",
 				slog.String("user_id", rt.UserID), slog.Int64("refresh_token_id", rt.ID),
 				slog.String("client_ip", clientIP(r)))
 			return a.buildSessionResponse(ctx, tx, user, sess.ID, active.Token, "")
@@ -415,7 +415,7 @@ func (a *api) handleRefreshTokenReuse(ctx context.Context, tx querier, r *http.R
 			return nil, internalServerError("Error destroying session after detected refresh token reuse").withInternal(derr)
 		}
 	}
-	a.log.WarnContext(ctx, "auth: refresh token reuse detected, session family revoked",
+	a.logFor(ctx).WarnContext(ctx, "auth: refresh token reuse detected, session family revoked",
 		slog.String("user_id", rt.UserID), slog.Int64("refresh_token_id", rt.ID),
 		slog.String("client_ip", clientIP(r)))
 	// commitAndFail: the revocation must survive the error response.

@@ -262,7 +262,7 @@ func (a *api) referrerFor(r *http.Request, redirectTo string) string {
 // unusable accounts.
 func (a *api) deliver(ctx context.Context, to, subject, text, htmlBody, what string) error {
 	if a.mailer == nil {
-		a.log.WarnContext(ctx, "auth: no mailer configured, email not sent",
+		a.logFor(ctx).WarnContext(ctx, "auth: no mailer configured, email not sent",
 			"type", what, "subject", subject)
 		return nil
 	}

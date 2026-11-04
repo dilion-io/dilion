@@ -193,7 +193,7 @@ func (a *api) writeError(r *http.Request, w http.ResponseWriter, err error) {
 	if he.HTTPStatus >= 500 {
 		level = slog.LevelError
 	}
-	a.log.LogAttrs(r.Context(), level, "auth: request failed",
+	a.logFor(r.Context()).LogAttrs(r.Context(), level, "auth: request failed",
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
 		slog.Int("status", he.HTTPStatus),
@@ -202,6 +202,6 @@ func (a *api) writeError(r *http.Request, w http.ResponseWriter, err error) {
 	)
 
 	if sendErr := sendJSON(w, he.HTTPStatus, he); sendErr != nil {
-		a.log.ErrorContext(r.Context(), "auth: failed to write error response", slog.String("error", sendErr.Error()))
+		a.logFor(r.Context()).ErrorContext(r.Context(), "auth: failed to write error response", slog.String("error", sendErr.Error()))
 	}
 }

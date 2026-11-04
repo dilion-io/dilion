@@ -477,7 +477,7 @@ func (a *api) oauthReuseRefreshToken(ctx context.Context, tx querier, r *http.Re
 			if terr != nil {
 				return nil, terr
 			}
-			a.log.InfoContext(ctx, "auth: oauth refresh token reused inside the reuse interval, returning the active token",
+			a.logFor(ctx).InfoContext(ctx, "auth: oauth refresh token reused inside the reuse interval, returning the active token",
 				"user_id", rt.UserID, "refresh_token_id", rt.ID, "client_ip", clientIP(r))
 			return &OAuthTokenResponse{
 				AccessToken:  accessToken,
@@ -496,7 +496,7 @@ func (a *api) oauthReuseRefreshToken(ctx context.Context, tx querier, r *http.Re
 	if derr := deleteSession(ctx, tx, sess.ID); derr != nil {
 		return nil, internalServerError("Error destroying session after detected refresh token reuse").withInternal(derr)
 	}
-	a.log.WarnContext(ctx, "auth: oauth refresh token reuse detected, session family revoked",
+	a.logFor(ctx).WarnContext(ctx, "auth: oauth refresh token reuse detected, session family revoked",
 		"user_id", rt.UserID, "refresh_token_id", rt.ID, "client_ip", clientIP(r))
 	return nil, commitAndFail(oauthError(oAuth2ErrorInvalidGrant, "Invalid Refresh Token: Already Used"))
 }
