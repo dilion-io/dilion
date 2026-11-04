@@ -70,7 +70,7 @@ func (a *api) emitAudit(r *http.Request, o auditOpts) {
 		OccurredAt:  a.now(),
 	}
 	if err := a.audit.Append(ctx, ev); err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: audit append failed",
+		a.log.WarnContext(ctx, "auth: audit append failed",
 			slog.String("action", o.Action),
 			slog.String("actor_id", actor.ID),
 			slog.String("request_id", ev.RequestID),

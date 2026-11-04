@@ -220,7 +220,7 @@ func (a *api) limit(name string) func(http.Handler) http.Handler {
 func (a *api) limitCheck(name string, r *http.Request) error {
 	l := a.limiters[name]
 	if l == nil {
-		a.logFor(r.Context()).ErrorContext(r.Context(), "auth: unknown rate limiter", "limiter", name)
+		a.log.ErrorContext(r.Context(), "auth: unknown rate limiter", "limiter", name)
 		return tooManyRequestsError("Request rate limit reached")
 	}
 	// Keyed per instance too: one instance's traffic must not spend another
@@ -382,7 +382,7 @@ func timeoutMiddleware(a *api, d time.Duration) func(http.Handler) http.Handler 
 				defer close(done)
 				defer func() {
 					if rec := recover(); rec != nil {
-						a.logFor(ctx).ErrorContext(ctx, "auth: handler panicked",
+						a.log.ErrorContext(ctx, "auth: handler panicked",
 							"path", r.URL.Path, "panic", rec)
 						tw.write(http.StatusInternalServerError,
 							internalServerError("Unexpected failure, please check server logs for more information"))

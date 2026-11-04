@@ -108,7 +108,7 @@ func (a *api) idTokenGrant(w http.ResponseWriter, r *http.Request) error {
 		SkipAccessTokenCheck: params.AccessToken == "",
 	})
 	if err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: id_token verification failed",
+		a.log.WarnContext(ctx, "auth: id_token verification failed",
 			"provider", res.ProviderType, "error", err.Error())
 		return sendOAuthError(w, "invalid request", "Bad ID token")
 	}

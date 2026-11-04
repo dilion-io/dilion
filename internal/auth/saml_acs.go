@@ -305,7 +305,7 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		// Static metadata_xml cannot be refreshed; warn the operator while
 		// there is still time to act.
 		if !idpMetadata.ValidUntil.IsZero() && idpMetadata.ValidUntil.Sub(now) <= samlMetadataExpiryWarning {
-			a.logFor(ctx).WarnContext(ctx,
+			a.log.WarnContext(ctx,
 				"auth: SAML Metadata for identity provider will expire soon! Update its metadata_xml!",
 				slog.String("sso_provider_id", ssoProvider.ID),
 				slog.String("saml_entity_id", ssoProvider.SAMLProvider.EntityID),
@@ -318,11 +318,11 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 			// Upstream fails SILENTLY here and keeps the cached document: a
 			// temporarily unreachable metadata endpoint must not lock every
 			// user out.
-			a.logFor(ctx).WarnContext(ctx, "auth: SAML Metadata could not be retrieved, continuing with existing metadata",
+			a.log.WarnContext(ctx, "auth: SAML Metadata could not be retrieved, continuing with existing metadata",
 				slog.String("sso_provider_id", ssoProvider.ID),
 				slog.String("error", ferr.Error()))
 		} else if refreshed, perr := parseSAMLMetadata(raw); perr != nil {
-			a.logFor(ctx).WarnContext(ctx, "auth: SAML Metadata fetched from metadata_url is not usable, continuing with existing metadata",
+			a.log.WarnContext(ctx, "auth: SAML Metadata fetched from metadata_url is not usable, continuing with existing metadata",
 				slog.String("sso_provider_id", ssoProvider.ID),
 				slog.String("error", perr.Error()))
 		} else {

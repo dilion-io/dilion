@@ -172,7 +172,7 @@ func (a *api) checkPasswordStrength(ctx context.Context, password string) *HTTPE
 			return internalServerError(
 				"Unable to perform password strength check with HaveIBeenPwned.org.").withInternal(err)
 		case err != nil:
-			a.logFor(ctx).WarnContext(ctx,
+			a.log.WarnContext(ctx,
 				"auth: unable to perform password strength check with HaveIBeenPwned.org, pwned passwords are being allowed",
 				"error", err)
 		case pwned:

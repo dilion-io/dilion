@@ -442,7 +442,7 @@ func validatePasskeyVerifyParams(challengeID string, credential json.RawMessage)
 func (a *api) purgeExpiredPasskeyChallenges(ctx context.Context, q querier, now time.Time) {
 	const batch = 100
 	if err := deleteExpiredPasskeyChallenges(ctx, q, now, batch); err != nil {
-		a.logFor(ctx).DebugContext(ctx, "auth: purging expired webauthn challenges failed",
+		a.log.DebugContext(ctx, "auth: purging expired webauthn challenges failed",
 			"error", err.Error())
 	}
 }

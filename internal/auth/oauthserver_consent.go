@@ -117,7 +117,7 @@ func (a *api) oauthGetAuthorization(w http.ResponseWriter, r *http.Request) erro
 			}
 		case *o.UserID != user.ID:
 			// Never reveal that the authorization exists to anybody but its owner.
-			a.logFor(ctx).WarnContext(ctx, "auth: oauth authorization belongs to a different user",
+			a.log.WarnContext(ctx, "auth: oauth authorization belongs to a different user",
 				"request_user_id", user.ID, "authorization_id", o.AuthorizationID)
 			return notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
 		}
@@ -209,7 +209,7 @@ func (a *api) oauthConsent(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		if o.UserID == nil || *o.UserID != user.ID {
-			a.logFor(ctx).WarnContext(ctx, "auth: oauth authorization belongs to a different user",
+			a.log.WarnContext(ctx, "auth: oauth authorization belongs to a different user",
 				"request_user_id", user.ID, "authorization_id", o.AuthorizationID)
 			return notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
 		}
@@ -276,7 +276,7 @@ func (a *api) lockPendingAuthorization(ctx context.Context, tx querier, authoriz
 	if o.IsExpired(a.now()) {
 		if o.Status == OAuthAuthorizationPending {
 			if merr := setOAuthAuthorizationStatus(ctx, tx, o.ID, OAuthAuthorizationExpired); merr != nil {
-				a.logFor(ctx).WarnContext(ctx, "auth: failed to mark authorization as expired", "error", merr.Error())
+				a.log.WarnContext(ctx, "auth: failed to mark authorization as expired", "error", merr.Error())
 				return nil, notFoundError(ErrorCodeOAuthAuthorizationNotFound, "authorization not found")
 			}
 		}

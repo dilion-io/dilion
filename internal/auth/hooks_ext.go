@@ -151,7 +151,7 @@ func (a *api) runBeforeUserCreated(ctx context.Context, tx querier, u *User) err
 func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
 	cfg, err := a.hookConfig(ctx, nil, hookAfterUserCreated)
 	if err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: after_user_created hook failed", "error", err.Error())
+		a.log.WarnContext(ctx, "auth: after_user_created hook failed", "error", err.Error())
 		return
 	}
 	if !cfg.Enabled {
@@ -162,7 +162,7 @@ func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
 		User:     u,
 	}
 	if err := a.runExtHook(ctx, cfg, nil, in, &AfterUserCreatedOutput{}); err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: after_user_created hook failed",
+		a.log.WarnContext(ctx, "auth: after_user_created hook failed",
 			"error", err.Error())
 	}
 }

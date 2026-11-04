@@ -74,7 +74,7 @@ func (r *registrar) registerUserSearch() {
 				FieldValue: in.Value,
 			}, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toUserMatch)
 			r.d.emit(ctx, auditOpts{

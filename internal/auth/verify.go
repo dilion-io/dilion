@@ -873,7 +873,7 @@ func (a *api) redirectError(w http.ResponseWriter, r *http.Request, err error, r
 	if !ok {
 		return err
 	}
-	a.logFor(r.Context()).WarnContext(r.Context(), "auth: verify failed",
+	a.log.WarnContext(r.Context(), "auth: verify failed",
 		"error_code", he.ErrorCode, "status", he.HTTPStatus, "error", he.Error())
 
 	u, perr := url.Parse(rurl)

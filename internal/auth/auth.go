@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/ports"
 )
@@ -200,16 +201,14 @@ func newAPI(d Deps) *api {
 		hooks:  d.Hooks,
 		authz:  d.Authz,
 		audit:  d.Audit,
-		log:    d.Logger,
+		// Tags every record with the instance on its context (logctx).
+		log: logctx.Wrap(d.Logger),
 
 		providers:        d.Providers,
 		oauthClients:     d.OAuthClients,
 		siteSource:       d.Settings,
 		adminMFADisabled: d.AdminMFADisabled,
 		clock:            d.Clock,
-	}
-	if a.log == nil {
-		a.log = slog.Default()
 	}
 	if a.clock == nil {
 		a.clock = ports.SystemClock{}
@@ -221,12 +220,6 @@ func newAPI(d Deps) *api {
 	}
 	a.limiters = buildLimiters(cfg)
 	return a
-}
-
-// logFor tags request and cleanup logs with the selected instance. The auth
-// API is shared across instances, so its base logger cannot hold a fixed id.
-func (a *api) logFor(ctx context.Context) *slog.Logger {
-	return a.log.With("instance", ports.InstanceFromContext(ctx))
 }
 
 // defaultOutboundNetworks is the outbound allowance of a mount whose Deps
@@ -688,7 +681,7 @@ func (a *api) checkAdminUser(ctx context.Context, claims *ports.Claims) error {
 	}
 	ok, err := a.authz.Can(ctx, ports.Actor{ID: claims.Subject, Type: ActorTypeUser}, PermUsersAdmin, "auth/admin")
 	if err != nil {
-		a.logFor(ctx).ErrorContext(ctx, "auth: admin authorization check failed",
+		a.log.ErrorContext(ctx, "auth: admin authorization check failed",
 			slog.String("actor_id", claims.Subject), slog.String("error", err.Error()))
 		return denied
 	}
@@ -782,7 +775,7 @@ func (a *api) runHook(ctx context.Context, point ports.HookPoint, payload map[st
 // so an observer cannot break the compatibility surface (project.md §2.4).
 func (a *api) observeHook(ctx context.Context, point ports.HookPoint, payload map[string]any) {
 	if _, err := a.runHook(ctx, point, payload); err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: observing hook failed",
+		a.log.WarnContext(ctx, "auth: observing hook failed",
 			slog.String("hook", string(point)), slog.String("error", err.Error()))
 	}
 }
@@ -794,7 +787,7 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 		return
 	}
 	if err := a.mailer.Send(ctx, to, subject, body, ""); err != nil {
-		a.logFor(ctx).WarnContext(ctx, "auth: mail delivery failed",
+		a.log.WarnContext(ctx, "auth: mail delivery failed",
 			slog.String("subject", subject), slog.String("error", err.Error()))
 	}
 }

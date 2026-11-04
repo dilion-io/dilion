@@ -315,7 +315,7 @@ func (r *registrar) registerRoles() {
 		func(ctx context.Context, in *catalogListInput) (*rolePageOutput, error) {
 			page, err := r.keys.ListRoles(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			items := mapItems(page.Items, toRole)
 			r.d.emit(ctx, auditOpts{
@@ -337,7 +337,7 @@ func (r *registrar) registerRoles() {
 			}
 			role, err := r.keys.CreateRole(ctx, in.Body.Name, in.Body.Permissions)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionRoleCreated, Resource: "role:" + role.ID,
@@ -351,7 +351,7 @@ func (r *registrar) registerRoles() {
 		func(ctx context.Context, in *roleIDInput) (*roleBodyOutput, error) {
 			role, err := r.keys.GetRole(ctx, in.RoleID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionIAMRead, Resource: "role:" + role.ID,
@@ -365,7 +365,7 @@ func (r *registrar) registerRoles() {
 		func(ctx context.Context, in *updateRoleInput) (*roleBodyOutput, error) {
 			cur, err := r.keys.GetRole(ctx, in.RoleID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			// Removing a permission changes what the role's holders can do as
 			// much as adding one, so the caller must hold both sets.
@@ -375,7 +375,7 @@ func (r *registrar) registerRoles() {
 			}
 			role, err := r.keys.UpdateRole(ctx, in.RoleID, in.Body.Permissions)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionRoleUpdated, Resource: "role:" + role.ID,
@@ -397,7 +397,7 @@ func (r *registrar) registerRoles() {
 				IncludeRevoked: in.IncludeRevoked,
 			}, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			items := mapItems(page.Items, toAssignment)
 			// Assignments list actors, not data subjects: the subject manifest
@@ -424,7 +424,7 @@ func (r *registrar) registerRoles() {
 		func(ctx context.Context, in *createRoleAssignmentInput) (*roleAssignmentOutput, error) {
 			role, err := r.keys.GetRole(ctx, in.RoleID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			if err := r.d.grantCeiling(ctx, role.Permissions, "role:"+role.ID+" assignments"); err != nil {
 				return nil, err
@@ -432,7 +432,7 @@ func (r *registrar) registerRoles() {
 			a, err := r.keys.GrantRole(ctx, in.RoleID, in.Body.ActorID,
 				requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionRoleGranted,
@@ -453,11 +453,11 @@ func (r *registrar) registerRoles() {
 			// would let an administrator lock out those above it.
 			cur, err := r.keys.GetAssignment(ctx, in.AssignmentID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			role, err := r.keys.GetRole(ctx, cur.RoleID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			if err := r.d.grantCeiling(ctx, role.Permissions, "assignment:"+strconv.FormatInt(cur.ID, 10)); err != nil {
 				return nil, err
@@ -465,7 +465,7 @@ func (r *registrar) registerRoles() {
 			a, err := r.keys.RevokeAssignment(ctx, in.AssignmentID,
 				requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionRoleRevoked,
@@ -483,7 +483,7 @@ func (r *registrar) registerPermissions() {
 		func(ctx context.Context, in *catalogListInput) (*permissionPageOutput, error) {
 			page, err := r.keys.ListPermissions(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			items := mapItems(page.Items, toPermission)
 			r.d.emit(ctx, auditOpts{
@@ -502,7 +502,7 @@ func (r *registrar) registerPermissions() {
 		func(ctx context.Context, in *createPermissionInput) (*permissionOutput, error) {
 			p, err := r.keys.CreatePermission(ctx, in.Body.Name)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionPermissionCreated, Resource: "permission:" + p.Name,
@@ -520,7 +520,7 @@ func (r *registrar) registerPermissions() {
 			}
 			holders, err := r.keys.Recertification(ctx, in.PermissionName)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			items := mapItems(holders, toHolder)
 			// The holders are ACTOR ids, not data subjects. SubjectIDs is the
@@ -584,7 +584,7 @@ func (r *registrar) expandActors(ctx context.Context, resource, expand string,
 	}
 	details, err := r.keys.ActorDetails(ctx, ids)
 	if err != nil {
-		return mapIAMError(ctx, err)
+		return r.d.mapIAMError(ctx, err)
 	}
 	now := time.Now().UTC()
 	for i := 0; i < n; i++ {
@@ -612,7 +612,7 @@ func (r *registrar) registerAPIKeys() {
 		func(ctx context.Context, in *catalogListInput) (*apiKeyPageOutput, error) {
 			page, err := r.keys.ListKeys(ctx, catalogListParams(in.Limit, in.Cursor))
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			items := mapItems(page.Items, toAPIKey)
 			r.d.emit(ctx, auditOpts{
@@ -646,7 +646,7 @@ func (r *registrar) registerAPIKeys() {
 			token, key, err := r.keys.CreateKeyBy(ctx, name, in.Body.Scopes,
 				in.Body.ExpiresAt, actor.ID, actor.Type)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionAPIKeyCreated, Resource: "api_key:" + key.ID,
@@ -665,14 +665,14 @@ func (r *registrar) registerAPIKeys() {
 			// administrator disable the automation of those above it.
 			cur, err := r.keys.GetKey(ctx, in.KeyID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			if err := r.d.grantCeiling(ctx, cur.Scopes, "api_key:"+cur.ID); err != nil {
 				return nil, err
 			}
 			key, err := r.keys.RevokeKey(ctx, in.KeyID, requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
-				return nil, mapIAMError(ctx, err)
+				return nil, r.d.mapIAMError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action: audit.ActionAPIKeyRevoked, Resource: "api_key:" + key.ID,

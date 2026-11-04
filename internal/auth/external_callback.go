@@ -416,7 +416,7 @@ func (a *api) linkBySubject(ctx context.Context, tx querier, sub string, candida
 			return accountLinkingResult{}, internalServerError("Database error finding user").withInternal(eerr)
 		}
 		if owner != nil {
-			a.logFor(ctx).WarnContext(ctx, "auth: provider email already belongs to another user; creating the subject's account without it",
+			a.log.WarnContext(ctx, "auth: provider email already belongs to another user; creating the subject's account without it",
 				"user_id", sub, "other_user_id", owner.ID)
 			candidate.Email = ""
 		}

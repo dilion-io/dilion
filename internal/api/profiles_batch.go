@@ -80,7 +80,7 @@ func (r *registrar) registerProfileBatch() {
 					continue
 				}
 				if err != nil {
-					return nil, mapPrivacyError(ctx, err)
+					return nil, r.d.mapPrivacyError(ctx, err)
 				}
 				items = append(items, toProfile(*out))
 				found = append(found, id)

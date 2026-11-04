@@ -738,9 +738,9 @@ func clientDetails(c *oauthClient) ClientDetailsResponse {
 // writeOAuthError renders an RFC 6749 error body. Upstream answers every
 // OAuthError with HTTP 400, whatever the OAuth error code is.
 func (a *api) writeOAuthError(w http.ResponseWriter, r *http.Request, e *OAuthError) {
-	a.logFor(r.Context()).WarnContext(r.Context(), "auth: oauth request failed",
+	a.log.WarnContext(r.Context(), "auth: oauth request failed",
 		"method", r.Method, "path", r.URL.Path, "error", e.Err, "description", e.Description)
 	if err := sendJSON(w, http.StatusBadRequest, e); err != nil {
-		a.logFor(r.Context()).ErrorContext(r.Context(), "auth: failed to write oauth error response", "error", err.Error())
+		a.log.ErrorContext(r.Context(), "auth: failed to write oauth error response", "error", err.Error())
 	}
 }

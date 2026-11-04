@@ -377,7 +377,7 @@ func (a *api) deliverSMS(ctx context.Context, phone, otp, otpType, channel strin
 		return messageID, unprocessableEntityError(ErrorCodeSMSSendFailed,
 			"Error sending %s OTP to provider: %v", otpType, err)
 	}
-	a.logFor(ctx).InfoContext(ctx, "auth: sms otp sent",
+	a.log.InfoContext(ctx, "auth: sms otp sent",
 		"otp_type", otpType, "channel", channel, "message_id", messageID)
 	return messageID, nil
 }

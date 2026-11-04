@@ -644,7 +644,7 @@ func TestActorDetails(t *testing.T) {
 	// ActorDetails reads auth.users, which this package's own migration list
 	// does not create: it applies the 03xx files only. Bring the whole schema
 	// up for this one test instead of widening that list for every other.
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := store.Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

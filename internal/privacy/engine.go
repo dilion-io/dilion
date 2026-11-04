@@ -32,6 +32,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/ports"
 
 	"github.com/dilion-io/dilion/internal/netguard"
@@ -77,6 +78,9 @@ type EngineDeps struct {
 	// so by default deliveries reach only the public internet
 	// (internal/netguard).
 	OutboundNetworks netguard.Networks
+	// Logger receives the engine's logs, each naming this engine's instance.
+	// nil means slog.Default().
+	Logger *slog.Logger
 }
 
 // Engine implements Service.
@@ -129,6 +133,10 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	logInstance := d.InstanceID
+	if logInstance == "" {
+		logInstance = ports.DefaultInstanceID
+	}
 	e := &Engine{
 		pool:           d.Pool,
 		kms:            d.KMS,
@@ -141,7 +149,9 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
 		instanceID:     d.InstanceID,
 		http:           &http.Client{Timeout: 15 * time.Second, Transport: netguard.Transport(http.DefaultTransport, d.OutboundNetworks)},
-		log:            slog.Default().With("component", "privacy", "instance", d.InstanceID),
+		// The engine serves one instance, so it names it once rather than per
+		// call; logctx then leaves the attribute alone.
+		log: logctx.Wrap(d.Logger).With("component", "privacy", logctx.Key, logInstance),
 	}
 	if e.clock == nil {
 		e.clock = ports.SystemClock{}

@@ -308,6 +308,7 @@ func (r *Registry) buildEngine(ctx context.Context, id string) (*privacy.Engine,
 		TombstoneKey:     InstanceTombstoneKey(r.cfg.TombstoneKey, id),
 		InstanceID:       id,
 		OutboundNetworks: r.cfg.OutboundNetworks,
+		Logger:           r.cfg.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)

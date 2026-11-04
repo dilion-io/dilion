@@ -36,7 +36,7 @@ func newCeilingEnv(t *testing.T, roles ...string) *ceilingEnv {
 	t.Helper()
 	pool := testPool(t)
 	ctx := context.Background()
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := store.Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	svc := iam.New(pool)

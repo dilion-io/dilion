@@ -142,7 +142,7 @@ func (r *registrar) requireDeletionAssurance(ctx context.Context) error {
 			"this token's session has ended; sign in again and retry")
 	}
 	if err != nil {
-		logFor(ctx).ErrorContext(ctx, "session assurance lookup failed", "error", err)
+		r.d.log().ErrorContext(ctx, "session assurance lookup failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 	if as.MFAEnabled && as.AAL != auth.AAL2 {
@@ -197,7 +197,7 @@ func (r *registrar) registerMe() {
 				RequestedBy:    sub,
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPrivacyRequestCreated,
@@ -227,7 +227,7 @@ func (r *registrar) registerMe() {
 			}
 			page, err := svc.ListRequests(ctx, f, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toPrivacyRequest)
 			r.d.emit(ctx, auditOpts{
@@ -254,14 +254,14 @@ func (r *registrar) registerMe() {
 			// from a missing one (api-conventions: 존재 노출 방지).
 			existing, err := svc.GetRequest(ctx, in.RequestID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			if existing.UserID != sub {
 				return nil, NewProblem(http.StatusNotFound, httpapi.CodeNotFound, "resource not found")
 			}
 			out, err := svc.CancelRequest(ctx, in.RequestID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPrivacyRequestCanceled,
@@ -283,7 +283,7 @@ func (r *registrar) registerMe() {
 			sub := requestInfoFrom(ctx).Actor.ID
 			states, err := svc.GetConsents(ctx, sub)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(states, toConsentState)
 			r.d.emit(ctx, auditOpts{
@@ -311,7 +311,7 @@ func (r *registrar) registerMe() {
 				Source:        "ui",
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionConsentChanged,

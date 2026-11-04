@@ -19,6 +19,7 @@ import (
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
 	"github.com/dilion-io/dilion/internal/auth"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/ports"
 
 	"github.com/dilion-io/dilion/internal/netguard"
@@ -29,10 +30,6 @@ import (
 // (ports.ContextWithInstance, internal/instances), otherwise the one configured
 // pool. Structurally identical to instances.PoolFunc.
 type PoolFunc func(context.Context) (*pgxpool.Pool, error)
-
-func logFor(ctx context.Context) *slog.Logger {
-	return slog.Default().With("instance", ports.InstanceFromContext(ctx))
-}
 
 // Deps are the platform dependencies injected by dilion.go.
 type Deps struct {
@@ -63,6 +60,19 @@ type Deps struct {
 	// AdminMFADisabled lets a user token act on the management plane without
 	// an aal2 session (dilion.WithoutAdminMFA). Development only.
 	AdminMFADisabled bool
+
+	// Logger receives this surface's error logs, tagged with the request's
+	// instance (logctx). nil means slog.Default().
+	Logger *slog.Logger
+}
+
+// log returns the instance-tagging logger. Registration wraps Logger once
+// (newRegistrar); the fallback covers a Deps used directly.
+func (d Deps) log() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
+	}
+	return logctx.Wrap(nil)
 }
 
 // pools returns the effective pool provider (Pools, else a static Pool).
@@ -198,7 +208,7 @@ func (d Deps) emit(ctx context.Context, o auditOpts) {
 		OccurredAt:  time.Now().UTC(),
 	}
 	if err := d.Audit.Append(ctx, ev); err != nil {
-		logFor(ctx).ErrorContext(ctx, "audit append failed",
+		d.log().ErrorContext(ctx, "audit append failed",
 			"action", o.Action, "actor_id", ri.Actor.ID, "request_id", ri.RequestID, "error", err)
 	}
 }

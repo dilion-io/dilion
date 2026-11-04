@@ -99,7 +99,7 @@ func TestMigrateAppliesInLexicographicOrderOnce(t *testing.T) {
 	fsys := orderedFS(schema, "2_a.sql", "10_c.sql", "1_b.sql")
 	fsys["notes.txt"] = &fstest.MapFile{Data: []byte("ignored")}
 
-	if err := migrateFS(ctx, pool, fsys, table); err != nil {
+	if err := migrateFS(ctx, pool, fsys, table, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	want := []string{"10_c.sql", "1_b.sql", "2_a.sql"}
@@ -108,7 +108,7 @@ func TestMigrateAppliesInLexicographicOrderOnce(t *testing.T) {
 	}
 
 	// Re-running must be a no-op.
-	if err := migrateFS(ctx, pool, fsys, table); err != nil {
+	if err := migrateFS(ctx, pool, fsys, table, nil); err != nil {
 		t.Fatalf("migrate again: %v", err)
 	}
 	if got := appliedOrder(t, pool, schema); !reflect.DeepEqual(got, want) {
@@ -118,7 +118,7 @@ func TestMigrateAppliesInLexicographicOrderOnce(t *testing.T) {
 	// Only the newly added file is applied on the next run.
 	fsys["3_d.sql"] = &fstest.MapFile{Data: []byte(fmt.Sprintf(
 		"insert into %s.applied (name) values ('3_d.sql');", schema))}
-	if err := migrateFS(ctx, pool, fsys, table); err != nil {
+	if err := migrateFS(ctx, pool, fsys, table, nil); err != nil {
 		t.Fatalf("migrate incremental: %v", err)
 	}
 	want = append(want, "3_d.sql")
@@ -149,7 +149,7 @@ func TestMigrateFailedFileRollsBackAndStopsRun(t *testing.T) {
 		"0003_never.sql": &fstest.MapFile{Data: []byte(
 			"create table " + schema + ".t3 (id int);")},
 	}
-	if err := migrateFS(ctx, pool, fsys, table); err == nil {
+	if err := migrateFS(ctx, pool, fsys, table, nil); err == nil {
 		t.Fatal("migrate succeeded, want failure")
 	}
 
@@ -186,7 +186,7 @@ func TestMigrateFailedFileRollsBackAndStopsRun(t *testing.T) {
 
 	// After fixing the file the run resumes from where it stopped.
 	fsys["0002_bad.sql"] = &fstest.MapFile{Data: []byte("create table " + schema + ".t2 (id int);")}
-	if err := migrateFS(ctx, pool, fsys, table); err != nil {
+	if err := migrateFS(ctx, pool, fsys, table, nil); err != nil {
 		t.Fatalf("migrate after fix: %v", err)
 	}
 	var n int
@@ -203,12 +203,9 @@ func TestMigrateLogIncludesInstance(t *testing.T) {
 	schema := throwawaySchema(t, pool)
 	ctx := ports.ContextWithInstance(context.Background(), "tenant-a")
 	var buf bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
 	if err := migrateFS(ctx, pool, fstest.MapFS{
 		"0001_test.sql": &fstest.MapFile{Data: []byte("select 1")},
-	}, schema+".schema_migrations"); err != nil {
+	}, schema+".schema_migrations", slog.New(slog.NewJSONHandler(&buf, nil))); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"instance":"tenant-a"`) {
@@ -220,10 +217,10 @@ func TestMigrateLogIncludesInstance(t *testing.T) {
 func TestMigrateEmbedded(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	if err := Migrate(ctx, pool); err != nil {
+	if err := Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if err := Migrate(ctx, pool); err != nil {
+	if err := Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate (idempotent run): %v", err)
 	}
 	for _, s := range []string{"auth", "dilion_auth", "dilion_privacy", "dilion_pii", "dilion_authz", "dilion_audit"} {

@@ -82,7 +82,7 @@ func (a *api) throttled(ctx context.Context, kind, account string, check func() 
 	switch {
 	case cerr == nil:
 		if _, err := pool.Exec(ctx, `delete from dilion_auth.auth_attempts where account = $1`, key); err != nil {
-			a.logFor(ctx).WarnContext(ctx, "auth: clearing attempts failed", "error", err.Error())
+			a.log.WarnContext(ctx, "auth: clearing attempts failed", "error", err.Error())
 		}
 	case errors.As(cerr, &he) && credentialFailureCodes[he.ErrorCode]:
 		if _, err := pool.Exec(ctx, `
@@ -93,7 +93,7 @@ func (a *api) throttled(ctx context.Context, kind, account string, check func() 
 				window_start = case when auth_attempts.window_start <= $2 - $3 * interval '1 second' then $2
 				                    else auth_attempts.window_start end`,
 			key, now, int(attemptWindow.Seconds())); err != nil {
-			a.logFor(ctx).WarnContext(ctx, "auth: recording a failed attempt failed", "error", err.Error())
+			a.log.WarnContext(ctx, "auth: recording a failed attempt failed", "error", err.Error())
 		}
 	}
 	return cerr

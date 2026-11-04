@@ -22,7 +22,7 @@ import (
 func TestManagementPlaneChecksTheSession(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := store.Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	user, banned := uuid.NewString(), uuid.NewString()

@@ -64,6 +64,7 @@ import (
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/instances"
 	"github.com/dilion-io/dilion/internal/kmslocal"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
@@ -347,7 +348,9 @@ func WithAddr(addr string) Option { return func(c *config) { c.addr = addr } }
 // WithClock replaces the time source used by the compliance engine (tests).
 func WithClock(cl ports.Clock) Option { return func(c *config) { c.clock = cl } }
 
-// WithLogger sets the base slog logger (default slog.Default()).
+// WithLogger sets the base slog logger (default slog.Default()). Every
+// component logs through it, and records whose context selects an instance
+// (ports.ContextWithInstance) carry it as the "instance" attribute.
 func WithLogger(l *slog.Logger) Option { return func(c *config) { c.log = l } }
 
 // WithoutAdminMFA disables the MFA requirement on the management plane.
@@ -389,10 +392,9 @@ func NewServer(opts ...Option) (*Server, error) {
 			o(&cfg)
 		}
 	}
-	log := cfg.log
-	if log == nil {
-		log = slog.Default()
-	}
+	// Every component logs through this one logger; logctx tags each record
+	// with the instance selected on its context.
+	log := logctx.Wrap(cfg.log)
 	if cfg.clock == nil {
 		cfg.clock = ports.SystemClock{}
 	}
@@ -619,6 +621,7 @@ func (s *Server) buildRouter() *chi.Mux {
 			TokensFor: s.instances.Tokens,
 			Mailer:    s.mailer,
 			Hooks:     s.hooks,
+			Logger:    s.log,
 			// Site URL, allow list, rate limits, session policy, ... (§2.2).
 			Config: s.cfg.authConfig,
 			// Lets /auth/v1/admin/* accept a user token carrying `users.admin`
@@ -651,6 +654,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		DeletionReauthWindow: s.cfg.authConfig.Security.DeletionReauthWindow,
 		AdminMFADisabled:     s.cfg.adminMFADisabled,
 		TrustedProxies:       s.trustedProxies,
+		Logger:               s.log,
 	}
 	api.RegisterPrivacyAPI(humaAPI, s.instances.PrivacyService, deps)
 	api.RegisterIAMAPI(humaAPI, deps)
@@ -715,7 +719,7 @@ func (s *Server) MigrateInstance(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
 	}
-	if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool); err != nil {
+	if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool, s.log); err != nil {
 		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
 	}
 	return nil

@@ -133,7 +133,7 @@ func (r *registrar) registerProfiles() {
 			}
 			out, err := svc.GetProfile(ctx, in.UserID, false)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPIIMaskedRead,
@@ -158,7 +158,7 @@ func (r *registrar) registerProfiles() {
 			}
 			out, err := svc.GetProfile(ctx, in.UserID, true)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPIIFullRead,
@@ -193,7 +193,7 @@ func (r *registrar) registerProfiles() {
 			out, err := svc.UpdateProfile(ctx, in.UserID,
 				toProfileFields(in.Body.Set), in.Body.Remove)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPIIUpdate,

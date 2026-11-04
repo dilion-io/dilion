@@ -38,7 +38,7 @@ func newExpandEnv(t *testing.T, perms ...string) *expandEnv {
 	ctx := context.Background()
 	// The reports resolve actors out of auth.users, which the audit-only
 	// migration list does not create.
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := store.Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
