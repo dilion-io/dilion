@@ -141,7 +141,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
 		instanceID:     d.InstanceID,
 		http:           &http.Client{Timeout: 15 * time.Second, Transport: netguard.Transport(http.DefaultTransport, d.OutboundNetworks)},
-		log:            slog.Default().With("component", "privacy"),
+		log:            slog.Default().With("component", "privacy", "instance", d.InstanceID),
 	}
 	if e.clock == nil {
 		e.clock = ports.SystemClock{}
