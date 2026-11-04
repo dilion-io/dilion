@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -214,7 +213,7 @@ func (d Deps) userSessionProblem(ctx context.Context, userID, sessionID string, 
 		return NewProblem(http.StatusUnauthorized, httpapi.CodeUnauthenticated,
 			"this token's session has ended; sign in again")
 	case err != nil:
-		slog.ErrorContext(ctx, "session lookup failed", "error", err)
+		logFor(ctx).ErrorContext(ctx, "session lookup failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	case !as.Active:
 		return NewProblem(http.StatusForbidden, httpapi.CodePermissionDenied, "the account is banned or deleted")

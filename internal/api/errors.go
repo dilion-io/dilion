@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -139,7 +138,7 @@ func mapPrivacyError(ctx context.Context, err error) error {
 	case errors.Is(err, privacy.ErrInvalidInput):
 		return NewProblem(http.StatusUnprocessableEntity, httpapi.CodeValidationFailed, err.Error())
 	default:
-		slog.ErrorContext(ctx, "privacy call failed", "error", err)
+		logFor(ctx).ErrorContext(ctx, "privacy call failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }
@@ -154,7 +153,7 @@ func mapAuditError(ctx context.Context, err error) error {
 	case errors.Is(err, audit.ErrInvalid):
 		return NewProblem(http.StatusUnprocessableEntity, httpapi.CodeValidationFailed, err.Error())
 	default:
-		slog.ErrorContext(ctx, "audit read failed", "error", err)
+		logFor(ctx).ErrorContext(ctx, "audit read failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }
@@ -173,7 +172,7 @@ func mapIAMError(ctx context.Context, err error) error {
 	case errors.Is(err, iam.ErrUnauthenticated):
 		return NewProblem(http.StatusUnauthorized, httpapi.CodeUnauthenticated, "invalid credentials")
 	default:
-		slog.ErrorContext(ctx, "iam call failed", "error", err)
+		logFor(ctx).ErrorContext(ctx, "iam call failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }

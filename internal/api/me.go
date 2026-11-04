@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -143,7 +142,7 @@ func (r *registrar) requireDeletionAssurance(ctx context.Context) error {
 			"this token's session has ended; sign in again and retry")
 	}
 	if err != nil {
-		slog.ErrorContext(ctx, "session assurance lookup failed", "error", err)
+		logFor(ctx).ErrorContext(ctx, "session assurance lookup failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 	if as.MFAEnabled && as.AAL != auth.AAL2 {

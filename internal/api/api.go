@@ -30,6 +30,10 @@ import (
 // pool. Structurally identical to instances.PoolFunc.
 type PoolFunc func(context.Context) (*pgxpool.Pool, error)
 
+func logFor(ctx context.Context) *slog.Logger {
+	return slog.Default().With("instance", ports.InstanceFromContext(ctx))
+}
+
 // Deps are the platform dependencies injected by dilion.go.
 type Deps struct {
 	// Pool is the fixed database of a single-instance deployment. Registration
@@ -194,7 +198,7 @@ func (d Deps) emit(ctx context.Context, o auditOpts) {
 		OccurredAt:  time.Now().UTC(),
 	}
 	if err := d.Audit.Append(ctx, ev); err != nil {
-		slog.ErrorContext(ctx, "audit append failed",
+		logFor(ctx).ErrorContext(ctx, "audit append failed",
 			"action", o.Action, "actor_id", ri.Actor.ID, "request_id", ri.RequestID, "error", err)
 	}
 }
