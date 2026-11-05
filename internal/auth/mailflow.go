@@ -423,7 +423,7 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 	}
 
 	// send_email (external hook) owns delivery when enabled.
-	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+	if handled, herr := a.sendEmailViaHook(ctx, tx, u, EmailData{
 		Token:           otp,
 		TokenHash:       hash,
 		EmailActionType: mailReauthentication,
@@ -511,7 +511,7 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+	if handled, herr := a.sendEmailViaHook(ctx, tx, u, EmailData{
 		Token:           otpNew,
 		TokenHash:       hashNew,
 		RedirectTo:      referrer,
@@ -539,7 +539,7 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 		return nil, nil, internalServerError("Error building email action link").withInternal(err)
 	}
 	if emailChangeHooked {
-		if _, herr := a.sendEmailViaHook(ctx, u, EmailData{
+		if _, herr := a.sendEmailViaHook(ctx, tx, u, EmailData{
 			Token:           otpCurrent,
 			TokenHash:       hashCurrent,
 			RedirectTo:      referrer,
@@ -636,7 +636,7 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 	// built-in mailer is skipped. It receives the OTP, its stored hash (PKCE
 	// prefix included), the action type and the resolved redirect, so it can
 	// render and deliver the message itself.
-	if handled, herr := a.sendEmailViaHook(ctx, p.user, EmailData{
+	if handled, herr := a.sendEmailViaHook(ctx, tx, p.user, EmailData{
 		Token:           otp,
 		TokenHash:       hash,
 		RedirectTo:      referrer,

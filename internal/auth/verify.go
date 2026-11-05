@@ -241,38 +241,45 @@ func (a *api) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 		halfDone bool
 	)
 
-	if err := a.inTx(ctx, func(tx pgx.Tx) error {
-		var (
-			user *User
-			terr error
-		)
-		if params.usesTokenHash() {
-			user, terr = a.verifyTokenHash(ctx, tx, params)
-		} else {
-			// A typed OTP is six digits: counted per address (attempts.go).
-			terr = a.throttled(ctx, attemptOTP, aud+":"+params.Email+params.Phone, func() error {
-				var verr error
-				user, verr = a.verifyUserAndToken(ctx, tx, params, aud)
-				return verr
-			})
-		}
-		if terr != nil {
-			return terr
-		}
+	redeem := func() error {
+		return a.inTx(ctx, func(tx pgx.Tx) error {
+			var (
+				user *User
+				terr error
+			)
+			if params.usesTokenHash() {
+				user, terr = a.verifyTokenHash(ctx, tx, params)
+			} else {
+				user, terr = a.verifyUserAndToken(ctx, tx, params, aud)
+			}
+			if terr != nil {
+				return terr
+			}
 
-		user, terr = a.applyVerification(ctx, tx, r, params, user)
-		if terr != nil {
-			return terr
-		}
-		if user == nil {
-			halfDone = true
-			return nil
-		}
+			user, terr = a.applyVerification(ctx, tx, r, params, user)
+			if terr != nil {
+				return terr
+			}
+			if user == nil {
+				halfDone = true
+				return nil
+			}
 
-		var serr error
-		session, serr = a.grantSession(ctx, tx, user, r, "otp")
-		return serr
-	}); err != nil {
+			var serr error
+			session, serr = a.grantSession(ctx, tx, user, r, "otp")
+			return serr
+		})
+	}
+	// A typed OTP is six digits: counted per address (attempts.go). The count
+	// is read and written around the transaction, never on a second
+	// connection while it holds the first.
+	var err error
+	if params.usesTokenHash() {
+		err = redeem()
+	} else {
+		err = a.throttled(ctx, attemptOTP, aud+":"+params.Email+params.Phone, redeem)
+	}
+	if err != nil {
 		return err
 	}
 

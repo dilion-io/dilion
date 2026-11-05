@@ -246,68 +246,35 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) error {
 	pkce := isPKCERequest(params.CodeChallenge)
 
 	var updated *User
-	if err := a.inTx(ctx, func(tx pgx.Tx) error {
-		// The nonce is burned in the SAME transaction that applies the change it
-		// authorized: a failed update must not spend it, a successful one must
-		// not leave it reusable.
-		if passwordChanged && params.Nonce != "" {
-			if verr := a.throttled(ctx, attemptNonce, user.ID, func() error {
-				return a.verifyReauthentication(ctx, tx, params.Nonce, user)
-			}); verr != nil {
-				return verr
-			}
-		}
-
-		var uerr error
-		updated, uerr = updateUserFields(ctx, tx, user.ID, now, set)
-		if uerr != nil {
-			if isUniqueViolation(uerr) {
-				return unprocessableEntityError(ErrorCodeEmailExists,
-					"A user with this email address has already been registered")
-			}
-			return internalServerError("Database error updating user").withInternal(uerr)
-		}
-
-		if confirmEmailChange {
-			if pkce {
-				if ferr := a.startEmailChangeFlowState(ctx, tx, params, user.ID, now); ferr != nil {
-					return ferr
-				}
-			}
-			if _, _, serr := a.sendEmailChange(ctx, tx, r, user, newEmail, params.RedirectTo, pkce); serr != nil {
-				return serr
-			}
-			refreshed, rerr := a.loadUserWithIdentities(ctx, tx, user.ID)
-			if rerr != nil {
-				return internalServerError("Error refetching user").withInternal(rerr)
-			}
-			updated = refreshed
-		}
-
-		if newPhone != "" {
-			if a.cfg.SMS.Autoconfirm {
-				// Upstream parks the number and runs the phone_change effect on
-				// the spot (api/user.go: smsVerify with a synthetic
-				// VerifyParams), so no OTP is ever texted.
-				parked, uerr := updateUserFields(ctx, tx, user.ID, now, map[string]any{"phone_change": newPhone})
-				if uerr != nil {
-					if isUniqueViolation(uerr) {
-						return unprocessableEntityError(ErrorCodePhoneExists, "%s", duplicatePhoneMsg)
-					}
-					return internalServerError("Database error updating user").withInternal(uerr)
-				}
-				applied, verr := a.smsVerify(ctx, tx, r,
-					&VerifyParams{Type: phoneChangeVerification, Phone: newPhone}, parked)
-				if verr != nil {
+	nonceChecked := passwordChanged && params.Nonce != ""
+	apply := func() error {
+		return a.inTx(ctx, func(tx pgx.Tx) error {
+			// The nonce is burned in the SAME transaction that applies the change it
+			// authorized: a failed update must not spend it, a successful one must
+			// not leave it reusable.
+			if nonceChecked {
+				if verr := a.verifyReauthentication(ctx, tx, params.Nonce, user); verr != nil {
 					return verr
 				}
-				updated = applied
-			} else {
-				// Confirmation required: the number is parked in
-				// auth.users.phone_change and only lands through
-				// POST /verify {type:"phone_change", phone, token}.
-				if _, serr := a.sendPhoneConfirmation(ctx, tx, r, user, newPhone,
-					phoneChangeVerification, params.Channel); serr != nil {
+			}
+
+			var uerr error
+			updated, uerr = updateUserFields(ctx, tx, user.ID, now, set)
+			if uerr != nil {
+				if isUniqueViolation(uerr) {
+					return unprocessableEntityError(ErrorCodeEmailExists,
+						"A user with this email address has already been registered")
+				}
+				return internalServerError("Database error updating user").withInternal(uerr)
+			}
+
+			if confirmEmailChange {
+				if pkce {
+					if ferr := a.startEmailChangeFlowState(ctx, tx, params, user.ID, now); ferr != nil {
+						return ferr
+					}
+				}
+				if _, _, serr := a.sendEmailChange(ctx, tx, r, user, newEmail, params.RedirectTo, pkce); serr != nil {
 					return serr
 				}
 				refreshed, rerr := a.loadUserWithIdentities(ctx, tx, user.ID)
@@ -316,40 +283,83 @@ func (a *api) updateUser(w http.ResponseWriter, r *http.Request) error {
 				}
 				updated = refreshed
 			}
-		}
 
-		if newEmail != "" && !confirmEmailChange {
-			// Keep the email identity's identity_data in sync — supabase-js and
-			// RLS policies read the identity, not just auth.users.
-			if ierr := updateIdentityData(ctx, tx, user.ID, ProviderEmail, JSONMap{
-				"sub":            user.ID,
-				"email":          newEmail,
-				"email_verified": true,
-				"phone_verified": false,
-			}, now); ierr != nil {
-				return internalServerError("Error updating identity").withInternal(ierr)
+			if newPhone != "" {
+				if a.cfg.SMS.Autoconfirm {
+					// Upstream parks the number and runs the phone_change effect on
+					// the spot (api/user.go: smsVerify with a synthetic
+					// VerifyParams), so no OTP is ever texted.
+					parked, uerr := updateUserFields(ctx, tx, user.ID, now, map[string]any{"phone_change": newPhone})
+					if uerr != nil {
+						if isUniqueViolation(uerr) {
+							return unprocessableEntityError(ErrorCodePhoneExists, "%s", duplicatePhoneMsg)
+						}
+						return internalServerError("Database error updating user").withInternal(uerr)
+					}
+					applied, verr := a.smsVerify(ctx, tx, r,
+						&VerifyParams{Type: phoneChangeVerification, Phone: newPhone}, parked)
+					if verr != nil {
+						return verr
+					}
+					updated = applied
+				} else {
+					// Confirmation required: the number is parked in
+					// auth.users.phone_change and only lands through
+					// POST /verify {type:"phone_change", phone, token}.
+					if _, serr := a.sendPhoneConfirmation(ctx, tx, r, user, newPhone,
+						phoneChangeVerification, params.Channel); serr != nil {
+						return serr
+					}
+					refreshed, rerr := a.loadUserWithIdentities(ctx, tx, user.ID)
+					if rerr != nil {
+						return internalServerError("Error refetching user").withInternal(rerr)
+					}
+					updated = refreshed
+				}
 			}
-		}
 
-		if passwordChanged {
-			// A password change invalidates every OTHER session (project.md
-			// §2.3): the current caller stays signed in.
-			if sessionID != "" {
-				if derr := deleteOtherUserSessions(ctx, tx, user.ID, sessionID); derr != nil {
+			if newEmail != "" && !confirmEmailChange {
+				// Keep the email identity's identity_data in sync — supabase-js and
+				// RLS policies read the identity, not just auth.users.
+				if ierr := updateIdentityData(ctx, tx, user.ID, ProviderEmail, JSONMap{
+					"sub":            user.ID,
+					"email":          newEmail,
+					"email_verified": true,
+					"phone_verified": false,
+				}, now); ierr != nil {
+					return internalServerError("Error updating identity").withInternal(ierr)
+				}
+			}
+
+			if passwordChanged {
+				// A password change invalidates every OTHER session (project.md
+				// §2.3): the current caller stays signed in.
+				if sessionID != "" {
+					if derr := deleteOtherUserSessions(ctx, tx, user.ID, sessionID); derr != nil {
+						return internalServerError("Error revoking sessions").withInternal(derr)
+					}
+				} else if derr := deleteUserSessions(ctx, tx, user.ID); derr != nil {
 					return internalServerError("Error revoking sessions").withInternal(derr)
 				}
-			} else if derr := deleteUserSessions(ctx, tx, user.ID); derr != nil {
-				return internalServerError("Error revoking sessions").withInternal(derr)
 			}
-		}
 
-		ids, ierr := findIdentitiesByUserID(ctx, tx, user.ID)
-		if ierr != nil {
-			return internalServerError("Error loading identities").withInternal(ierr)
-		}
-		updated.Identities = ids
-		return nil
-	}); err != nil {
+			ids, ierr := findIdentitiesByUserID(ctx, tx, user.ID)
+			if ierr != nil {
+				return internalServerError("Error loading identities").withInternal(ierr)
+			}
+			updated.Identities = ids
+			return nil
+		})
+	}
+	// Nonce guesses are counted per account (attempts.go) around the
+	// transaction, never on a second connection while it holds the first.
+	var err error
+	if nonceChecked {
+		err = a.throttled(ctx, attemptNonce, user.ID, apply)
+	} else {
+		err = apply()
+	}
+	if err != nil {
 		return err
 	}
 

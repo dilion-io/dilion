@@ -351,7 +351,7 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 	// built-in provider is skipped. It receives the user, the raw OTP, the OTP
 	// type and the destination number, and reports no provider message id (a bare
 	// `{}` response, exactly as an injected ports.SMSSender does).
-	if handled, herr := a.sendSMSViaHook(ctx, u, SMS{OTP: otp, SMSType: otpType, Phone: phone}); handled {
+	if handled, herr := a.sendSMSViaHook(ctx, tx, u, SMS{OTP: otp, SMSType: otpType, Phone: phone}); handled {
 		if herr != nil {
 			return "", herr
 		}
