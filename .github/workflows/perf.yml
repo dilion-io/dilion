@@ -8,7 +8,17 @@ name: Performance
 # runs with each other rather than reading the numbers as a capacity plan.
 on:
   push:
-    paths: ['test/perf/**', '.github/workflows/perf.yml']
+    # The load test itself, and the server code it measures, so a change's
+    # effect on throughput shows up on its own push.
+    paths:
+      - 'test/perf/**'
+      - '.github/workflows/perf.yml'
+      - 'cmd/dilion/**'
+      - 'internal/**'
+      - 'migrations/**'
+      - 'dilion.go'
+      - 'go.mod'
+      - 'go.sum'
   workflow_dispatch:
     inputs:
       duration:
@@ -32,17 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         accounts: [100, 1000, 10000]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: dilion
-          POSTGRES_PASSWORD: dilion
-          POSTGRES_DB: dilion_perf
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U dilion -d dilion_perf"
-          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DSN: postgres://dilion:dilion@localhost:5432/dilion_perf
     steps:
@@ -54,6 +53,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Started by hand rather than as a service container: pg_stat_statements
+      # must be preloaded, which needs a server flag.
+      - name: Start Postgres
+        run: |
+          docker run -d --name pg -p 5432:5432 \
+            -e POSTGRES_USER=dilion -e POSTGRES_PASSWORD=dilion -e POSTGRES_DB=dilion_perf \
+            postgres:16 -c shared_preload_libraries=pg_stat_statements
+          for i in $(seq 1 60); do
+            docker exec pg pg_isready -U dilion -d dilion_perf >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          docker logs pg
+          exit 1
 
       - name: Build server and load generator
         run: |
@@ -73,6 +86,8 @@ jobs:
           DILION_AUTH_RATE_LIMIT_TOKEN_REFRESH: '1000000000'
           DILION_AUTH_RATE_LIMIT_VERIFY: '1000000000'
           DILION_LOG_LEVEL: warn
+          # The load test takes CPU profiles of the server through it.
+          DILION_PPROF_ADDR: 127.0.0.1:6060
         run: |
           export DILION_MASTER_KEY="$(head -c 32 /dev/urandom | base64)"
           nohup "$RUNNER_TEMP/dilion" > "$RUNNER_TEMP/server.log" 2>&1 &
@@ -95,8 +110,31 @@ jobs:
             -accounts ${{ matrix.accounts }} \
             -levels '${{ inputs.levels || '1,5,10,25,50,100,200,400,800' }}' \
             -duration '${{ inputs.duration || '15s' }}' \
+            -profile-url http://127.0.0.1:6060 -profile-at 50 -profile-dir "$RUNNER_TEMP" -pgstat \
             -out "perf-${{ matrix.accounts }}.json" \
             -summary "$GITHUB_STEP_SUMMARY"
+
+      # Where the server spends its CPU at 50 concurrent requests, per
+      # scenario; the raw profiles are in the artifact (go tool pprof).
+      - name: CPU profile summary
+        if: always()
+        run: |
+          mkdir -p profiles
+          for f in "$RUNNER_TEMP"/cpu-*.pprof; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f" .pprof)
+            cp "$f" "profiles/${{ matrix.accounts }}-$name.pprof"
+            {
+              echo "<details><summary>${name#cpu-}: server CPU profile at 50 concurrent requests (top, cumulative)</summary>"
+              echo
+              echo '```text'
+              go tool pprof -top -cum -nodecount=30 "$RUNNER_TEMP/dilion" "$f" 2>/dev/null | sed -n '1,40p'
+              echo '```'
+              echo
+              echo '</details>'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Server log
         if: always()
@@ -106,7 +144,9 @@ jobs:
         if: always()
         with:
           name: perf-${{ matrix.accounts }}
-          path: perf-${{ matrix.accounts }}.json
+          path: |
+            perf-${{ matrix.accounts }}.json
+            profiles/
           if-no-files-found: ignore
 
   summary:

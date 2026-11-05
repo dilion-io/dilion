@@ -63,6 +63,16 @@ type config struct {
 	slo      time.Duration
 	out      string
 	summary  string
+
+	// profileURL is the server's pprof base URL; when set, a CPU profile is
+	// taken during each scenario's step at concurrency profileAt and saved
+	// in profileDir as cpu-<scenario>.pprof.
+	profileURL string
+	profileAt  int
+	profileDir string
+	// pgstat collects each scenario's heaviest statements from
+	// pg_stat_statements (the extension must be preloaded).
+	pgstat bool
 }
 
 // step is one concurrency level of one scenario.
@@ -86,6 +96,17 @@ type scenarioResult struct {
 	// MaxConcurrency is the largest step that passed (0: none did).
 	MaxConcurrency int    `json:"max_concurrency"`
 	Steps          []step `json:"steps"`
+	// Statements are the scenario's heaviest SQL statements by total
+	// execution time (-pgstat).
+	Statements []statement `json:"statements,omitempty"`
+}
+
+// statement is one pg_stat_statements row.
+type statement struct {
+	Query   string  `json:"query"`
+	Calls   int64   `json:"calls"`
+	TotalMs float64 `json:"total_ms"`
+	MeanMs  float64 `json:"mean_ms"`
 }
 
 type report struct {
@@ -114,6 +135,10 @@ func run() error {
 	flag.DurationVar(&cfg.slo, "slo", 500*time.Millisecond, "p95 latency a step must stay within")
 	flag.StringVar(&cfg.out, "out", "", "write the report as JSON to this file")
 	flag.StringVar(&cfg.summary, "summary", "", "append a Markdown summary to this file (e.g. $GITHUB_STEP_SUMMARY)")
+	flag.StringVar(&cfg.profileURL, "profile-url", "", "server pprof base URL (DILION_PPROF_ADDR), e.g. http://127.0.0.1:6060")
+	flag.IntVar(&cfg.profileAt, "profile-at", 50, "concurrency step to take each scenario's CPU profile at")
+	flag.StringVar(&cfg.profileDir, "profile-dir", ".", "directory for the CPU profiles")
+	flag.BoolVar(&cfg.pgstat, "pgstat", false, "record each scenario's heaviest statements from pg_stat_statements")
 	combine := flag.String("combine", "", "instead of running: compare these comma-separated JSON reports in the -summary file")
 	flag.Parse()
 	if *combine != "" {
@@ -153,8 +178,17 @@ func run() error {
 		{"session-mix", c.sessionUser},
 	} {
 		res := scenarioResult{Name: sc.name}
+		if cfg.pgstat {
+			if err := resetStatements(ctx, cfg.dsn); err != nil {
+				return err
+			}
+		}
 		for _, n := range cfg.levels {
-			st, err := runStep(ctx, cfg, n, sc.vu)
+			var profile string
+			if cfg.profileURL != "" && n == cfg.profileAt {
+				profile = fmt.Sprintf("%s/cpu-%s.pprof", cfg.profileDir, sc.name)
+			}
+			st, err := runStep(ctx, cfg, n, sc.vu, profile)
 			if err != nil {
 				return fmt.Errorf("%s at %d: %w", sc.name, n, err)
 			}
@@ -168,6 +202,13 @@ func run() error {
 				break
 			}
 			res.MaxConcurrency = n
+		}
+		if cfg.pgstat {
+			stmts, err := topStatements(ctx, cfg.dsn)
+			if err != nil {
+				return err
+			}
+			res.Statements = stmts
 		}
 		rep.Scenarios = append(rep.Scenarios, res)
 	}
@@ -347,7 +388,7 @@ func (c *client) sessionUser(ctx context.Context, id int) (func(context.Context)
 // ---- load ------------------------------------------------------------------
 
 func runStep(ctx context.Context, cfg config, n int,
-	newVU func(ctx context.Context, id int) (func(context.Context) error, error)) (step, error) {
+	newVU func(ctx context.Context, id int) (func(context.Context) error, error), profile string) (step, error) {
 
 	vus := make([]func(context.Context) error, n)
 	{
@@ -387,6 +428,18 @@ func runStep(ctx context.Context, cfg config, n int,
 	defer cancel()
 	began := time.Now()
 	var wg sync.WaitGroup
+	profiled := make(chan error, 1)
+	if profile != "" {
+		// The profile covers the step but its first and last second, while
+		// every virtual user is busy.
+		secs := max(1, int(cfg.duration.Seconds())-2)
+		go func() {
+			time.Sleep(time.Second)
+			profiled <- fetchProfile(ctx, cfg.profileURL, secs, profile)
+		}()
+	} else {
+		profiled <- nil
+	}
 	for i := range n {
 		wg.Add(1)
 		go func() {
@@ -411,6 +464,9 @@ func runStep(ctx context.Context, cfg config, n int,
 	}
 	wg.Wait()
 	elapsed := time.Since(began)
+	if err := <-profiled; err != nil {
+		return step{}, fmt.Errorf("cpu profile: %w", err)
+	}
 
 	var lat []time.Duration
 	st := step{Concurrency: n}
@@ -461,6 +517,16 @@ func writeSummary(w io.Writer, rep report) {
 				s.Concurrency, s.RPS, s.P50ms, s.P95ms, s.P99ms, s.MaxMs, 100*s.ErrorRate, mark)
 		}
 		fmt.Fprintln(w)
+		if len(sc.Statements) > 0 {
+			fmt.Fprintf(w, "<details><summary>%s: heaviest SQL statements</summary>\n\n", sc.Name)
+			fmt.Fprintln(w, "| calls | total ms | mean ms | statement |")
+			fmt.Fprintln(w, "|---:|---:|---:|---|")
+			for _, st := range sc.Statements {
+				fmt.Fprintf(w, "| %d | %.0f | %.3f | `%s` |\n", st.Calls, st.TotalMs, st.MeanMs,
+					strings.ReplaceAll(st.Query, "|", "\\|"))
+			}
+			fmt.Fprint(w, "\n</details>\n\n")
+		}
 	}
 }
 
@@ -515,4 +581,72 @@ func combineReports(paths []string, summary string) error {
 	}
 	fmt.Fprintln(w)
 	return nil
+}
+
+// fetchProfile saves a CPU profile of secs seconds from the server's pprof.
+func fetchProfile(ctx context.Context, base string, secs int, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/debug/pprof/profile?seconds=%d", base, secs), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: %d", req.URL, resp.StatusCode)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+func resetStatements(ctx context.Context, dsn string) error {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `create extension if not exists pg_stat_statements`); err != nil {
+		return fmt.Errorf("pg_stat_statements: %w", err)
+	}
+	_, err = pool.Exec(ctx, `select pg_stat_statements_reset()`)
+	return err
+}
+
+// topStatements reads the heaviest statements since the last reset.
+func topStatements(ctx context.Context, dsn string) ([]statement, error) {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Close()
+	rows, err := pool.Query(ctx, `
+		select regexp_replace(query, '\s+', ' ', 'g'), calls, total_exec_time, mean_exec_time
+		from pg_stat_statements
+		where dbid = (select oid from pg_database where datname = current_database())
+		  and query not ilike '%pg_stat_statements%'
+		order by total_exec_time desc limit 12`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []statement
+	for rows.Next() {
+		var st statement
+		if err := rows.Scan(&st.Query, &st.Calls, &st.TotalMs, &st.MeanMs); err != nil {
+			return nil, err
+		}
+		if len(st.Query) > 160 {
+			st.Query = st.Query[:160] + "…"
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }

@@ -25,6 +25,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -109,6 +111,26 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Go's profiler (CPU, heap, goroutines), on a listener of its own and only
+	// when asked for: it reveals internals and costs CPU, so bind it to
+	// loopback ("127.0.0.1:6060") and never expose it. The load test
+	// (test/perf) profiles the server through it.
+	if addr := os.Getenv("DILION_PPROF_ADDR"); addr != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		go func() {
+			srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+			if err := srv.ListenAndServe(); err != nil {
+				slog.Error("dilion: pprof listener stopped", "addr", addr, "error", err)
+			}
+		}()
+		slog.Warn("dilion: profiler enabled; keep it off public interfaces", "addr", addr)
+	}
 
 	srv, err := dilion.NewServer(opts...)
 	if err != nil {
