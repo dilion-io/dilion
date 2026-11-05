@@ -276,12 +276,16 @@ func (a *api) startExternalProviderFlow(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Upstream forwards every unrecognised query parameter to the provider
-	// (prompt, access_type, login_hint, …).
+	// (prompt, access_type, login_hint, …), but never one that would replace
+	// the request's own (reservedAuthParams).
 	extra := url.Values{}
 	for key, vals := range query {
 		switch key {
 		case "provider", "scopes", "code_challenge", "code_challenge_method",
 			"redirect_to", "skip_http_redirect":
+			continue
+		}
+		if reservedAuthParams[key] {
 			continue
 		}
 		if len(vals) > 0 {

@@ -409,6 +409,15 @@ type oauthToken struct {
 	raw []byte `json:"-"`
 }
 
+// reservedAuthParams are the authorization request parameters that come from
+// the provider's configuration and the flow state alone. Extra parameters
+// (forwarded from /authorize, or configured) never set them: a caller-chosen
+// redirect_uri or state would send the provider's code, and the flow state id,
+// wherever the caller likes.
+var reservedAuthParams = map[string]bool{
+	"response_type": true, "client_id": true, "redirect_uri": true, "scope": true, "state": true,
+}
+
 // authCodeURL builds the RFC 6749 §4.1.1 authorization request.
 func (c *oauthConfig) authCodeURL(state string, extra url.Values) string {
 	u, err := url.Parse(c.AuthURL)
@@ -416,6 +425,11 @@ func (c *oauthConfig) authCodeURL(state string, extra url.Values) string {
 		return ""
 	}
 	q := u.Query()
+	for k, vs := range extra {
+		if len(vs) > 0 && !reservedAuthParams[k] {
+			q.Set(k, vs[0])
+		}
+	}
 	q.Set("response_type", "code")
 	q.Set("client_id", c.ClientID)
 	if c.RedirectURL != "" {
@@ -425,11 +439,6 @@ func (c *oauthConfig) authCodeURL(state string, extra url.Values) string {
 		q.Set("scope", strings.Join(c.Scopes, " "))
 	}
 	q.Set("state", state)
-	for k, vs := range extra {
-		if len(vs) > 0 {
-			q.Set(k, vs[0])
-		}
-	}
 	u.RawQuery = q.Encode()
 	return u.String()
 }

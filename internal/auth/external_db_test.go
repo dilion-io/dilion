@@ -514,6 +514,31 @@ func TestExternalAuthorizeRedirectsToProvider(t *testing.T) {
 	}
 }
 
+// Unrecognised /authorize parameters are forwarded to the provider, but never
+// over the request's own: a caller-chosen redirect_uri would send the code,
+// and state the flow state id, wherever the caller likes.
+func TestExternalAuthorizeKeepsReservedParameters(t *testing.T) {
+	env := newExternalEnv(t, nil)
+	rec := env.authorize(t, "provider=github&login_hint=a%40b.test"+
+		"&redirect_uri=https%3A%2F%2Fevil.test%2Fcb&state=attacker&client_id=evil"+
+		"&response_type=token&scope=admin", "")
+	q := redirectLocation(t, rec, http.StatusFound).Query()
+	for k, want := range map[string]string{
+		"login_hint":    "a@b.test",
+		"redirect_uri":  "https://api.test/auth/v1/callback",
+		"client_id":     "github-client-id",
+		"response_type": "code",
+		"scope":         "user:email",
+	} {
+		if got := q.Get(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if _, err := findOAuthFlowStateByID(t.Context(), env.pool, q.Get("state")); err != nil {
+		t.Errorf("state = %q is not the flow state: %v", q.Get("state"), err)
+	}
+}
+
 func TestExternalAuthorizeSkipHTTPRedirect(t *testing.T) {
 	env := newExternalEnv(t, nil)
 
