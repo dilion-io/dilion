@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	dilion "github.com/dilion-io/dilion"
 )
@@ -84,6 +85,23 @@ func run() error {
 	}
 	if v := os.Getenv("DILION_OUTBOUND_ALLOWED_NETWORKS"); v != "" {
 		opts = append(opts, dilion.WithOutboundNetworks(v))
+	}
+	// Go durations ("30s", "1h"): see dilion.WithPrivacyWorkerIntervals.
+	var poll, retention time.Duration
+	for name, d := range map[string]*time.Duration{
+		"DILION_PRIVACY_POLL_INTERVAL":      &poll,
+		"DILION_PRIVACY_RETENTION_INTERVAL": &retention,
+	} {
+		if v := os.Getenv(name); v != "" {
+			parsed, err := time.ParseDuration(v)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("%s: want a positive duration such as 30s, got %q", name, v)
+			}
+			*d = parsed
+		}
+	}
+	if poll > 0 || retention > 0 {
+		opts = append(opts, dilion.WithPrivacyWorkerIntervals(poll, retention))
 	}
 	if truthy(os.Getenv("DILION_DEV_NO_ADMIN_MFA")) {
 		opts = append(opts, dilion.WithoutAdminMFA())

@@ -8,17 +8,24 @@ import (
 	"time"
 )
 
-// Dev-friendly poll intervals. Every worker ticks at base + jitter so that
-// several engine instances spread their load (§2.9 scheduler SLA is measured
-// in days; seconds here are for responsiveness in development).
+// Default worker intervals. Every engine (one per instance) in every process
+// polls on its own, so the idle query rate is the number of workers times
+// instances times replicas over the interval: a few seconds is responsive in
+// development but thousands of queries a second for a large deployment. The
+// §2.9 scheduler SLA is measured in days, and retention periods in years.
 const (
-	pollMin = 2 * time.Second
-	pollMax = 5 * time.Second
+	// DefaultPollInterval is how often the outbox, pipeline, task and
+	// reconfirm workers poll (EngineDeps.PollInterval).
+	DefaultPollInterval = 30 * time.Second
+	// DefaultRetentionInterval is how often the retention scanner runs
+	// (EngineDeps.RetentionInterval).
+	DefaultRetentionInterval = time.Hour
 )
 
 type worker struct {
-	name string
-	run  func(context.Context) error
+	name     string
+	run      func(context.Context) error
+	interval time.Duration
 }
 
 // RunWorkers starts the background pollers and blocks until ctx is done:
@@ -30,11 +37,11 @@ type worker struct {
 //	retention scanner  — retention periods / crypto-shred (§2.8)
 func (e *Engine) RunWorkers(ctx context.Context) {
 	workers := []worker{
-		{"outbox", e.dispatchOutboxOnce},
-		{"pipeline", e.runPipelineOnce},
-		{"tasks", e.runTasksOnce},
-		{"reconfirm", e.scanReconfirmDue},
-		{"retention", e.runRetentionOnce},
+		{"outbox", e.dispatchOutboxOnce, e.pollInterval},
+		{"pipeline", e.runPipelineOnce, e.pollInterval},
+		{"tasks", e.runTasksOnce, e.pollInterval},
+		{"reconfirm", e.scanReconfirmDue, e.pollInterval},
+		{"retention", e.runRetentionOnce, e.retentionInterval},
 	}
 
 	var wg sync.WaitGroup
@@ -46,14 +53,14 @@ func (e *Engine) RunWorkers(ctx context.Context) {
 		}(w)
 	}
 	e.log.Info("privacy workers started", "count", len(workers),
-		"poll_min", pollMin.String(), "poll_max", pollMax.String())
+		"poll_interval", e.pollInterval.String(), "retention_interval", e.retentionInterval.String())
 	<-ctx.Done()
 	wg.Wait()
 	e.log.Info("privacy workers stopped")
 }
 
 func (e *Engine) loop(ctx context.Context, w worker) {
-	timer := time.NewTimer(jitter())
+	timer := time.NewTimer(jitter(w.interval))
 	defer timer.Stop()
 	for {
 		select {
@@ -64,10 +71,12 @@ func (e *Engine) loop(ctx context.Context, w worker) {
 		if err := w.run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			e.log.Error("privacy worker tick failed", "worker", w.name, "err", err)
 		}
-		timer.Reset(jitter())
+		timer.Reset(jitter(w.interval))
 	}
 }
 
-func jitter() time.Duration {
-	return pollMin + time.Duration(rand.Int64N(int64(pollMax-pollMin)+1))
+// jitter is interval plus up to half of it again, so the engines of many
+// instances started together drift apart instead of polling in step.
+func jitter(interval time.Duration) time.Duration {
+	return interval + time.Duration(rand.Int64N(int64(interval/2)+1))
 }

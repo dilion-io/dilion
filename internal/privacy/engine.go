@@ -82,10 +82,17 @@ type EngineDeps struct {
 	// Logger receives the engine's logs, each naming this engine's instance.
 	// nil means slog.Default().
 	Logger *slog.Logger
+	// PollInterval and RetentionInterval pace RunWorkers; zero means
+	// DefaultPollInterval and DefaultRetentionInterval.
+	PollInterval      time.Duration
+	RetentionInterval time.Duration
 }
 
 // Engine implements Service.
 type Engine struct {
+	pollInterval      time.Duration
+	retentionInterval time.Duration
+
 	pool            *pgxpool.Pool
 	kms             ports.KMS
 	hooks           *hooks.Registry
@@ -156,6 +163,13 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	}
 	if e.clock == nil {
 		e.clock = ports.SystemClock{}
+	}
+	e.pollInterval, e.retentionInterval = d.PollInterval, d.RetentionInterval
+	if e.pollInterval <= 0 {
+		e.pollInterval = DefaultPollInterval
+	}
+	if e.retentionInterval <= 0 {
+		e.retentionInterval = DefaultRetentionInterval
 	}
 	if e.hooks == nil {
 		e.hooks = hooks.NewRegistry()

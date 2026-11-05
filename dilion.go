@@ -135,6 +135,10 @@ type config struct {
 	clock            ports.Clock
 	log              *slog.Logger
 
+	// privacyPoll and privacyRetention pace the privacy workers
+	// (WithPrivacyWorkerIntervals).
+	privacyPoll, privacyRetention time.Duration
+
 	adminMFADisabled bool
 }
 
@@ -284,6 +288,16 @@ func WithTrustedProxies(spec string) Option {
 // code (WithProviderSource) are not restricted.
 func WithOutboundNetworks(spec string) Option {
 	return func(c *config) { c.outboundNetworks = spec }
+}
+
+// WithPrivacyWorkerIntervals sets how often every instance's privacy workers
+// poll: poll for the outbox, erasure pipeline, delivery tasks and consent
+// reconfirmation, retention for the retention scanner. Zero keeps a default
+// (privacy.DefaultPollInterval, 30s, and privacy.DefaultRetentionInterval,
+// 1h). Each instance's engine polls on its own in every process, so a short
+// interval multiplies by instances and replicas.
+func WithPrivacyWorkerIntervals(poll, retention time.Duration) Option {
+	return func(c *config) { c.privacyPoll, c.privacyRetention = poll, retention }
 }
 
 // WithAuthSettingsSource sets, per instance, the parts of the /auth/v1
@@ -550,7 +564,9 @@ func NewServer(opts ...Option) (*Server, error) {
 		TombstoneKey: tombstoneKey,
 		Logger:       log,
 		// Privacy webhook destinations reach these private networks.
-		OutboundNetworks: s.outboundNetworks,
+		OutboundNetworks:  s.outboundNetworks,
+		PollInterval:      cfg.privacyPoll,
+		RetentionInterval: cfg.privacyRetention,
 	})
 	if err != nil {
 		s.closeOwnedPool()
