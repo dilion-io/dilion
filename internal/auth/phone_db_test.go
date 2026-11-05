@@ -414,6 +414,28 @@ func TestPhoneOTPSignsUpAndVerifies(t *testing.T) {
 	}
 }
 
+// A texted code shares confirmation_token with mailed ones, but its link
+// value is redeemed only as the phone type it was sent for: as an email type
+// it would get the mailer's hour instead of the SMS minute, and confirm an
+// email that was never mailed.
+func TestTextedTokenIsNotRedeemedAsAnEmailLink(t *testing.T) {
+	env := newPhoneEnv(t, nil)
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"phone": testPhone}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("/otp = %d %s", rec.Code, rec.Body.String())
+	}
+	var hash string
+	if err := env.pool.QueryRow(t.Context(), `select t.token_hash from auth.one_time_tokens t
+		join auth.users u on u.id = t.user_id where u.phone = $1`, testPhoneE164).Scan(&hash); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	for _, typ := range []string{mailSignup, mailInvite, mailEmailOTP} {
+		rec := env.do(t, http.MethodPost, "/verify", map[string]any{"type": typ, "token_hash": hash}, "")
+		assertAuthError(t, rec, http.StatusForbidden, ErrorCodeOTPExpired)
+	}
+	rec := env.do(t, http.MethodPost, "/verify", map[string]any{"type": smsVerification, "token_hash": hash}, "")
+	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+}
+
 // A second /otp to an ESTABLISHED account reports the provider message id.
 func TestPhoneOTPToEstablishedAccountReportsMessageID(t *testing.T) {
 	env := newPhoneEnv(t, nil)

@@ -406,7 +406,10 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 	if err != nil {
 		return internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hash := generateTokenHash(u.Email, otp)
+	hash, err := newTokenHash(u.Email, otp)
+	if err != nil {
+		return internalServerError("Error generating one-time token").withInternal(err)
+	}
 	now := a.now()
 
 	if _, err := updateUserFields(ctx, tx, u.ID, now, map[string]any{
@@ -449,7 +452,11 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hashNew := addFlowPrefix(generateTokenHash(newEmail, otpNew), pkce)
+	hashNew, err := newTokenHash(newEmail, otpNew)
+	if err != nil {
+		return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
+	}
+	hashNew = addFlowPrefix(hashNew, pkce)
 
 	otpCurrent, hashCurrent := "", ""
 	secure := a.cfg.Mailer.SecureEmailChangeEnabled && u.Email != ""
@@ -458,7 +465,11 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 		if err != nil {
 			return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
 		}
-		hashCurrent = addFlowPrefix(generateTokenHash(u.Email, otpCurrent), pkce)
+		hashCurrent, err = newTokenHash(u.Email, otpCurrent)
+		if err != nil {
+			return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
+		}
+		hashCurrent = addFlowPrefix(hashCurrent, pkce)
 	}
 
 	now := a.now()
@@ -586,7 +597,11 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 	if err != nil {
 		return nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hash := addFlowPrefix(generateTokenHash(p.relatesTo, otp), p.pkce)
+	hash, err := newTokenHash(p.relatesTo, otp)
+	if err != nil {
+		return nil, internalServerError("Error generating one-time token").withInternal(err)
+	}
+	hash = addFlowPrefix(hash, p.pkce)
 	now := a.now()
 
 	set := map[string]any{p.tokenColumn: hash, p.sentColumn: now}

@@ -102,13 +102,11 @@ func (p *VerifyParams) validate(r *http.Request) error {
 					return err
 				}
 				p.Phone = normalized
-				p.TokenHash = generateTokenHash(p.Phone, p.Token)
 			case p.Phone == "" && p.Email != "":
 				p.Email = strings.ToLower(strings.TrimSpace(p.Email))
 				if _, err := mail.ParseAddress(p.Email); err != nil {
 					return unprocessableEntityError(ErrorCodeValidationFailed, "Invalid email format")
 				}
-				p.TokenHash = generateTokenHash(p.Email, p.Token)
 			default:
 				return badRequestError(ErrorCodeValidationFailed,
 					"Only an email address or phone number should be provided on verify")
@@ -345,6 +343,15 @@ func (a *api) verifyTokenHash(ctx context.Context, q querier, params *VerifyPara
 	// even when the caller presented the bare hash.
 	params.TokenHash = ott.TokenHash
 
+	// A confirmation token may have been texted rather than mailed (the two
+	// share confirmation_token). It is redeemed only as the phone type it was
+	// sent for, so it keeps the SMS clock and never confirms an email; a
+	// mailed token is likewise never redeemed as a phone one.
+	sentToPhone := !strings.Contains(ott.RelatesTo, "@")
+	if sentToPhone != (params.Type == smsVerification || params.Type == phoneChangeVerification) {
+		return nil, forbiddenError(ErrorCodeOTPExpired, "Email link is invalid or has expired")
+	}
+
 	user, err := a.loadUserWithIdentities(ctx, q, ott.UserID)
 	if err != nil {
 		if isNoRows(err) {
@@ -401,7 +408,7 @@ func (a *api) verifyUserAndToken(ctx context.Context, q querier, params *VerifyP
 	)
 	switch params.Type {
 	case mailEmailChange:
-		user, err = a.findUserForEmailChange(ctx, q, params.TokenHash, aud)
+		user, err = a.findUserForEmailChange(ctx, q, params.Email, params.Token, aud)
 	case smsVerification:
 		user, err = findUserByPhone(ctx, q, params.Phone, aud)
 	case phoneChangeVerification:
@@ -429,30 +436,53 @@ func (a *api) verifyUserAndToken(ctx context.Context, q querier, params *VerifyP
 		return nil, internalServerError("Database error finding user").withInternal(err)
 	}
 
+	// The code was hashed against the address it was sent to; the stored value
+	// that matches becomes params.TokenHash, as on the token_hash path, for the
+	// per-type effects that compare against it (emailChangeVerify).
+	recipient := params.Email
+	if params.Type == smsVerification || params.Type == phoneChangeVerification {
+		recipient = params.Phone
+	}
+	matched := ""
+	mailOTP := func(stored string, sentAt *time.Time) bool {
+		if a.isOTPValid(stored, recipient, params.Token, sentAt) {
+			matched = stored
+			return true
+		}
+		return false
+	}
+	smsOTP := func(stored string, sentAt *time.Time) bool {
+		if a.isSMSOTPValid(stored, recipient, params.Token, sentAt) {
+			matched = stored
+			return true
+		}
+		return false
+	}
+
 	valid := false
 	switch params.Type {
 	case mailEmailOTP:
-		if a.isOTPValid(params.TokenHash, tokens.ConfirmationToken, user.ConfirmationSentAt) {
+		if mailOTP(tokens.ConfirmationToken, user.ConfirmationSentAt) {
 			valid, params.Type = true, mailSignup
-		} else if a.isOTPValid(params.TokenHash, tokens.RecoveryToken, user.RecoverySentAt) {
+		} else if mailOTP(tokens.RecoveryToken, user.RecoverySentAt) {
 			valid, params.Type = true, mailMagicLink
 		}
 	case mailSignup, mailInvite:
-		valid = a.isOTPValid(params.TokenHash, tokens.ConfirmationToken, user.ConfirmationSentAt)
+		valid = mailOTP(tokens.ConfirmationToken, user.ConfirmationSentAt)
 	case mailRecovery, mailMagicLink:
-		valid = a.isOTPValid(params.TokenHash, tokens.RecoveryToken, user.RecoverySentAt)
+		valid = mailOTP(tokens.RecoveryToken, user.RecoverySentAt)
 	case mailEmailChange:
-		valid = a.isOTPValid(params.TokenHash, tokens.EmailChangeTokenCurrent, user.EmailChangeSentAt) ||
-			a.isOTPValid(params.TokenHash, tokens.EmailChangeTokenNew, user.EmailChangeSentAt)
+		valid = mailOTP(tokens.EmailChangeTokenCurrent, user.EmailChangeSentAt) ||
+			mailOTP(tokens.EmailChangeTokenNew, user.EmailChangeSentAt)
 	case smsVerification, phoneChangeVerification:
 		ptokens, perr := findPhoneTokens(ctx, q, user.ID)
 		if perr != nil {
 			return nil, internalServerError("Database error finding user").withInternal(perr)
 		}
 		if params.Type == smsVerification {
-			valid = a.isSMSOTPValid(params.TokenHash, ptokens.ConfirmationToken, user.ConfirmationSentAt)
+			valid = smsOTP(ptokens.ConfirmationToken, user.ConfirmationSentAt)
 		} else {
-			valid = a.isSMSOTPValid(params.TokenHash, ptokens.PhoneChangeToken, user.PhoneChangeSentAt)
+			valid = smsOTP(ptokens.PhoneChangeToken, user.PhoneChangeSentAt)
 		}
 	default:
 		return nil, badRequestError(ErrorCodeValidationFailed, "Unsupported verification type")
@@ -460,30 +490,45 @@ func (a *api) verifyUserAndToken(ctx context.Context, q querier, params *VerifyP
 	if !valid {
 		return nil, forbiddenError(ErrorCodeOTPExpired, "Token has expired or is invalid")
 	}
-	// Downstream (emailChangeVerify) compares against the STORED value, which
-	// carries the flow prefix; normalize now that the token is known good.
-	if params.Type == mailEmailChange {
-		switch {
-		case pkcePrefix+params.TokenHash == tokens.EmailChangeTokenCurrent,
-			pkcePrefix+params.TokenHash == tokens.EmailChangeTokenNew:
-			params.TokenHash = pkcePrefix + params.TokenHash
-		}
-	}
+	params.TokenHash = matched
 	return user, nil
 }
 
-// findUserForEmailChange is upstream's models.FindUserForEmailChange: an email
-// change token identifies its user on its own, from either side of the change.
-func (a *api) findUserForEmailChange(ctx context.Context, q querier, tokenHash, aud string) (*User, error) {
+// findUserForEmailChange is upstream's models.FindUserForEmailChange: a typed
+// email change code identifies its user from either side of the change, the
+// address it was sent to. The candidates are the pending email change tokens
+// for that address (one_time_tokens.relates_to); the one whose stored hash the
+// code reproduces names the user.
+func (a *api) findUserForEmailChange(ctx context.Context, q querier, email, otp, aud string) (*User, error) {
 	types := []string{tokenTypeEmailChangeNew}
 	if a.cfg.Mailer.SecureEmailChangeEnabled {
 		types = append(types, tokenTypeEmailChangeCurrent)
 	}
-	ott, err := findOneTimeTokenAnyFlow(ctx, q, tokenHash, types...)
+	rows, err := q.Query(ctx, `
+		select user_id::text, token_hash from auth.one_time_tokens
+		where relates_to = lower($1) and token_type::text = any($2::text[])`, email, types)
 	if err != nil {
 		return nil, err
 	}
-	user, err := a.loadUserWithIdentities(ctx, q, ott.UserID)
+	userID := ""
+	for rows.Next() {
+		var id, hash string
+		if err := rows.Scan(&id, &hash); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if userID == "" && tokenHashMatches(hash, email, otp) {
+			userID = id
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if userID == "" {
+		return nil, pgx.ErrNoRows
+	}
+	user, err := a.loadUserWithIdentities(ctx, q, userID)
 	if err != nil {
 		return nil, err
 	}

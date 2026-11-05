@@ -31,7 +31,7 @@ package auth
 // layout, not a Dilion simplification, and it is why an account cannot have an
 // email confirmation and an SMS OTP pending at the same time.
 //
-// The stored value is `sha224_hex(phone + otp)` (ott.go generateTokenHash), the
+// The stored value is the salted hash of phone + otp (ott.go newTokenHash), the
 // same construction email uses, so POST /verify {phone, token, type} and
 // POST /verify {token_hash} converge on one lookup. SMS tokens are NEVER
 // PKCE-prefixed: upstream rejects code_challenge on phone signups because a
@@ -256,14 +256,14 @@ func (a *api) isSMSOTPExpired(sentAt *time.Time) bool {
 }
 
 // isSMSOTPValid is isOTPValid with the SMS expiry.
-func (a *api) isSMSOTPValid(actual, expected string, sentAt *time.Time) bool {
-	if expected == "" || sentAt == nil {
+func (a *api) isSMSOTPValid(stored, recipient, otp string, sentAt *time.Time) bool {
+	if stored == "" || sentAt == nil {
 		return false
 	}
 	if a.isSMSOTPExpired(sentAt) {
 		return false
 	}
-	return actual == expected || pkcePrefix+actual == expected
+	return tokenHashMatches(stored, recipient, otp)
 }
 
 // ---- the send --------------------------------------------------------------
@@ -315,7 +315,10 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 	if err != nil {
 		return "", internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hash := generateTokenHash(phone, otp)
+	hash, err := newTokenHash(phone, otp)
+	if err != nil {
+		return "", internalServerError("Error generating one-time token").withInternal(err)
+	}
 	now := a.now()
 
 	set := map[string]any{tokenColumn: hash, sentColumn: now}

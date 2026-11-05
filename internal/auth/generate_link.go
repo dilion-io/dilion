@@ -225,17 +225,17 @@ func (a *api) generateActionToken(ctx context.Context, tx querier, r *http.Reque
 
 	switch params.Type {
 	case mailMagicLink, mailRecovery:
-		hash = generateTokenHash(params.Email, otp)
+		hash, err = newTokenHash(params.Email, otp)
 		linkType, tokenType = params.Type, tokenTypeRecovery
 		set = map[string]any{"recovery_token": hash, "recovery_sent_at": now}
 
 	case mailInvite:
-		hash = generateTokenHash(params.Email, otp)
+		hash, err = newTokenHash(params.Email, otp)
 		linkType, tokenType = mailInvite, tokenTypeConfirmation
 		set = map[string]any{"confirmation_token": hash, "confirmation_sent_at": now, "invited_at": now}
 
 	case mailSignup:
-		hash = generateTokenHash(params.Email, otp)
+		hash, err = newTokenHash(params.Email, otp)
 		linkType, tokenType = mailSignup, tokenTypeConfirmation
 		set = map[string]any{"confirmation_token": hash, "confirmation_sent_at": now}
 		if params.Data != nil {
@@ -277,16 +277,19 @@ func (a *api) generateActionToken(ctx context.Context, tx querier, r *http.Reque
 			"email_change_confirm_status": zeroConfirmation,
 		}
 		if params.Type == mailEmailChangeCurrent {
-			hash = generateTokenHash(user.Email, otp)
+			hash, err = newTokenHash(user.Email, otp)
 			tokenType = tokenTypeEmailChangeCurrent
 			relatesTo = user.Email
 			set["email_change_token_current"] = hash
 		} else {
-			hash = generateTokenHash(newEmail, otp)
+			hash, err = newTokenHash(newEmail, otp)
 			tokenType = tokenTypeEmailChangeNew
 			relatesTo = newEmail
 			set["email_change_token_new"] = hash
 		}
+	}
+	if err != nil {
+		return nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
 
 	if _, err := updateUserFields(ctx, tx, user.ID, now, set); err != nil {

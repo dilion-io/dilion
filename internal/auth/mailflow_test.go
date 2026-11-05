@@ -300,3 +300,32 @@ func TestFlowStateExpiryUsesIssuedAtForMagicLinks(t *testing.T) {
 		t.Error("non-magic-link flow did not expire from created_at")
 	}
 }
+
+// A stored token hash leads with a fresh salt, so two tokens for the same code
+// differ, and only the code and address it was issued for reproduce it.
+func TestStoredTokenHashIsSalted(t *testing.T) {
+	a, err := newTokenHash("user@example.com", "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTokenHash("user@example.com", "123456")
+	if a == b || a == generateTokenHash("user@example.com", "123456") {
+		t.Fatalf("token hashes are not salted: %q %q", a, b)
+	}
+	for _, c := range []struct {
+		stored, recipient, otp string
+		want                   bool
+	}{
+		{a, "user@example.com", "123456", true},
+		{pkcePrefix + a, "user@example.com", "123456", true},
+		{a, "user@example.com", "123457", false},
+		{a, "other@example.com", "123456", false},
+		// Hashes issued before salting still match their typed code.
+		{generateTokenHash("user@example.com", "123456"), "user@example.com", "123456", true},
+		{"", "user@example.com", "123456", false},
+	} {
+		if got := tokenHashMatches(c.stored, c.recipient, c.otp); got != c.want {
+			t.Errorf("tokenHashMatches(%q, %q, %q) = %v, want %v", c.stored, c.recipient, c.otp, got, c.want)
+		}
+	}
+}
