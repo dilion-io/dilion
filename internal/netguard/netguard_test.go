@@ -56,19 +56,24 @@ func TestParseNetworks(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
-	const xff = "203.0.113.9, 70.41.3.18, 10.0.0.5"
+	xff := []string{"203.0.113.9, 70.41.3.18, 10.0.0.5"}
 	proxies := MustParseNetworks("10.0.0.0/8")
 	for _, tc := range []struct {
-		name, remote, xff string
-		trusted           Networks
-		want              string
+		name, remote string
+		xff          []string
+		trusted      Networks
+		want         string
 	}{
 		{"no trust: the peer, whatever the header", "198.51.100.1:443", xff, Networks{}, "198.51.100.1"},
 		{"untrusted peer", "198.51.100.1:443", xff, proxies, "198.51.100.1"},
 		{"trusted proxy: first untrusted hop from the right", "10.0.0.1:443", xff, proxies, "70.41.3.18"},
 		{"trust everything: leftmost", "10.0.0.1:443", xff, MustParseNetworks("*"), "203.0.113.9"},
-		{"junk hops are skipped", "10.0.0.1:443", "not-an-ip, 203.0.113.10", proxies, "203.0.113.10"},
-		{"no header", "10.0.0.1:443", "", proxies, "10.0.0.1"},
+		{"junk hops are skipped", "10.0.0.1:443", []string{"not-an-ip, 203.0.113.10"}, proxies, "203.0.113.10"},
+		{"no header", "10.0.0.1:443", nil, proxies, "10.0.0.1"},
+		// The client wrote the first line; the trusted proxy appended the
+		// real address as a second one.
+		{"a proxy's own header line counts", "10.0.0.5:443",
+			[]string{"1.2.3.4", "198.51.100.7"}, proxies, "198.51.100.7"},
 	} {
 		if got := ClientIP(tc.remote, tc.xff, tc.trusted); got != tc.want {
 			t.Errorf("%s: ClientIP = %q, want %q", tc.name, got, tc.want)

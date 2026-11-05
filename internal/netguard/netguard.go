@@ -172,7 +172,10 @@ func CheckHost(ctx context.Context, host string, allow Networks) error {
 }
 
 // ClientIP is the address of the caller of a request that reached the server
-// from remoteAddr carrying the X-Forwarded-For header xff.
+// from remoteAddr carrying the X-Forwarded-For header lines xff, in the order
+// they arrived. A proxy may append its hop as a line of its own rather than to
+// the existing value (HAProxy's option forwardfor), so every line counts: read
+// alone, the first line is whatever the client wrote.
 //
 // X-Forwarded-For is written by whoever sends the request, so it is believed
 // only as far as proxies the operator trusts vouch for it: when the peer is a
@@ -181,17 +184,17 @@ func CheckHost(ctx context.Context, host string, allow Networks) error {
 // the client itself, whatever the header says. With trusted = "*" every hop
 // is trusted and the leftmost address is the client (the previous
 // behaviour, and upstream's).
-func ClientIP(remoteAddr, xff string, trusted Networks) string {
+func ClientIP(remoteAddr string, xff []string, trusted Networks) string {
 	peer := remoteAddr
 	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		peer = host
 	}
 	peerAddr, err := netip.ParseAddr(peer)
-	if err != nil || xff == "" || !trusted.Contains(peerAddr) {
+	if err != nil || len(xff) == 0 || !trusted.Contains(peerAddr) {
 		return peer
 	}
 	var hops []netip.Addr
-	for _, part := range strings.Split(xff, ",") {
+	for _, part := range strings.Split(strings.Join(xff, ","), ",") {
 		if a, err := netip.ParseAddr(strings.TrimSpace(part)); err == nil {
 			hops = append(hops, a.Unmap())
 		}

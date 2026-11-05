@@ -78,7 +78,7 @@ func (r *registrar) selfGuard() huma.Middlewares {
 	return huma.Middlewares{func(ctx huma.Context, next func(huma.Context)) {
 		ri := &requestInfo{
 			RequestID: firstNonEmpty(ctx.Header("X-Request-Id"), httpapi.NewID("req")),
-			IP:        netguard.ClientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For"), r.d.TrustedProxies),
+			IP:        netguard.ClientIP(ctx.RemoteAddr(), forwardedFor(ctx), r.d.TrustedProxies),
 			UserAgent: ctx.Header("User-Agent"),
 		}
 		token, ok := bearerToken(ctx.Header("Authorization"))

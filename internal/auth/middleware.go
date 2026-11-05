@@ -103,7 +103,7 @@ type ipCtxKey struct{}
 // same value.
 func (a *api) clientIPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := netguard.ClientIP(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), a.trustedProxies)
+		ip := netguard.ClientIP(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), a.trustedProxies)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ipCtxKey{}, ip)))
 	})
 }
@@ -116,7 +116,7 @@ func clientIP(r *http.Request) string {
 	if v, ok := r.Context().Value(ipCtxKey{}).(string); ok && v != "" {
 		return v
 	}
-	return netguard.ClientIP(r.RemoteAddr, "", netguard.Networks{})
+	return netguard.ClientIP(r.RemoteAddr, nil, netguard.Networks{})
 }
 
 // clientIPInet returns clientIP in a form Postgres `inet` accepts, or nil when

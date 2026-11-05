@@ -29,6 +29,18 @@ type guard struct {
 	perm string
 }
 
+// forwardedFor is every X-Forwarded-For line of the request, in order
+// (netguard.ClientIP).
+func forwardedFor(ctx huma.Context) []string {
+	var lines []string
+	ctx.EachHeader(func(name, value string) {
+		if http.CanonicalHeaderKey(name) == "X-Forwarded-For" {
+			lines = append(lines, value)
+		}
+	})
+	return lines
+}
+
 // guardFor builds the per-operation middleware chain for a required permission.
 func (r *registrar) guardFor(perm string) huma.Middlewares {
 	g := guard{api: r.api, d: r.d, keys: r.keys, perm: perm}
@@ -38,7 +50,7 @@ func (r *registrar) guardFor(perm string) huma.Middlewares {
 func (g guard) handle(ctx huma.Context, next func(huma.Context)) {
 	ri := &requestInfo{
 		RequestID: firstNonEmpty(ctx.Header("X-Request-Id"), httpapi.NewID("req")),
-		IP:        netguard.ClientIP(ctx.RemoteAddr(), ctx.Header("X-Forwarded-For"), g.d.TrustedProxies),
+		IP:        netguard.ClientIP(ctx.RemoteAddr(), forwardedFor(ctx), g.d.TrustedProxies),
 		UserAgent: ctx.Header("User-Agent"),
 	}
 	resource := ctx.Operation().Method + " " + ctx.Operation().Path

@@ -120,6 +120,22 @@ func TestClientIPTrustsOnlyConfiguredProxies(t *testing.T) {
 	}
 }
 
+// A proxy that appends its hop as a second X-Forwarded-For line (HAProxy's
+// option forwardfor) is read through that line, not the client's first one.
+func TestClientIPReadsEveryForwardedForLine(t *testing.T) {
+	a := &api{trustedProxies: netguard.MustParseNetworks("10.0.0.0/8")}
+	var got string
+	h := a.clientIPMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = clientIP(r) }))
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Add("X-Forwarded-For", "1.2.3.4")
+	req.Header.Add("X-Forwarded-For", "198.51.100.7")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got != "198.51.100.7" {
+		t.Errorf("clientIP = %q, want the address the proxy appended", got)
+	}
+}
+
 func TestRateLimiterBurstRefillAndIsolation(t *testing.T) {
 	now := time.Now()
 	// 30 requests per 5 minutes, burst 3.
