@@ -423,8 +423,6 @@ func (a *api) logout(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
-		now := a.now()
-
 		if sessionID != "" {
 			switch scope {
 			case "local":
@@ -441,10 +439,8 @@ func (a *api) logout(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		// Default (global): every session and refresh token of the user dies.
+		// deleteUserSessions also revokes the tokens no session cascades to.
 		if err := deleteUserSessions(ctx, tx, user.ID); err != nil {
-			return internalServerError("Error logging out user").withInternal(err)
-		}
-		if err := revokeUserRefreshTokens(ctx, tx, user.ID, now); err != nil {
 			return internalServerError("Error logging out user").withInternal(err)
 		}
 		return nil

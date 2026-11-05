@@ -119,7 +119,8 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, authDDL); err != nil {
 		t.Fatalf("auth ddl: %v", err)
 	}
-	for _, m := range []string{"0200_privacy.sql", "0201_pii_search_index.sql", "0202_consent_state.sql"} {
+	for _, m := range []string{"0200_privacy.sql", "0201_pii_search_index.sql", "0202_consent_state.sql",
+		"0203_privacy_request_subject_index.sql"} {
 		body, err := os.ReadFile("../../migrations/" + m)
 		if err != nil {
 			t.Fatalf("read migration: %v", err)
