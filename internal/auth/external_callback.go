@@ -276,7 +276,8 @@ type accountLinkingResult struct {
 
 // determineAccountLinking is upstream's models.DetermineAccountLinking, reduced
 // to the single "default" linking domain (Dilion exposes no
-// GOTRUE_EXPERIMENTAL_PROVIDER_LINKING_DOMAINS and no SSO providers yet):
+// GOTRUE_EXPERIMENTAL_PROVIDER_LINKING_DOMAINS; SSO identities and users are
+// outside it, see findIdentitiesByEmails and findUsersByEmails):
 //
 //	identity (provider, sub) exists                 -> AccountExists   (sign in)
 //	no verified email                               -> CreateAccount   (never link on an unverified address)

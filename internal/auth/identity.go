@@ -78,9 +78,14 @@ func findIdentitiesByEmails(ctx context.Context, q querier, emails []string) ([]
 	if len(emails) == 0 {
 		return nil, nil
 	}
+	// SSO identities ("sso:<provider id>") are not in the default linking
+	// domain (upstream models.GetAccountLinkingDomain): an IdP that asserts an
+	// address must not have a social sign-in to that address linked into the
+	// account it created (saml_acs.go createAccountFromSSOIdentity).
 	rows, err := q.Query(ctx,
 		`select `+identityColumns+` from auth.identities
-		 where email = any($1::text[]) order by created_at, id`, emails)
+		 where email = any($1::text[]) and provider not like 'sso:%'
+		 order by created_at, id`, emails)
 	if err != nil {
 		return nil, err
 	}
