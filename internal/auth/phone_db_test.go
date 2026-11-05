@@ -787,9 +787,11 @@ func TestPhoneReauthenticationRequiresAConfirmedNumber(t *testing.T) {
 
 // ---- provider failures -----------------------------------------------------
 
-// A provider that rejects the message fails the request with upstream's 422 and
-// leaves NO account behind — the send happens inside the signup transaction.
-func TestPhoneSignupRollsBackWhenTheProviderFails(t *testing.T) {
+// A provider that rejects the message fails the request with upstream's 422.
+// The text goes out after the signup commits, so the account stands, but with
+// no code left that nobody received and no send time to wait out: signing up
+// again texts a code at once.
+func TestPhoneSignupCanRetryAfterTheProviderFails(t *testing.T) {
 	env := newPhoneEnv(t, nil)
 	env.sms.err = errSendFailed
 
@@ -798,14 +800,25 @@ func TestPhoneSignupRollsBackWhenTheProviderFails(t *testing.T) {
 	if body := phoneErrorBody(t, rec, http.StatusUnprocessableEntity); body.ErrorCode != ErrorCodeSMSSendFailed {
 		t.Errorf("error_code = %q, want %q", body.ErrorCode, ErrorCodeSMSSendFailed)
 	}
-
-	var n int64
+	var token string
+	var sentAt *time.Time
 	if err := env.pool.QueryRow(context.Background(),
-		`select count(*) from auth.users where phone = $1`, testPhoneE164).Scan(&n); err != nil {
-		t.Fatalf("count users: %v", err)
+		`select coalesce(confirmation_token, ''), confirmation_sent_at from auth.users where phone = $1`,
+		testPhoneE164).Scan(&token, &sentAt); err != nil {
+		t.Fatalf("the account did not stand: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("%d users left behind after a failed send, want 0", n)
+	if token != "" || sentAt != nil {
+		t.Errorf("an unsent code was left: token %q, sent at %v", token, sentAt)
+	}
+
+	env.sms.err = nil
+	rec = env.do(t, http.MethodPost, "/signup",
+		map[string]any{"phone": testPhone, "password": testPassword}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry = %d %s", rec.Code, rec.Body.String())
+	}
+	if msgs := env.sms.to(testPhone); len(msgs) != 1 {
+		t.Fatalf("retry texted %d codes, want 1", len(msgs))
 	}
 }
 

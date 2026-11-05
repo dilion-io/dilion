@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -184,8 +185,8 @@ func (a *api) handle(fn handlerFunc) http.HandlerFunc {
 }
 
 func (a *api) writeError(r *http.Request, w http.ResponseWriter, err error) {
-	he, ok := err.(*HTTPError)
-	if !ok {
+	var he *HTTPError
+	if !errors.As(err, &he) {
 		he = internalServerError("Unexpected failure, please check server logs for more information").withInternal(err)
 	}
 

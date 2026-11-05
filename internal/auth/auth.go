@@ -1043,6 +1043,12 @@ func commitAndFail(err error) error { return &commitWithError{err: err} }
 // inTx runs fn in a transaction, rolling back on error — unless fn returns a
 // commitWithError, in which case the work is committed and the wrapped error
 // is returned.
+//
+// Mail and SMS that fn queues (queueDelivery) go out after the commit, so no
+// request holds a pool connection, or the row locks of its writes, for the
+// length of an SMTP or SMS provider call. A failed delivery is returned as a
+// *deliveryError: the transaction's changes stand, only the message did not
+// go out (see deliverPending).
 func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	pool, err := a.db(ctx)
 	if err != nil {
@@ -1054,11 +1060,15 @@ func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := fn(tx); err != nil {
+	dtx := &deliveryTx{Tx: tx}
+	if err := fn(dtx); err != nil {
 		var cwe *commitWithError
 		if errors.As(err, &cwe) {
 			if cerr := tx.Commit(ctx); cerr != nil {
 				return internalServerError("Database error committing transaction").withInternal(cerr)
+			}
+			if derr := a.deliverPending(ctx, dtx.pending); derr != nil {
+				return derr
 			}
 			return cwe.err
 		}
@@ -1067,7 +1077,89 @@ func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	if err := tx.Commit(ctx); err != nil {
 		return internalServerError("Database error committing transaction").withInternal(err)
 	}
+	return a.deliverPending(ctx, dtx.pending)
+}
+
+// deliveryTx is the transaction inTx hands to fn: it collects the messages
+// queued while it is open.
+type deliveryTx struct {
+	pgx.Tx
+	pending []delivery
+}
+
+// delivery is one queued message. send delivers it; q is nil once the
+// transaction is gone, so a send hook reads its setting and runs on the pool.
+// discard takes back what the message carried — its token and the send time
+// that would make the user wait before asking again.
+type delivery struct {
+	send    func(ctx context.Context, q querier) error
+	discard func(ctx context.Context, q querier) error
+}
+
+// queueDelivery sends d once the inTx transaction q has committed. Outside
+// one (q is the pool, or a transaction of the caller's own) it sends now, so
+// a failure still undoes the caller's writes.
+func (a *api) queueDelivery(ctx context.Context, q querier, d delivery) error {
+	if t, ok := q.(*deliveryTx); ok {
+		t.pending = append(t.pending, d)
+		return nil
+	}
+	return d.send(ctx, q)
+}
+
+// deliveryError is a message that could not be sent after its transaction
+// committed. The request fails with err, but what the transaction wrote
+// stands: a handler still runs its post-commit observers (deliveryFailed).
+type deliveryError struct{ err error }
+
+func (e *deliveryError) Error() string { return e.err.Error() }
+func (e *deliveryError) Unwrap() error { return e.err }
+
+// deliveryFailed reports whether err is a *deliveryError.
+func deliveryFailed(err error) bool {
+	var d *deliveryError
+	return errors.As(err, &d)
+}
+
+// deliverPending sends the queued messages in order. When one fails, it and
+// every message after it are discarded, so no token is left that nobody
+// received and the user can ask again at once: a repeated request sends a
+// fresh one, as upstream's rolled-back send would let it.
+func (a *api) deliverPending(ctx context.Context, pending []delivery) error {
+	for i, d := range pending {
+		err := d.send(ctx, nil)
+		if err == nil {
+			continue
+		}
+		cleanup := context.WithoutCancel(ctx)
+		pool, perr := a.db(cleanup)
+		for _, rest := range pending[i:] {
+			if rest.discard == nil || perr != nil {
+				continue
+			}
+			if derr := rest.discard(cleanup, pool); derr != nil {
+				a.log.ErrorContext(ctx, "auth: discarding an undelivered token failed", "error", derr.Error())
+			}
+		}
+		return &deliveryError{err: err}
+	}
 	return nil
+}
+
+// discardToken is the discard of a message that carried the one-time token
+// hash, stored in tokenColumn (sent at sentColumn) and as tokenType. It clears
+// only that token: a newer one issued meanwhile is left alone.
+func discardToken(userID, tokenColumn, sentColumn, tokenType, hash string) func(context.Context, querier) error {
+	return func(ctx context.Context, q querier) error {
+		// The column names are this package's constants, never request input.
+		if _, err := q.Exec(ctx, `update auth.users set `+tokenColumn+` = '', `+sentColumn+` = null
+			where id = $1::uuid and `+tokenColumn+` = $2`, userID, hash); err != nil {
+			return err
+		}
+		_, err := q.Exec(ctx, `delete from auth.one_time_tokens
+			where user_id = $1::uuid and token_type::text = $2 and token_hash = $3`, userID, tokenType, hash)
+		return err
+	}
 }
 
 // ---- per-request token service ---------------------------------------------

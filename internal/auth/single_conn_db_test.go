@@ -74,4 +74,26 @@ func TestRequestsNeedOnlyOneConnection(t *testing.T) {
 	// A typed code is counted per account around its transaction.
 	rec := do("/verify", map[string]any{"type": mailMagicLink, "email": "oneconn@example.com", "token": code})
 	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+
+	// Built-in mail goes out after the transaction commits: a mailer that
+	// needs the pool's only connection while it sends gets it.
+	cfg.Hooks.SendEmail = HookEndpointConfig{Locked: true}
+	router = chi.NewRouter()
+	Register(router, Deps{Pool: one, Tokens: env.tokens, Hooks: env.hooks, Config: &cfg, Clock: env.clock,
+		Mailer: connMailer{pool: one}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	env.clock.advance(2 * cfg.Mailer.MaxFrequency)
+	if rec := do("/otp", map[string]any{"email": "oneconn@example.com"}); rec.Code != http.StatusOK {
+		t.Fatalf("/otp with a mailer that needs a connection = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// connMailer takes a pool connection for every send, as a mailer writing an
+// outbox or a delivery log would.
+type connMailer struct{ pool *pgxpool.Pool }
+
+func (m connMailer) Send(ctx context.Context, _, _, _, _ string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err := m.pool.Exec(ctx, `select 1`)
+	return err
 }

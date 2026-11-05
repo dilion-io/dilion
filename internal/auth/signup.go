@@ -148,6 +148,7 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request) error {
 		sanitized *User
 	)
 
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		existing, ferr := findUserByEmail(ctx, tx, params.Email, aud)
 		if ferr != nil && !isNoRows(ferr) {
@@ -255,8 +256,11 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request) error {
 		}
 		user = refreshed
 		return nil
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if sanitized != nil {
@@ -271,6 +275,9 @@ func (a *api) signup(w http.ResponseWriter, r *http.Request) error {
 		})
 		// after_user_created (external hook): observes the new user post-commit.
 		a.observeAfterUserCreated(ctx, user)
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 
 	if session != nil {
@@ -375,6 +382,7 @@ func (a *api) signupWithPhone(w http.ResponseWriter, r *http.Request, params *Si
 		sanitized *User
 	)
 
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		existing, ferr := findUserByPhone(ctx, tx, phone, aud)
 		if ferr != nil && !isNoRows(ferr) {
@@ -451,8 +459,11 @@ func (a *api) signupWithPhone(w http.ResponseWriter, r *http.Request, params *Si
 		}
 		user = refreshed
 		return nil
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if sanitized != nil {
@@ -467,6 +478,9 @@ func (a *api) signupWithPhone(w http.ResponseWriter, r *http.Request, params *Si
 		})
 		// after_user_created (external hook): observes the new user post-commit.
 		a.observeAfterUserCreated(ctx, user)
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 	if session != nil {
 		return sendJSON(w, http.StatusOK, session)

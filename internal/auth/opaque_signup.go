@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -180,9 +181,21 @@ func (a *api) opaqueSignupFinish(w http.ResponseWriter, r *http.Request) error {
 		}
 		if existing != nil {
 			// Never overwrite ANY existing credential, including unconfirmed users.
-			// A duplicate request does not send mail; use the existing /resend flow.
 			if signup.Autoconfirm {
 				return unprocessableEntityError(ErrorCodeUserAlreadyExists, "User already registered")
+			}
+			// A repeated signup while confirmation is pending re-sends it, as
+			// password signup does, so a confirmation that could not be sent
+			// the first time goes out when the user tries again. The reply is
+			// the same fabricated user either way: a repeat inside the mail
+			// frequency window sends nothing rather than answering 429, which
+			// would tell that the address has a pending account.
+			if existing.EmailConfirmedAt == nil {
+				var he *HTTPError
+				if _, err := a.sendConfirmation(ctx, tx, r, existing, signup.RedirectTo, false); err != nil &&
+					!(errors.As(err, &he) && he.ErrorCode == ErrorCodeOverEmailSendRateLimit) {
+					return err
+				}
 			}
 			return nil
 		}
@@ -229,6 +242,11 @@ func (a *api) opaqueSignupFinish(w http.ResponseWriter, r *http.Request) error {
 		}
 		return nil
 	})
+	var sendErr error
+	if deliveryFailed(err) {
+		// Only the confirmation failed; the account stands.
+		sendErr, err = err, nil
+	}
 	if err != nil {
 		// Another signup (including the legacy route) can win the unique email
 		// index race. Never expose it when confirmation is required, nor retry by
@@ -244,6 +262,9 @@ func (a *api) opaqueSignupFinish(w http.ResponseWriter, r *http.Request) error {
 	if created != nil {
 		a.observeHook(ctx, ports.AfterSignup, map[string]any{"user_id": created.ID, "email": created.Email, "provider": ProviderEmail, "authentication_method": "opaque"})
 		a.observeAfterUserCreated(ctx, created)
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 	return sendJSON(w, http.StatusOK, reply)
 }

@@ -271,11 +271,13 @@ func (a *api) isSMSOTPValid(stored, recipient, otp string, sentAt *time.Time) bo
 // sendPhoneConfirmation is upstream's sendPhoneConfirmation: mint an OTP,
 // persist its hash for `otpType`, and deliver the rendered message.
 //
-// It returns the provider-side message id, which the endpoints surface as
-// `message_id` (upstream SmsOtpResponse / ResendResponse).
+// It returns where the provider-side message id lands once the message is
+// sent — after the caller's inTx transaction commits (queueDelivery) — which
+// the endpoints surface as `message_id` (upstream SmsOtpResponse /
+// ResendResponse).
 //
 // Must run inside the caller's transaction.
-func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Request, u *User, phone, otpType, channel string) (string, error) {
+func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Request, u *User, phone, otpType, channel string) (*string, error) {
 	var (
 		sentAt      *time.Time
 		tokenColumn string
@@ -299,25 +301,25 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 		sentAt, tokenColumn, sentColumn, tokenType =
 			u.ReauthenticationSentAt, "reauthentication_token", "reauthentication_sent_at", tokenTypeReauthentication
 	default:
-		return "", internalServerError("invalid otp type")
+		return nil, internalServerError("invalid otp type")
 	}
 
 	if err := a.checkSMSFrequency(sentAt); err != nil {
-		return "", err
+		return nil, err
 	}
 	// The per-IP SMS bucket (GOTRUE_RATE_LIMIT_SMS_SENT) is applied here, just
 	// before an OTP is minted, exactly where upstream applies limiterOpts.Phone.
 	if err := a.limitCheck(LimiterSMS, r); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	otp, err := generateOTP(a.cfg.SMS.OTPLength)
 	if err != nil {
-		return "", internalServerError("Error generating one-time token").withInternal(err)
+		return nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
 	hash, err := newTokenHash(phone, otp)
 	if err != nil {
-		return "", internalServerError("Error generating one-time token").withInternal(err)
+		return nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
 	now := a.now()
 
@@ -327,12 +329,12 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 	}
 	if _, err := updateUserFields(ctx, tx, u.ID, now, set); err != nil {
 		if isUniqueViolation(err) {
-			return "", unprocessableEntityError(ErrorCodePhoneExists, "%s", duplicatePhoneMsg)
+			return nil, unprocessableEntityError(ErrorCodePhoneExists, "%s", duplicatePhoneMsg)
 		}
-		return "", internalServerError("Database error updating user for phone").withInternal(err)
+		return nil, internalServerError("Database error updating user for phone").withInternal(err)
 	}
 	if err := issueOneTimeToken(ctx, tx, u.ID, relatesTo, hash, tokenType, now); err != nil {
-		return "", internalServerError("error creating one time token").withInternal(err)
+		return nil, internalServerError("error creating one time token").withInternal(err)
 	}
 
 	// Keep the in-memory user consistent with what was just written — /verify
@@ -347,18 +349,28 @@ func (a *api) sendPhoneConfirmation(ctx context.Context, tx querier, r *http.Req
 		u.ReauthenticationSentAt = &now
 	}
 
-	// send_sms (external hook): when enabled the hook owns delivery and the
-	// built-in provider is skipped. It receives the user, the raw OTP, the OTP
-	// type and the destination number, and reports no provider message id (a bare
-	// `{}` response, exactly as an injected ports.SMSSender does).
-	if handled, herr := a.sendSMSViaHook(ctx, tx, u, SMS{OTP: otp, SMSType: otpType, Phone: phone}); handled {
-		if herr != nil {
-			return "", herr
-		}
-		return "", nil
+	messageID := new(string)
+	sms := SMS{OTP: otp, SMSType: otpType, Phone: phone}
+	channel = defaultChannel(channel)
+	if err := a.queueDelivery(ctx, tx, delivery{
+		send: func(ctx context.Context, q querier) error {
+			// send_sms (external hook): when enabled the hook owns delivery and
+			// the built-in provider is skipped. It receives the user, the raw
+			// OTP, the OTP type and the destination number, and reports no
+			// provider message id (a bare `{}` response, exactly as an injected
+			// ports.SMSSender does).
+			if handled, herr := a.sendSMSViaHook(ctx, q, u, sms); handled {
+				return herr
+			}
+			id, err := a.deliverSMS(ctx, phone, otp, otpType, channel)
+			*messageID = id
+			return err
+		},
+		discard: discardToken(u.ID, tokenColumn, sentColumn, tokenType, hash),
+	}); err != nil {
+		return nil, err
 	}
-
-	return a.deliverSMS(ctx, phone, otp, otpType, defaultChannel(channel))
+	return messageID, nil
 }
 
 // deliverSMS renders the template and hands the message to the provider.
@@ -389,10 +401,10 @@ func (a *api) deliverSMS(ctx context.Context, phone, otp, otpType, channel strin
 // SmsOtpResponse and resend's map): `message_id` only when the provider
 // reported one, so an injected ports.SMSSender answers with a bare `{}` exactly
 // as upstream does when no id comes back.
-func smsResponse(messageID string) map[string]any {
+func smsResponse(messageID *string) map[string]any {
 	out := map[string]any{}
-	if messageID != "" {
-		out["message_id"] = messageID
+	if messageID != nil && *messageID != "" {
+		out["message_id"] = *messageID
 	}
 	return out
 }

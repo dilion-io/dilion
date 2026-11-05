@@ -205,7 +205,7 @@ func (a *api) resendSMS(w http.ResponseWriter, r *http.Request, params *ResendCo
 		target, otpType = user.PhoneChange, phoneChangeVerification
 	}
 
-	messageID := ""
+	var messageID *string
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		mID, serr := a.sendPhoneConfirmation(ctx, tx, r, user, target, otpType, channelSMS)
 		if serr != nil {

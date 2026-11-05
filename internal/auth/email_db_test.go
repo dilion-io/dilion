@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,13 +42,23 @@ type recordedMail struct {
 type recordingMailer struct {
 	mu   sync.Mutex
 	sent []recordedMail
+	err  error // when set, every send fails
 }
 
 func (m *recordingMailer) Send(_ context.Context, to, subject, text, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
 	m.sent = append(m.sent, recordedMail{To: to, Subject: subject, Text: text})
 	return nil
+}
+
+func (m *recordingMailer) failWith(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.err = err
 }
 
 func (m *recordingMailer) all() []recordedMail {
@@ -577,6 +588,31 @@ func TestMagicLinkForExistingUser(t *testing.T) {
 	if session.User.Email != "magic@example.com" {
 		t.Errorf("session user = %+v", session.User)
 	}
+}
+
+// Mail goes out after the request's transaction commits. A send that fails
+// takes back the token it carried, so asking again right away sends a fresh
+// link instead of waiting out the mail frequency limit.
+func TestMagicLinkCanBeRequestedAgainAfterAFailedSend(t *testing.T) {
+	env := newEmailEnv(t, nil)
+	env.confirmedUser(t, "retry@example.com", "hunter22")
+	env.mails.reset()
+
+	env.mails.failWith(errors.New("smtp down"))
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"email": "retry@example.com"}, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("/otp with the mailer down = %d %s", rec.Code, rec.Body.String())
+	}
+	env.mails.failWith(nil)
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"email": "retry@example.com"}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("/otp retried at once = %d %s", rec.Code, rec.Body.String())
+	}
+	mails := env.mails.to("retry@example.com")
+	if len(mails) != 1 {
+		t.Fatalf("magic link mails = %d, want 1", len(mails))
+	}
+	rec := env.do(t, http.MethodPost, "/verify",
+		map[string]any{"type": mailMagicLink, "token_hash": mails[0].token(t)}, "")
+	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
 }
 
 // The link value cannot be derived from the six-digit code: upstream's
