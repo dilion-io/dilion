@@ -237,7 +237,36 @@ func (k *KMS) subject(subjectID string, scope ports.KeyScope) (pgtype.UUID, erro
 	if subjectID == "" {
 		return out, errors.New("kmslocal: empty subject id")
 	}
+	if ReservedSubject(subjectID) {
+		return out, ErrReservedSubject
+	}
 	return pgtype.UUID{Bytes: SubjectUUID(subjectID), Valid: true}, nil
+}
+
+// ErrReservedSubject refuses a UUID subject id that is the storage key of a
+// pseudo-subject.
+var ErrReservedSubject = errors.New("kmslocal: subject id is reserved")
+
+// pseudoSubjects are the non-UUID subjects Dilion stores keys under: "system"
+// holds the privacy engine's webhook secrets.
+var pseudoSubjects = []string{"system"}
+
+// ReservedSubject reports whether subjectID is a UUID that SubjectUUID also
+// produces for a pseudo-subject. Such an id would reach the pseudo-subject's
+// key: erasing a "user" with the UUID of "system" would shred every webhook
+// secret. The UUIDs are derivable from this source, so they are refused as
+// data subjects outright.
+func ReservedSubject(subjectID string) bool {
+	u, err := uuid.Parse(subjectID)
+	if err != nil {
+		return false
+	}
+	for _, p := range pseudoSubjects {
+		if u == SubjectUUID(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // subjectNamespace derives storage UUIDs for non-UUID subject identifiers.

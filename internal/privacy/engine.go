@@ -32,6 +32,7 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/kmslocal"
 	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/ports"
 
@@ -185,6 +186,11 @@ func validUUID(s string) (string, error) {
 	u, err := uuid.Parse(strings.TrimSpace(s))
 	if err != nil {
 		return "", fmt.Errorf("%w: user_id must be a UUID", ErrInvalidInput)
+	}
+	// The local KMS stores systemSubjectID's key under a UUID derived from it;
+	// that UUID is never a data subject (kmslocal.ReservedSubject).
+	if kmslocal.ReservedSubject(u.String()) {
+		return "", fmt.Errorf("%w: user_id is reserved", ErrInvalidInput)
 	}
 	return u.String(), nil
 }
