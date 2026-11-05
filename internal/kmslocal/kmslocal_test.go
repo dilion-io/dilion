@@ -2,8 +2,8 @@ package kmslocal
 
 import (
 	"bytes"
-	"crypto/rand"
 	"context"
+	"crypto/rand"
 	"errors"
 	"testing"
 
