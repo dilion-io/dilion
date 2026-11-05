@@ -849,7 +849,11 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 // session", which is the right answer for a refresh (no new authentication
 // happened, so the session's newest AMR claim still describes how it was
 // established).
-func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID, authMethod string) (string, time.Time, error) {
+//
+// amrClaims are the session's AMR claims when the caller already knows them
+// (a session created this moment has exactly the one it was signed in with);
+// nil reads them.
+func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID, authMethod string, amrClaims []amrClaim) (string, time.Time, error) {
 	ts, terr := a.tokensFor(ctx)
 	if terr != nil {
 		return "", time.Time{}, terr
@@ -864,9 +868,11 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		"is_anonymous":  u.IsAnonymous,
 	}
 	if sessionID != "" {
-		amrClaims, cerr := findAMRClaims(ctx, q, sessionID)
-		if cerr != nil {
-			return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
+		if amrClaims == nil {
+			var cerr error
+			if amrClaims, cerr = findAMRClaims(ctx, q, sessionID); cerr != nil {
+				return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
+			}
 		}
 		aal, amr := computeAAL(amrClaims)
 		extra["session_id"] = sessionID
@@ -1039,7 +1045,12 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 	u.LastSignInAt = &now
 	u.UpdatedAt = now
 
-	return a.buildSessionResponse(ctx, tx, u, sessionID, refresh, amrMethod)
+	// The session has exactly the claim written above: no need to read it back.
+	var claims []amrClaim
+	if amrMethod != "" {
+		claims = []amrClaim{{SessionID: sessionID, Method: amrMethod, CreatedAt: now, UpdatedAt: now}}
+	}
+	return a.sessionResponse(ctx, tx, u, sessionID, refresh, amrMethod, claims)
 }
 
 // buildSessionResponse renders the gotrue session envelope for an EXISTING
@@ -1048,7 +1059,13 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 // visible to the token being signed. authMethod is passed to the token hooks;
 // "" means "derive it from the session", which is what a refresh wants.
 func (a *api) buildSessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh, authMethod string) (*AccessTokenResponse, error) {
-	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID, authMethod)
+	return a.sessionResponse(ctx, q, u, sessionID, refresh, authMethod, nil)
+}
+
+// sessionResponse is buildSessionResponse with the session's AMR claims when
+// the caller knows them (nil: read them).
+func (a *api) sessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh, authMethod string, amrClaims []amrClaim) (*AccessTokenResponse, error) {
+	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID, authMethod, amrClaims)
 	if err != nil {
 		return nil, err
 	}
