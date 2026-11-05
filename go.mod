@@ -1,6 +1,6 @@
 module github.com/dilion-io/dilion
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/boombuler/barcode v1.1.0
