@@ -243,6 +243,15 @@ func (p *Policy) validate() error {
 				return fmt.Errorf("privacy: policy %q: retention[%d]: `from` must be %q or %q, got %q",
 					p.ID, i, FromCreated, FromErasure, r.From)
 			}
+			// Proof of consent is kept for as long as the consent is relied on
+			// (GDPR Art. 7(1), KR PIPA §39①) and a HIPAA authorization for six
+			// years from when it was last in effect (§164.530(j)(2)): a period
+			// counted from when the evidence was recorded would shred it while
+			// processing still rests on it. Its clock starts at erasure.
+			if r.Domain == DomainConsentEvidence && r.From != FromErasure {
+				return fmt.Errorf("privacy: policy %q: retention[%d]: consent-evidence must be kept `from: %s`: "+
+					"proof of consent is needed for as long as the consent is relied on", p.ID, i, FromErasure)
+			}
 			if _, err := ParseISODuration(r.Period); err != nil {
 				return fmt.Errorf("privacy: policy %q: retention[%d]: %w", p.ID, i, err)
 			}

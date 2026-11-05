@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1237,30 +1236,35 @@ func TestRetentionBatchExcludesHeldRowsBeforeLimit(t *testing.T) {
 	}
 }
 
-func TestCreatedRetentionBatchExcludesHeldRowsBeforeLimit(t *testing.T) {
-	env := newTestEngine(t, "")
-	users := []string{env.newUser(t), env.newUser(t)}
-	sort.Strings(users)
-	held, due := users[0], users[1]
-	for _, user := range users {
-		if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{
-			Purpose: "analytics", Granted: true, Source: "ui"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := env.e.CreateHold(env.ctx, CreateHoldInput{UserID: held, Reason: "preserve"}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.e.sweepConsentFromCreated(env.ctx, env.e.policies.DefaultPolicy,
-		Duration{Days: 1}, env.clock.Now().AddDate(0, 0, 2), 1); err != nil {
-		t.Fatal(err)
-	}
-	if env.kms.isDestroyed(held, ports.KeyScopeConsent) {
-		t.Error("held key was shredded")
-	}
-	if !env.kms.isDestroyed(due, ports.KeyScopeConsent) {
-		t.Error("eligible key behind held row was starved")
+// Consent evidence is kept for as long as the consent is relied on: however
+// old a subject's newest consent record, retention never shreds the evidence
+// of a subject that was not erased, under any built-in policy, and the
+// subject can still change their consent.
+func TestRetentionKeepsConsentEvidenceOfActiveSubjects(t *testing.T) {
+	for _, policy := range []string{"kr", "gdpr", "hipaa"} {
+		t.Run(policy, func(t *testing.T) {
+			env := newTestEngine(t, "")
+			user := env.newUser(t)
+			if _, err := env.pool.Exec(env.ctx, `insert into dilion_privacy.subject_policies (user_id, policy_id, source)
+				values ($1::uuid, $2, 'explicit') on conflict (user_id) do update set policy_id = excluded.policy_id`, user, policy); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{
+				Purpose: "newsletter", Granted: true, Source: "ui"}); err != nil {
+				t.Fatal(err)
+			}
+			env.clock.Advance(10 * 365 * 24 * time.Hour)
+			if err := env.e.runRetentionOnce(env.ctx); err != nil {
+				t.Fatal(err)
+			}
+			if env.kms.isDestroyed(user, ports.KeyScopeConsent) {
+				t.Fatal("retention shredded the consent evidence of an active subject")
+			}
+			if _, err := env.e.UpdateConsent(env.ctx, user, ConsentChange{
+				Purpose: "newsletter", Granted: false, Source: "ui"}); err != nil {
+				t.Fatalf("withdrawing consent after ten years: %v", err)
+			}
+		})
 	}
 }
 

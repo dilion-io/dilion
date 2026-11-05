@@ -203,7 +203,7 @@ compliance:
           period: P3Y
           from: erasure                # 파기 완료 시각 기준 (shred_after 스냅샷)
           action: CRYPTO_SHRED
-          basis: "신용정보법 §20②"      # 증적 문자열 — 로직에 미사용, destruction_logs로 복사
+          basis: "민법 §766①, 개인정보 보호법 §39①"  # 증적 문자열 — 로직에 미사용, destruction_logs로 복사
         - domain: audit-log
           period: P3Y
           from: created
@@ -716,8 +716,8 @@ audit log는 append-only 저장소로 운영합니다. application은 APPEND onl
        retention:
          - { domain: audit-log,        period: P6Y,  from: created, action: DELETE,
              basis: "45 CFR 164.316(b)(2)(i)" }
-         - { domain: consent-evidence, period: P6Y,  from: created, action: CRYPTO_SHRED,
-             basis: "45 CFR 164.316(b)(2)(i)" }   # authorization 문서(§164.508)도 6년
+         - { domain: consent-evidence, period: P6Y,  from: erasure, action: CRYPTO_SHRED,
+             basis: "45 CFR 164.508(b)(6), 164.530(j)(2)" }   # 마지막으로 유효했던 때부터 6년
          - { domain: medical-record,   period: P10Y, from: created, action: KEEP,
              basis: "State medical record retention law (고객사 오버라이드 전제)" }
    ```

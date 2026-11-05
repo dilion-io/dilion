@@ -503,15 +503,12 @@ func (e *Engine) stepSubjectKey(ctx context.Context, rc *runCtx, _ ErasureAction
 		}
 	}
 
+	// consent-evidence is always `from: erasure` (policy validation).
 	var fromErasure *RetentionRule
-	var fromCreated *RetentionRule
 	for _, r := range rc.Policy.RetentionFor(DomainConsentEvidence) {
 		rule := r
-		switch rule.From {
-		case FromErasure:
+		if rule.From == FromErasure {
 			fromErasure = &rule
-		case FromCreated:
-			fromCreated = &rule
 		}
 	}
 	switch {
@@ -527,9 +524,6 @@ func (e *Engine) stepSubjectKey(ctx context.Context, rc *runCtx, _ ErasureAction
 			return "", false, err
 		}
 		return fmt.Sprintf("consent_dek_shred_after=%s", shredAfter.Format(time.RFC3339)), false, nil
-	case fromCreated != nil:
-		// The retention scanner owns this key; nothing to schedule here.
-		return "consent_dek_retained_from_created:" + fromCreated.Period, false, nil
 	default:
 		if err := e.kms.DestroyDEK(ctx, rc.UserID, ports.KeyScopeConsent); err != nil {
 			return "", false, fmt.Errorf("destroy CONSENT dek: %w", err)

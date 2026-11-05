@@ -16,11 +16,14 @@ compliance:
           # retention(P2Y) 경과 후 DELETE.
           audit-log: KEEP
       retention:
+        # 동의 증적은 동의에 근거해 처리하는 동안 보관하고(개인정보 보호법
+        # §39① 입증책임), 관계가 끝난 뒤(파기 완료 시각) 손해배상청구권
+        # 소멸시효 3년 동안 더 보관한다. 처리방침에 보유기간으로 고지할 것.
         - domain: consent-evidence
           period: P3Y
-          from: created
+          from: erasure
           action: CRYPTO_SHRED
-          basis: "신용정보법 §20② (업무처리기록의 보존 3년, 신용정보회사등에 한정)"
+          basis: "민법 §766① (손해배상청구권 소멸시효 3년), 개인정보 보호법 §39① (입증책임)"
         - domain: audit-log
           period: P2Y
           from: created
@@ -41,7 +44,7 @@ compliance:
           period: P3Y
           from: erasure
           action: CRYPTO_SHRED
-          basis: "GDPR Art. 7(1) — demonstrability of consent"
+          basis: "GDPR Art. 7(1), Art. 17(3)(e); EDPB Guidelines 05/2020 ¶107 — demonstrable while processing lasts, then only as long as legal claims need"
       consent:
         required-keys: [terms, privacy]
         reconfirm: {}
@@ -64,9 +67,9 @@ compliance:
           basis: "45 CFR §164.316(b)(2)(i)"
         - domain: consent-evidence
           period: P6Y
-          from: created
+          from: erasure
           action: CRYPTO_SHRED
-          basis: "45 CFR §164.530(j)(2)"
+          basis: "45 CFR §164.508(b)(6), §164.530(j)(2) — 6 years from creation or when last in effect, whichever is later"
       consent:
         required-keys: [terms, privacy]
         reconfirm: {}
