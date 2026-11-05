@@ -532,12 +532,52 @@ func (a *api) authenticate(next http.Handler, allowOAuthClient bool) http.Handle
 // loadTokenUser loads a verified token's user, refusing a deleted or banned
 // one, and its session, refusing one that no longer exists, has ended or is
 // another user's.
+// batcher is a querier that can pipeline statements: pgxpool.Pool and pgx.Tx.
+type batcher interface {
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
+// loadTokenUser loads what a request authenticated by an access token needs:
+// the user and their identities, the session the token names and, for GET
+// /user, the user's factors. Every request with a user token does this, so
+// the statements go to Postgres in one round trip (a pgx batch): each is
+// cheap, and the round trips, not the SQL, were most of a session check's
+// cost.
 func (a *api) loadTokenUser(ctx context.Context, q querier, claims *ports.Claims) (*User, *session, error) {
-	u, err := a.loadUserWithIdentities(ctx, q, claims.Subject)
+	sid := sessionIDFrom(claims)
+	sidValid := false
+	if sid != "" {
+		_, err := uuid.Parse(sid)
+		sidValid = err == nil
+	}
+
+	var b pgx.Batch
+	b.Queue(userByIDSQL, claims.Subject)
+	b.Queue(identitiesByUserSQL, claims.Subject)
+	b.Queue(factorsByUserSQL, claims.Subject)
+	if sidValid {
+		b.Queue(sessionByIDSQL, sid)
+	}
+	bq, ok := q.(batcher)
+	if !ok {
+		return nil, nil, internalServerError("Database error loading user").
+			withInternal(errors.New("auth: the querier cannot batch statements"))
+	}
+	br := bq.SendBatch(ctx, &b)
+	defer func() { _ = br.Close() }()
+
+	u, err := scanUser(br.QueryRow())
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
 		}
+		return nil, nil, internalServerError("Database error loading user").withInternal(err)
+	}
+	rows, err := br.Query()
+	if err == nil {
+		u.Identities, err = collectIdentities(rows)
+	}
+	if err != nil {
 		return nil, nil, internalServerError("Database error loading user").withInternal(err)
 	}
 	if u.DeletedAt != nil {
@@ -546,34 +586,33 @@ func (a *api) loadTokenUser(ctx context.Context, q querier, claims *ports.Claims
 	if u.IsBanned(a.now()) {
 		return nil, nil, forbiddenError(ErrorCodeUserBanned, "User is banned")
 	}
-	s, err := a.tokenSession(ctx, q, claims)
-	if err != nil {
-		return nil, nil, err
+	rows, err = br.Query()
+	if err == nil {
+		u.tokenFactors, err = collectFactors(rows)
 	}
-	return u, s, nil
-}
+	if err != nil {
+		return nil, nil, internalServerError("Database error loading factors").withInternal(err)
+	}
 
-// tokenSession loads the session a token names, or nil when it names none.
-func (a *api) tokenSession(ctx context.Context, q querier, claims *ports.Claims) (*session, error) {
-	id := sessionIDFrom(claims)
-	if id == "" {
-		return nil, nil
+	// The session the token names, or nil when it names none.
+	if sid == "" {
+		return u, nil, nil
 	}
 	gone := forbiddenError(ErrorCodeSessionNotFound, "Session from session_id claim in JWT does not exist")
-	if _, err := uuid.Parse(id); err != nil {
-		return nil, gone
+	if !sidValid {
+		return nil, nil, gone
 	}
-	s, err := findSessionByID(ctx, q, id)
+	s, err := scanSession(br.QueryRow())
 	if isNoRows(err) {
-		return nil, gone
+		return nil, nil, gone
 	}
 	if err != nil {
-		return nil, internalServerError("Database error loading session").withInternal(err)
+		return nil, nil, internalServerError("Database error loading session").withInternal(err)
 	}
 	if s.UserID != claims.Subject || (s.NotAfter != nil && !a.now().Before(*s.NotAfter)) {
-		return nil, gone
+		return nil, nil, gone
 	}
-	return s, nil
+	return u, s, nil
 }
 
 // requireAdmin gates the /admin/* endpoints. A `service_role` JWT is admitted
