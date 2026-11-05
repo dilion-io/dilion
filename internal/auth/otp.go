@@ -202,6 +202,7 @@ func (a *api) sendMagicLinkTo(w http.ResponseWriter, r *http.Request, params *Ma
 	created := false
 	var user *User
 
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		user = existing
 		if user == nil {
@@ -231,8 +232,11 @@ func (a *api) sendMagicLinkTo(w http.ResponseWriter, r *http.Request, params *Ma
 		}
 		_, serr := a.sendMagicLink(ctx, tx, r, user, redirectTo, pkce)
 		return serr
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if created {
@@ -241,6 +245,9 @@ func (a *api) sendMagicLinkTo(w http.ResponseWriter, r *http.Request, params *Ma
 			"email":    user.Email,
 			"provider": ProviderEmail,
 		})
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 
 	// Upstream always answers with an empty object, whether or not anything was
@@ -322,9 +329,10 @@ func (a *api) smsOTP(w http.ResponseWriter, r *http.Request, params *OtpParams) 
 
 	now := a.now()
 	created := false
-	messageID := ""
+	var messageID *string
 	var user *User
 
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		user = existing
 		if user == nil {
@@ -350,8 +358,11 @@ func (a *api) smsOTP(w http.ResponseWriter, r *http.Request, params *OtpParams) 
 		}
 		messageID = mID
 		return nil
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if created {
@@ -361,6 +372,9 @@ func (a *api) smsOTP(w http.ResponseWriter, r *http.Request, params *OtpParams) 
 			"phone":    user.Phone,
 			"provider": ProviderPhone,
 		})
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 
 	if isNewUser && !a.cfg.SMS.Autoconfirm {

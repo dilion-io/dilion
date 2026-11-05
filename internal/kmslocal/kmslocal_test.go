@@ -2,6 +2,7 @@ package kmslocal
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"testing"
@@ -157,4 +158,23 @@ func flip(b []byte, i int) []byte {
 	out := bytes.Clone(b)
 	out[i] ^= 0x01
 	return out
+}
+
+// The UUID a pseudo-subject is stored under is not a data subject: erasing a
+// "user" with the UUID of "system" would shred every webhook secret.
+func TestPseudoSubjectUUIDIsReserved(t *testing.T) {
+	reserved := SubjectUUID("system").String()
+	if !ReservedSubject(reserved) {
+		t.Fatalf("%s is not reserved", reserved)
+	}
+	if ReservedSubject("system") || ReservedSubject("11111111-1111-4111-8111-111111111111") {
+		t.Fatal("an ordinary subject is reserved")
+	}
+	k := &KMS{}
+	if err := k.DestroyDEK(context.Background(), reserved, ports.KeyScopeDefault); !errors.Is(err, ErrReservedSubject) {
+		t.Fatalf("DestroyDEK(%s) = %v, want ErrReservedSubject", reserved, err)
+	}
+	if _, err := k.subject("system", ports.KeyScopeDefault); err != nil {
+		t.Fatalf("the pseudo-subject itself is refused: %v", err)
+	}
 }

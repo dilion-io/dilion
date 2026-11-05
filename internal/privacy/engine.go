@@ -32,6 +32,8 @@ import (
 
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/kmslocal"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/ports"
 
 	"github.com/dilion-io/dilion/internal/netguard"
@@ -77,10 +79,20 @@ type EngineDeps struct {
 	// so by default deliveries reach only the public internet
 	// (internal/netguard).
 	OutboundNetworks netguard.Networks
+	// Logger receives the engine's logs, each naming this engine's instance.
+	// nil means slog.Default().
+	Logger *slog.Logger
+	// PollInterval and RetentionInterval pace RunWorkers; zero means
+	// DefaultPollInterval and DefaultRetentionInterval.
+	PollInterval      time.Duration
+	RetentionInterval time.Duration
 }
 
 // Engine implements Service.
 type Engine struct {
+	pollInterval      time.Duration
+	retentionInterval time.Duration
+
 	pool            *pgxpool.Pool
 	kms             ports.KMS
 	hooks           *hooks.Registry
@@ -129,6 +141,10 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	logInstance := d.InstanceID
+	if logInstance == "" {
+		logInstance = ports.DefaultInstanceID
+	}
 	e := &Engine{
 		pool:           d.Pool,
 		kms:            d.KMS,
@@ -141,10 +157,19 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
 		instanceID:     d.InstanceID,
 		http:           &http.Client{Timeout: 15 * time.Second, Transport: netguard.Transport(http.DefaultTransport, d.OutboundNetworks)},
-		log:            slog.Default().With("component", "privacy"),
+		// The engine serves one instance, so it names it once rather than per
+		// call; logctx then leaves the attribute alone.
+		log: logctx.Wrap(d.Logger).With("component", "privacy", logctx.Key, logInstance),
 	}
 	if e.clock == nil {
 		e.clock = ports.SystemClock{}
+	}
+	e.pollInterval, e.retentionInterval = d.PollInterval, d.RetentionInterval
+	if e.pollInterval <= 0 {
+		e.pollInterval = DefaultPollInterval
+	}
+	if e.retentionInterval <= 0 {
+		e.retentionInterval = DefaultRetentionInterval
 	}
 	if e.hooks == nil {
 		e.hooks = hooks.NewRegistry()
@@ -175,6 +200,11 @@ func validUUID(s string) (string, error) {
 	u, err := uuid.Parse(strings.TrimSpace(s))
 	if err != nil {
 		return "", fmt.Errorf("%w: user_id must be a UUID", ErrInvalidInput)
+	}
+	// The local KMS stores systemSubjectID's key under a UUID derived from it;
+	// that UUID is never a data subject (kmslocal.ReservedSubject).
+	if kmslocal.ReservedSubject(u.String()) {
+		return "", fmt.Errorf("%w: user_id is reserved", ErrInvalidInput)
 	}
 	return u.String(), nil
 }

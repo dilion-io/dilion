@@ -190,8 +190,6 @@ func TestOpaqueSignupGuardsAndHooks(t *testing.T) {
 	}
 }
 
-type opaqueFailMailer struct{}
-
 func TestOpaqueSignupBrowserPreflight(t *testing.T) {
 	router := chi.NewRouter()
 	Register(router, Deps{Config: opaqueTestConfig()})
@@ -206,28 +204,55 @@ func TestOpaqueSignupBrowserPreflight(t *testing.T) {
 	}
 }
 
-func (opaqueFailMailer) Send(context.Context, string, string, string, string) error {
-	return errors.New("simulated mail outage")
-}
-
-func TestOpaqueSignupMailFailureRollback(t *testing.T) {
+// The confirmation goes out after the signup commits. When it cannot be sent
+// the request fails but the account stands, with no token left that nobody
+// received, and signing up again sends the confirmation at once.
+func TestOpaqueSignupRetriesAfterMailFailure(t *testing.T) {
 	cfg := opaqueTestConfig()
 	cfg.Mailer.Autoconfirm = false
 	e := newTestEnvWithConfig(t, cfg)
+	mailer := &flakyMailer{fail: true}
 	router := chi.NewRouter()
-	Register(router, Deps{Pool: e.pool, Tokens: e.tokens, Config: cfg, Mailer: opaqueFailMailer{}})
+	Register(router, Deps{Pool: e.pool, Tokens: e.tokens, Config: cfg, Mailer: mailer})
 	e.router = router
+
 	finish, _ := opaquePrepareSignup(t, e, "outage@example.com", "private")
 	if e.do(t, "POST", "/opaque/signup/finish", finish, "").Code != 500 {
 		t.Fatal("mail outage accepted")
 	}
-	var count int
-	if err := e.pool.QueryRow(context.Background(), `select count(*) from auth.users`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("failed mail left account", err)
+	var token string
+	var tokens int
+	if err := e.pool.QueryRow(context.Background(), `select coalesce(u.confirmation_token, ''),
+		(select count(*) from auth.one_time_tokens t where t.user_id = u.id)
+		from auth.users u where u.email = 'outage@example.com'`).Scan(&token, &tokens); err != nil {
+		t.Fatalf("the account did not stand: %v", err)
 	}
-	if err := e.pool.QueryRow(context.Background(), `select count(*) from dilion_auth.opaque_credentials`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("failed mail left credential", err)
+	if token != "" || tokens != 0 {
+		t.Fatalf("an unsent token was left: %q, %d rows", token, tokens)
 	}
+
+	mailer.fail = false
+	finish, _ = opaquePrepareSignup(t, e, "outage@example.com", "private")
+	if code := e.do(t, "POST", "/opaque/signup/finish", finish, "").Code; code != 200 {
+		t.Fatalf("retry = %d, want 200", code)
+	}
+	if len(mailer.sent) != 1 {
+		t.Fatalf("retry sent %d mails, want 1", len(mailer.sent))
+	}
+}
+
+// flakyMailer fails every send while fail is set.
+type flakyMailer struct {
+	fail bool
+	sent []string
+}
+
+func (m *flakyMailer) Send(_ context.Context, to, _, _, _ string) error {
+	if m.fail {
+		return errors.New("simulated mail outage")
+	}
+	m.sent = append(m.sent, to)
+	return nil
 }
 
 func TestOpaqueSignupConcurrentFinish(t *testing.T) {

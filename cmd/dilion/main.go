@@ -25,11 +25,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	dilion "github.com/dilion-io/dilion"
 )
@@ -85,12 +88,49 @@ func run() error {
 	if v := os.Getenv("DILION_OUTBOUND_ALLOWED_NETWORKS"); v != "" {
 		opts = append(opts, dilion.WithOutboundNetworks(v))
 	}
+	// Go durations ("30s", "1h"): see dilion.WithPrivacyWorkerIntervals.
+	var poll, retention time.Duration
+	for name, d := range map[string]*time.Duration{
+		"DILION_PRIVACY_POLL_INTERVAL":      &poll,
+		"DILION_PRIVACY_RETENTION_INTERVAL": &retention,
+	} {
+		if v := os.Getenv(name); v != "" {
+			parsed, err := time.ParseDuration(v)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("%s: want a positive duration such as 30s, got %q", name, v)
+			}
+			*d = parsed
+		}
+	}
+	if poll > 0 || retention > 0 {
+		opts = append(opts, dilion.WithPrivacyWorkerIntervals(poll, retention))
+	}
 	if truthy(os.Getenv("DILION_DEV_NO_ADMIN_MFA")) {
 		opts = append(opts, dilion.WithoutAdminMFA())
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Go's profiler (CPU, heap, goroutines), on a listener of its own and only
+	// when asked for: it reveals internals and costs CPU, so bind it to
+	// loopback ("127.0.0.1:6060") and never expose it. The load test
+	// (test/perf) profiles the server through it.
+	if addr := os.Getenv("DILION_PPROF_ADDR"); addr != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		go func() {
+			srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+			if err := srv.ListenAndServe(); err != nil {
+				slog.Error("dilion: pprof listener stopped", "addr", addr, "error", err)
+			}
+		}()
+		slog.Warn("dilion: profiler enabled; keep it off public interfaces", "addr", addr)
+	}
 
 	srv, err := dilion.NewServer(opts...)
 	if err != nil {

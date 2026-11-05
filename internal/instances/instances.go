@@ -35,6 +35,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -150,6 +151,10 @@ type Config struct {
 	// OutboundNetworks are the private networks every instance's privacy
 	// webhook destinations may reach (netguard).
 	OutboundNetworks netguard.Networks
+	// PollInterval and RetentionInterval pace every instance's privacy
+	// workers (privacy.EngineDeps); zero means the privacy defaults.
+	PollInterval      time.Duration
+	RetentionInterval time.Duration
 }
 
 // Registry resolves instance resources from a context and owns the lazily
@@ -298,16 +303,19 @@ func (r *Registry) buildEngine(ctx context.Context, id string) (*privacy.Engine,
 		return nil, fmt.Errorf("instances: pii fields for instance %q: %w", id, err)
 	}
 	e, err := privacy.NewEngine(privacy.EngineDeps{
-		Pool:             pool,
-		KMS:              kms,
-		Hooks:            r.cfg.Hooks,
-		Clock:            r.cfg.Clock,
-		PolicyYAML:       policy,
-		PIIFieldsYAML:    pii,
-		Connectors:       r.cfg.Connectors,
-		TombstoneKey:     InstanceTombstoneKey(r.cfg.TombstoneKey, id),
-		InstanceID:       id,
-		OutboundNetworks: r.cfg.OutboundNetworks,
+		Pool:              pool,
+		KMS:               kms,
+		Hooks:             r.cfg.Hooks,
+		Clock:             r.cfg.Clock,
+		PolicyYAML:        policy,
+		PIIFieldsYAML:     pii,
+		Connectors:        r.cfg.Connectors,
+		TombstoneKey:      InstanceTombstoneKey(r.cfg.TombstoneKey, id),
+		InstanceID:        id,
+		OutboundNetworks:  r.cfg.OutboundNetworks,
+		Logger:            r.cfg.Logger,
+		PollInterval:      r.cfg.PollInterval,
+		RetentionInterval: r.cfg.RetentionInterval,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)

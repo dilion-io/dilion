@@ -64,6 +64,7 @@ import (
 	"github.com/dilion-io/dilion/internal/iam"
 	"github.com/dilion-io/dilion/internal/instances"
 	"github.com/dilion-io/dilion/internal/kmslocal"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
@@ -133,6 +134,10 @@ type config struct {
 	addr             string
 	clock            ports.Clock
 	log              *slog.Logger
+
+	// privacyPoll and privacyRetention pace the privacy workers
+	// (WithPrivacyWorkerIntervals).
+	privacyPoll, privacyRetention time.Duration
 
 	adminMFADisabled bool
 }
@@ -285,6 +290,16 @@ func WithOutboundNetworks(spec string) Option {
 	return func(c *config) { c.outboundNetworks = spec }
 }
 
+// WithPrivacyWorkerIntervals sets how often every instance's privacy workers
+// poll: poll for the outbox, erasure pipeline, delivery tasks and consent
+// reconfirmation, retention for the retention scanner. Zero keeps a default
+// (privacy.DefaultPollInterval, 30s, and privacy.DefaultRetentionInterval,
+// 1h). Each instance's engine polls on its own in every process, so a short
+// interval multiplies by instances and replicas.
+func WithPrivacyWorkerIntervals(poll, retention time.Duration) Option {
+	return func(c *config) { c.privacyPoll, c.privacyRetention = poll, retention }
+}
+
 // WithAuthSettingsSource sets, per instance, the parts of the /auth/v1
 // configuration that name the instance's application — its site URL and
 // redirect allow list — from embedder code, the way WithProviderSource does
@@ -347,7 +362,9 @@ func WithAddr(addr string) Option { return func(c *config) { c.addr = addr } }
 // WithClock replaces the time source used by the compliance engine (tests).
 func WithClock(cl ports.Clock) Option { return func(c *config) { c.clock = cl } }
 
-// WithLogger sets the base slog logger (default slog.Default()).
+// WithLogger sets the base slog logger (default slog.Default()). Every
+// component logs through it, and records whose context selects an instance
+// (ports.ContextWithInstance) carry it as the "instance" attribute.
 func WithLogger(l *slog.Logger) Option { return func(c *config) { c.log = l } }
 
 // WithoutAdminMFA disables the MFA requirement on the management plane.
@@ -389,10 +406,9 @@ func NewServer(opts ...Option) (*Server, error) {
 			o(&cfg)
 		}
 	}
-	log := cfg.log
-	if log == nil {
-		log = slog.Default()
-	}
+	// Every component logs through this one logger; logctx tags each record
+	// with the instance selected on its context.
+	log := logctx.Wrap(cfg.log)
 	if cfg.clock == nil {
 		cfg.clock = ports.SystemClock{}
 	}
@@ -548,7 +564,9 @@ func NewServer(opts ...Option) (*Server, error) {
 		TombstoneKey: tombstoneKey,
 		Logger:       log,
 		// Privacy webhook destinations reach these private networks.
-		OutboundNetworks: s.outboundNetworks,
+		OutboundNetworks:  s.outboundNetworks,
+		PollInterval:      cfg.privacyPoll,
+		RetentionInterval: cfg.privacyRetention,
 	})
 	if err != nil {
 		s.closeOwnedPool()
@@ -619,6 +637,7 @@ func (s *Server) buildRouter() *chi.Mux {
 			TokensFor: s.instances.Tokens,
 			Mailer:    s.mailer,
 			Hooks:     s.hooks,
+			Logger:    s.log,
 			// Site URL, allow list, rate limits, session policy, ... (§2.2).
 			Config: s.cfg.authConfig,
 			// Lets /auth/v1/admin/* accept a user token carrying `users.admin`
@@ -651,6 +670,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		DeletionReauthWindow: s.cfg.authConfig.Security.DeletionReauthWindow,
 		AdminMFADisabled:     s.cfg.adminMFADisabled,
 		TrustedProxies:       s.trustedProxies,
+		Logger:               s.log,
 	}
 	api.RegisterPrivacyAPI(humaAPI, s.instances.PrivacyService, deps)
 	api.RegisterIAMAPI(humaAPI, deps)
@@ -715,7 +735,7 @@ func (s *Server) MigrateInstance(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
 	}
-	if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool); err != nil {
+	if err := store.Migrate(ports.ContextWithInstance(ctx, id), pool, s.log); err != nil {
 		return fmt.Errorf("dilion: migrate instance %q: %w", id, err)
 	}
 	return nil

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -120,7 +119,7 @@ var installErrorModel = sync.OnceFunc(func() {
 // mapPrivacyError maps the privacy engine's sentinel errors to problem codes
 // (docs/api-conventions.md). Unknown errors become an opaque 500 — engine
 // internals never reach the client.
-func mapPrivacyError(ctx context.Context, err error) error {
+func (d Deps) mapPrivacyError(ctx context.Context, err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -139,13 +138,13 @@ func mapPrivacyError(ctx context.Context, err error) error {
 	case errors.Is(err, privacy.ErrInvalidInput):
 		return NewProblem(http.StatusUnprocessableEntity, httpapi.CodeValidationFailed, err.Error())
 	default:
-		slog.ErrorContext(ctx, "privacy call failed", "error", err)
+		d.log().ErrorContext(ctx, "privacy call failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }
 
 // mapAuditError maps internal/audit read errors to problem codes.
-func mapAuditError(ctx context.Context, err error) error {
+func (d Deps) mapAuditError(ctx context.Context, err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -154,13 +153,13 @@ func mapAuditError(ctx context.Context, err error) error {
 	case errors.Is(err, audit.ErrInvalid):
 		return NewProblem(http.StatusUnprocessableEntity, httpapi.CodeValidationFailed, err.Error())
 	default:
-		slog.ErrorContext(ctx, "audit read failed", "error", err)
+		d.log().ErrorContext(ctx, "audit read failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }
 
 // mapIAMError maps internal/iam sentinel errors to problem codes.
-func mapIAMError(ctx context.Context, err error) error {
+func (d Deps) mapIAMError(ctx context.Context, err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -173,7 +172,7 @@ func mapIAMError(ctx context.Context, err error) error {
 	case errors.Is(err, iam.ErrUnauthenticated):
 		return NewProblem(http.StatusUnauthorized, httpapi.CodeUnauthenticated, "invalid credentials")
 	default:
-		slog.ErrorContext(ctx, "iam call failed", "error", err)
+		d.log().ErrorContext(ctx, "iam call failed", "error", err)
 		return NewProblem(http.StatusInternalServerError, httpapi.CodeInternal, "internal error")
 	}
 }

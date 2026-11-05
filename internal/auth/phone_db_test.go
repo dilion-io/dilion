@@ -414,6 +414,28 @@ func TestPhoneOTPSignsUpAndVerifies(t *testing.T) {
 	}
 }
 
+// A texted code shares confirmation_token with mailed ones, but its link
+// value is redeemed only as the phone type it was sent for: as an email type
+// it would get the mailer's hour instead of the SMS minute, and confirm an
+// email that was never mailed.
+func TestTextedTokenIsNotRedeemedAsAnEmailLink(t *testing.T) {
+	env := newPhoneEnv(t, nil)
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"phone": testPhone}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("/otp = %d %s", rec.Code, rec.Body.String())
+	}
+	var hash string
+	if err := env.pool.QueryRow(t.Context(), `select t.token_hash from auth.one_time_tokens t
+		join auth.users u on u.id = t.user_id where u.phone = $1`, testPhoneE164).Scan(&hash); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	for _, typ := range []string{mailSignup, mailInvite, mailEmailOTP} {
+		rec := env.do(t, http.MethodPost, "/verify", map[string]any{"type": typ, "token_hash": hash}, "")
+		assertAuthError(t, rec, http.StatusForbidden, ErrorCodeOTPExpired)
+	}
+	rec := env.do(t, http.MethodPost, "/verify", map[string]any{"type": smsVerification, "token_hash": hash}, "")
+	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+}
+
 // A second /otp to an ESTABLISHED account reports the provider message id.
 func TestPhoneOTPToEstablishedAccountReportsMessageID(t *testing.T) {
 	env := newPhoneEnv(t, nil)
@@ -765,9 +787,11 @@ func TestPhoneReauthenticationRequiresAConfirmedNumber(t *testing.T) {
 
 // ---- provider failures -----------------------------------------------------
 
-// A provider that rejects the message fails the request with upstream's 422 and
-// leaves NO account behind — the send happens inside the signup transaction.
-func TestPhoneSignupRollsBackWhenTheProviderFails(t *testing.T) {
+// A provider that rejects the message fails the request with upstream's 422.
+// The text goes out after the signup commits, so the account stands, but with
+// no code left that nobody received and no send time to wait out: signing up
+// again texts a code at once.
+func TestPhoneSignupCanRetryAfterTheProviderFails(t *testing.T) {
 	env := newPhoneEnv(t, nil)
 	env.sms.err = errSendFailed
 
@@ -776,14 +800,25 @@ func TestPhoneSignupRollsBackWhenTheProviderFails(t *testing.T) {
 	if body := phoneErrorBody(t, rec, http.StatusUnprocessableEntity); body.ErrorCode != ErrorCodeSMSSendFailed {
 		t.Errorf("error_code = %q, want %q", body.ErrorCode, ErrorCodeSMSSendFailed)
 	}
-
-	var n int64
+	var token string
+	var sentAt *time.Time
 	if err := env.pool.QueryRow(context.Background(),
-		`select count(*) from auth.users where phone = $1`, testPhoneE164).Scan(&n); err != nil {
-		t.Fatalf("count users: %v", err)
+		`select coalesce(confirmation_token, ''), confirmation_sent_at from auth.users where phone = $1`,
+		testPhoneE164).Scan(&token, &sentAt); err != nil {
+		t.Fatalf("the account did not stand: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("%d users left behind after a failed send, want 0", n)
+	if token != "" || sentAt != nil {
+		t.Errorf("an unsent code was left: token %q, sent at %v", token, sentAt)
+	}
+
+	env.sms.err = nil
+	rec = env.do(t, http.MethodPost, "/signup",
+		map[string]any{"phone": testPhone, "password": testPassword}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry = %d %s", rec.Code, rec.Body.String())
+	}
+	if msgs := env.sms.to(testPhone); len(msgs) != 1 {
+		t.Fatalf("retry texted %d codes, want 1", len(msgs))
 	}
 }
 

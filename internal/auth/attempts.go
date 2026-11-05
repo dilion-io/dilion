@@ -73,13 +73,16 @@ func (a *api) throttled(ctx context.Context, kind, account string, check func() 
 	if err != nil && !isNoRows(err) {
 		return internalServerError("Database error checking attempts").withInternal(err)
 	}
-	if err == nil && now.Before(start.Add(attemptWindow)) && failures >= attemptLimits[kind] {
+	recorded := err == nil
+	if recorded && now.Before(start.Add(attemptWindow)) && failures >= attemptLimits[kind] {
 		return tooManyRequestsError("Too many failed attempts, try again later")
 	}
 
 	cerr := check()
 	var he *HTTPError
 	switch {
+	case cerr == nil && !recorded:
+		// Nothing to clear: most successes follow no failure.
 	case cerr == nil:
 		if _, err := pool.Exec(ctx, `delete from dilion_auth.auth_attempts where account = $1`, key); err != nil {
 			a.log.WarnContext(ctx, "auth: clearing attempts failed", "error", err.Error())

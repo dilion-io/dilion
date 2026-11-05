@@ -10,10 +10,15 @@ package auth
 //
 //   - the token a user sees is an OTP: `Mailer.OTPLength` decimal digits,
 //     zero-padded, drawn from crypto/rand (crypto.GenerateOtp);
-//   - what is STORED is never the OTP but the hash
-//     `sha224_hex(emailOrPhone + otp)` (crypto.GenerateTokenHash). The hash is
-//     also what the emailed link carries as its `token` / `token_hash`
-//     parameter, so a link click and a typed OTP converge on the same value;
+//   - what is STORED is never the OTP but a hash of it, and that hash is also
+//     what the emailed link carries as its `token` / `token_hash` parameter.
+//     Upstream stores `sha224_hex(emailOrPhone + otp)` (crypto.GenerateTokenHash);
+//     Dilion leads it with a random salt, `salt + sha224_hex(salt + emailOrPhone
+//     + otp)` (newTokenHash). Unsalted, the link value is a function of a
+//     six-digit code and a known address, so anyone could compute every
+//     candidate link and try them at /verify {token_hash} without ever hitting
+//     the per-account limit on typed codes. A typed OTP recomputes the hash
+//     with the salt read from the stored value (tokenHashMatches);
 //   - a PKCE flow prefixes the stored hash with "pkce_" (api/pkce.go
 //     addFlowPrefixToToken) so /verify can tell the two flows apart from the
 //     token alone.
@@ -45,6 +50,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
@@ -103,6 +110,39 @@ func generateOTP(digits int) (string, error) {
 // replayed against another.
 func generateTokenHash(emailOrPhone, otp string) string {
 	return fmt.Sprintf("%x", sha256.Sum224([]byte(emailOrPhone+otp)))
+}
+
+// tokenSaltHexLen is the length of the hex salt that leads a stored token hash.
+const tokenSaltHexLen = 32
+
+// newTokenHash returns what is stored for a fresh one-time token, and mailed
+// as its link: 128 random bits of salt, hex, followed by
+// sha224_hex(salt + recipient + otp). The salt makes the link value
+// unguessable; the recipient still binds the token to its address.
+func newTokenHash(recipient, otp string) (string, error) {
+	var b [tokenSaltHexLen / 2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	salt := hex.EncodeToString(b[:])
+	return salt + generateTokenHash(salt+recipient, otp), nil
+}
+
+// tokenHashMatches reports whether otp, sent to recipient, is the token stored
+// as stored, which may carry the PKCE prefix. A bare upstream-style hash, as
+// written before tokens were salted, still matches.
+func tokenHashMatches(stored, recipient, otp string) bool {
+	h := strings.TrimPrefix(stored, pkcePrefix)
+	var want string
+	switch len(h) {
+	case tokenSaltHexLen + 2*sha256.Size224:
+		want = h[:tokenSaltHexLen] + generateTokenHash(h[:tokenSaltHexLen]+recipient, otp)
+	case 2 * sha256.Size224:
+		want = generateTokenHash(recipient, otp)
+	default:
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1
 }
 
 // addFlowPrefix stamps a token hash with the flow it belongs to. Only the PKCE
@@ -240,15 +280,15 @@ func (a *api) isOTPExpired(sentAt *time.Time) bool {
 	return a.now().After(sentAt.Add(a.cfg.Mailer.OTPExpDuration()))
 }
 
-// isOTPValid is upstream's isOtpValid: the presented hash must equal the stored
-// one — tolerating the "pkce_" prefix on the stored side — and must still be
-// inside the expiry window.
-func (a *api) isOTPValid(actual, expected string, sentAt *time.Time) bool {
-	if expected == "" || sentAt == nil {
+// isOTPValid is upstream's isOtpValid: otp, sent to recipient, must be the
+// token stored (tokenHashMatches, PKCE prefix tolerated) and still inside the
+// expiry window.
+func (a *api) isOTPValid(stored, recipient, otp string, sentAt *time.Time) bool {
+	if stored == "" || sentAt == nil {
 		return false
 	}
 	if a.isOTPExpired(sentAt) {
 		return false
 	}
-	return actual == expected || pkcePrefix+actual == expected
+	return tokenHashMatches(stored, recipient, otp)
 }

@@ -71,7 +71,7 @@ compliance:
           basis: "test basis: hipaa audit log"
         - domain: consent-evidence
           period: P6Y
-          from: created
+          from: erasure
           action: CRYPTO_SHRED
           basis: "test basis: hipaa consent evidence"
       consent:

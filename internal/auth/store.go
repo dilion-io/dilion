@@ -103,9 +103,10 @@ func ptr[T any](v T) *T { return &v }
 
 // ---- users ----------------------------------------------------------------
 
+const userByIDSQL = `select ` + userColumns + ` from auth.users where id = $1::uuid`
+
 func findUserByID(ctx context.Context, q querier, id string) (*User, error) {
-	return scanUser(q.QueryRow(ctx,
-		`select `+userColumns+` from auth.users where id = $1::uuid`, id))
+	return scanUser(q.QueryRow(ctx, userByIDSQL, id))
 }
 
 // findUserByEmail mirrors gotrue's FindUserByEmailAndAudience: SSO users are
@@ -340,14 +341,18 @@ func scanIdentity(row pgx.Row) (Identity, error) {
 	return i, nil
 }
 
+const identitiesByUserSQL = `select ` + identityColumns + ` from auth.identities where user_id = $1::uuid order by created_at`
+
 func findIdentitiesByUserID(ctx context.Context, q querier, userID string) ([]Identity, error) {
-	rows, err := q.Query(ctx,
-		`select `+identityColumns+` from auth.identities where user_id = $1::uuid order by created_at`, userID)
+	rows, err := q.Query(ctx, identitiesByUserSQL, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return collectIdentities(rows)
+}
 
+func collectIdentities(rows pgx.Rows) ([]Identity, error) {
+	defer rows.Close()
 	out := []Identity{}
 	for rows.Next() {
 		i, err := scanIdentity(rows)
@@ -384,13 +389,17 @@ func insertSession(ctx context.Context, q querier, id, userID, userAgent string,
 	return err
 }
 
+const sessionByIDSQL = `select id::text, user_id::text, not_after, created_at, refreshed_at, oauth_client_id::text
+	from auth.sessions where id = $1::uuid`
+
 func findSessionByID(ctx context.Context, q querier, id string) (*session, error) {
+	return scanSession(q.QueryRow(ctx, sessionByIDSQL, id))
+}
+
+func scanSession(row pgx.Row) (*session, error) {
 	var s session
 	var createdAt *time.Time
-	err := q.QueryRow(ctx,
-		`select id::text, user_id::text, not_after, created_at, refreshed_at, oauth_client_id::text
-		 from auth.sessions where id = $1::uuid`, id).
-		Scan(&s.ID, &s.UserID, &s.NotAfter, &createdAt, &s.RefreshedAt, &s.OAuthClientID)
+	err := row.Scan(&s.ID, &s.UserID, &s.NotAfter, &createdAt, &s.RefreshedAt, &s.OAuthClientID)
 	if err != nil {
 		return nil, err
 	}

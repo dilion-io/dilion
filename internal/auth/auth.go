@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/hooks"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/ports"
 )
@@ -200,16 +201,14 @@ func newAPI(d Deps) *api {
 		hooks:  d.Hooks,
 		authz:  d.Authz,
 		audit:  d.Audit,
-		log:    d.Logger,
+		// Tags every record with the instance on its context (logctx).
+		log: logctx.Wrap(d.Logger),
 
 		providers:        d.Providers,
 		oauthClients:     d.OAuthClients,
 		siteSource:       d.Settings,
 		adminMFADisabled: d.AdminMFADisabled,
 		clock:            d.Clock,
-	}
-	if a.log == nil {
-		a.log = slog.Default()
 	}
 	if a.clock == nil {
 		a.clock = ports.SystemClock{}
@@ -533,12 +532,52 @@ func (a *api) authenticate(next http.Handler, allowOAuthClient bool) http.Handle
 // loadTokenUser loads a verified token's user, refusing a deleted or banned
 // one, and its session, refusing one that no longer exists, has ended or is
 // another user's.
+// batcher is a querier that can pipeline statements: pgxpool.Pool and pgx.Tx.
+type batcher interface {
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
+// loadTokenUser loads what a request authenticated by an access token needs:
+// the user and their identities, the session the token names and, for GET
+// /user, the user's factors. Every request with a user token does this, so
+// the statements go to Postgres in one round trip (a pgx batch): each is
+// cheap, and the round trips, not the SQL, were most of a session check's
+// cost.
 func (a *api) loadTokenUser(ctx context.Context, q querier, claims *ports.Claims) (*User, *session, error) {
-	u, err := a.loadUserWithIdentities(ctx, q, claims.Subject)
+	sid := sessionIDFrom(claims)
+	sidValid := false
+	if sid != "" {
+		_, err := uuid.Parse(sid)
+		sidValid = err == nil
+	}
+
+	var b pgx.Batch
+	b.Queue(userByIDSQL, claims.Subject)
+	b.Queue(identitiesByUserSQL, claims.Subject)
+	b.Queue(factorsByUserSQL, claims.Subject)
+	if sidValid {
+		b.Queue(sessionByIDSQL, sid)
+	}
+	bq, ok := q.(batcher)
+	if !ok {
+		return nil, nil, internalServerError("Database error loading user").
+			withInternal(errors.New("auth: the querier cannot batch statements"))
+	}
+	br := bq.SendBatch(ctx, &b)
+	defer func() { _ = br.Close() }()
+
+	u, err := scanUser(br.QueryRow())
 	if err != nil {
 		if isNoRows(err) {
 			return nil, nil, forbiddenError(ErrorCodeUserNotFound, "User from sub claim in JWT does not exist")
 		}
+		return nil, nil, internalServerError("Database error loading user").withInternal(err)
+	}
+	rows, err := br.Query()
+	if err == nil {
+		u.Identities, err = collectIdentities(rows)
+	}
+	if err != nil {
 		return nil, nil, internalServerError("Database error loading user").withInternal(err)
 	}
 	if u.DeletedAt != nil {
@@ -547,34 +586,33 @@ func (a *api) loadTokenUser(ctx context.Context, q querier, claims *ports.Claims
 	if u.IsBanned(a.now()) {
 		return nil, nil, forbiddenError(ErrorCodeUserBanned, "User is banned")
 	}
-	s, err := a.tokenSession(ctx, q, claims)
-	if err != nil {
-		return nil, nil, err
+	rows, err = br.Query()
+	if err == nil {
+		u.tokenFactors, err = collectFactors(rows)
 	}
-	return u, s, nil
-}
+	if err != nil {
+		return nil, nil, internalServerError("Database error loading factors").withInternal(err)
+	}
 
-// tokenSession loads the session a token names, or nil when it names none.
-func (a *api) tokenSession(ctx context.Context, q querier, claims *ports.Claims) (*session, error) {
-	id := sessionIDFrom(claims)
-	if id == "" {
-		return nil, nil
+	// The session the token names, or nil when it names none.
+	if sid == "" {
+		return u, nil, nil
 	}
 	gone := forbiddenError(ErrorCodeSessionNotFound, "Session from session_id claim in JWT does not exist")
-	if _, err := uuid.Parse(id); err != nil {
-		return nil, gone
+	if !sidValid {
+		return nil, nil, gone
 	}
-	s, err := findSessionByID(ctx, q, id)
+	s, err := scanSession(br.QueryRow())
 	if isNoRows(err) {
-		return nil, gone
+		return nil, nil, gone
 	}
 	if err != nil {
-		return nil, internalServerError("Database error loading session").withInternal(err)
+		return nil, nil, internalServerError("Database error loading session").withInternal(err)
 	}
 	if s.UserID != claims.Subject || (s.NotAfter != nil && !a.now().Before(*s.NotAfter)) {
-		return nil, gone
+		return nil, nil, gone
 	}
-	return s, nil
+	return u, s, nil
 }
 
 // requireAdmin gates the /admin/* endpoints. A `service_role` JWT is admitted
@@ -811,7 +849,11 @@ func (a *api) notify(ctx context.Context, to, subject, body string) {
 // session", which is the right answer for a refresh (no new authentication
 // happened, so the session's newest AMR claim still describes how it was
 // established).
-func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID, authMethod string) (string, time.Time, error) {
+//
+// amrClaims are the session's AMR claims when the caller already knows them
+// (a session created this moment has exactly the one it was signed in with);
+// nil reads them.
+func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionID, authMethod string, amrClaims []amrClaim) (string, time.Time, error) {
 	ts, terr := a.tokensFor(ctx)
 	if terr != nil {
 		return "", time.Time{}, terr
@@ -826,9 +868,11 @@ func (a *api) issueAccessToken(ctx context.Context, q querier, u *User, sessionI
 		"is_anonymous":  u.IsAnonymous,
 	}
 	if sessionID != "" {
-		amrClaims, cerr := findAMRClaims(ctx, q, sessionID)
-		if cerr != nil {
-			return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
+		if amrClaims == nil {
+			var cerr error
+			if amrClaims, cerr = findAMRClaims(ctx, q, sessionID); cerr != nil {
+				return "", time.Time{}, internalServerError("Database error loading AMR claims").withInternal(cerr)
+			}
 		}
 		aal, amr := computeAAL(amrClaims)
 		extra["session_id"] = sessionID
@@ -1001,7 +1045,12 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 	u.LastSignInAt = &now
 	u.UpdatedAt = now
 
-	return a.buildSessionResponse(ctx, tx, u, sessionID, refresh, amrMethod)
+	// The session has exactly the claim written above: no need to read it back.
+	var claims []amrClaim
+	if amrMethod != "" {
+		claims = []amrClaim{{SessionID: sessionID, Method: amrMethod, CreatedAt: now, UpdatedAt: now}}
+	}
+	return a.sessionResponse(ctx, tx, u, sessionID, refresh, amrMethod, claims)
 }
 
 // buildSessionResponse renders the gotrue session envelope for an EXISTING
@@ -1010,7 +1059,13 @@ func (a *api) grantSession(ctx context.Context, tx querier, u *User, r *http.Req
 // visible to the token being signed. authMethod is passed to the token hooks;
 // "" means "derive it from the session", which is what a refresh wants.
 func (a *api) buildSessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh, authMethod string) (*AccessTokenResponse, error) {
-	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID, authMethod)
+	return a.sessionResponse(ctx, q, u, sessionID, refresh, authMethod, nil)
+}
+
+// sessionResponse is buildSessionResponse with the session's AMR claims when
+// the caller knows them (nil: read them).
+func (a *api) sessionResponse(ctx context.Context, q querier, u *User, sessionID, refresh, authMethod string, amrClaims []amrClaim) (*AccessTokenResponse, error) {
+	accessToken, expiresAt, err := a.issueAccessToken(ctx, q, u, sessionID, authMethod, amrClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,6 +1099,12 @@ func commitAndFail(err error) error { return &commitWithError{err: err} }
 // inTx runs fn in a transaction, rolling back on error — unless fn returns a
 // commitWithError, in which case the work is committed and the wrapped error
 // is returned.
+//
+// Mail and SMS that fn queues (queueDelivery) go out after the commit, so no
+// request holds a pool connection, or the row locks of its writes, for the
+// length of an SMTP or SMS provider call. A failed delivery is returned as a
+// *deliveryError: the transaction's changes stand, only the message did not
+// go out (see deliverPending).
 func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	pool, err := a.db(ctx)
 	if err != nil {
@@ -1055,11 +1116,15 @@ func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := fn(tx); err != nil {
+	dtx := &deliveryTx{Tx: tx}
+	if err := fn(dtx); err != nil {
 		var cwe *commitWithError
 		if errors.As(err, &cwe) {
 			if cerr := tx.Commit(ctx); cerr != nil {
 				return internalServerError("Database error committing transaction").withInternal(cerr)
+			}
+			if derr := a.deliverPending(ctx, dtx.pending); derr != nil {
+				return derr
 			}
 			return cwe.err
 		}
@@ -1068,7 +1133,89 @@ func (a *api) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	if err := tx.Commit(ctx); err != nil {
 		return internalServerError("Database error committing transaction").withInternal(err)
 	}
+	return a.deliverPending(ctx, dtx.pending)
+}
+
+// deliveryTx is the transaction inTx hands to fn: it collects the messages
+// queued while it is open.
+type deliveryTx struct {
+	pgx.Tx
+	pending []delivery
+}
+
+// delivery is one queued message. send delivers it; q is nil once the
+// transaction is gone, so a send hook reads its setting and runs on the pool.
+// discard takes back what the message carried — its token and the send time
+// that would make the user wait before asking again.
+type delivery struct {
+	send    func(ctx context.Context, q querier) error
+	discard func(ctx context.Context, q querier) error
+}
+
+// queueDelivery sends d once the inTx transaction q has committed. Outside
+// one (q is the pool, or a transaction of the caller's own) it sends now, so
+// a failure still undoes the caller's writes.
+func (a *api) queueDelivery(ctx context.Context, q querier, d delivery) error {
+	if t, ok := q.(*deliveryTx); ok {
+		t.pending = append(t.pending, d)
+		return nil
+	}
+	return d.send(ctx, q)
+}
+
+// deliveryError is a message that could not be sent after its transaction
+// committed. The request fails with err, but what the transaction wrote
+// stands: a handler still runs its post-commit observers (deliveryFailed).
+type deliveryError struct{ err error }
+
+func (e *deliveryError) Error() string { return e.err.Error() }
+func (e *deliveryError) Unwrap() error { return e.err }
+
+// deliveryFailed reports whether err is a *deliveryError.
+func deliveryFailed(err error) bool {
+	var d *deliveryError
+	return errors.As(err, &d)
+}
+
+// deliverPending sends the queued messages in order. When one fails, it and
+// every message after it are discarded, so no token is left that nobody
+// received and the user can ask again at once: a repeated request sends a
+// fresh one, as upstream's rolled-back send would let it.
+func (a *api) deliverPending(ctx context.Context, pending []delivery) error {
+	for i, d := range pending {
+		err := d.send(ctx, nil)
+		if err == nil {
+			continue
+		}
+		cleanup := context.WithoutCancel(ctx)
+		pool, perr := a.db(cleanup)
+		for _, rest := range pending[i:] {
+			if rest.discard == nil || perr != nil {
+				continue
+			}
+			if derr := rest.discard(cleanup, pool); derr != nil {
+				a.log.ErrorContext(ctx, "auth: discarding an undelivered token failed", "error", derr.Error())
+			}
+		}
+		return &deliveryError{err: err}
+	}
 	return nil
+}
+
+// discardToken is the discard of a message that carried the one-time token
+// hash, stored in tokenColumn (sent at sentColumn) and as tokenType. It clears
+// only that token: a newer one issued meanwhile is left alone.
+func discardToken(userID, tokenColumn, sentColumn, tokenType, hash string) func(context.Context, querier) error {
+	return func(ctx context.Context, q querier) error {
+		// The column names are this package's constants, never request input.
+		if _, err := q.Exec(ctx, `update auth.users set `+tokenColumn+` = '', `+sentColumn+` = null
+			where id = $1::uuid and `+tokenColumn+` = $2`, userID, hash); err != nil {
+			return err
+		}
+		_, err := q.Exec(ctx, `delete from auth.one_time_tokens
+			where user_id = $1::uuid and token_type::text = $2 and token_hash = $3`, userID, tokenType, hash)
+		return err
+	}
 }
 
 // ---- per-request token service ---------------------------------------------

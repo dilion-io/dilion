@@ -108,7 +108,7 @@ func (r *registrar) registerAudit() {
 				To:        optionalTime(in.To),
 			}, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapAuditError(ctx, err)
+				return nil, r.d.mapAuditError(ctx, err)
 			}
 			return &auditEventPageOutput{Body: AuditEventPage{
 				Items: mapItems(page.Items, toAuditEvent), NextCursor: page.NextCursor,
@@ -123,7 +123,7 @@ func (r *registrar) registerAudit() {
 		func(ctx context.Context, in *getAuditEventInput) (*auditEventOutput, error) {
 			ev, err := r.events.GetEvent(ctx, in.EventID)
 			if err != nil {
-				return nil, mapAuditError(ctx, err)
+				return nil, r.d.mapAuditError(ctx, err)
 			}
 			return &auditEventOutput{Body: toAuditEvent(*ev)}, nil
 		})

@@ -41,7 +41,7 @@ func seedSession(t *testing.T, pool *pgxpool.Pool, user, method string, ago time
 func TestMeDeletionNeedsAssuredSession(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	if err := store.Migrate(ctx, pool); err != nil {
+	if err := store.Migrate(ctx, pool, nil); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	plain, withMFA := uuid.NewString(), uuid.NewString()

@@ -180,6 +180,7 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 		session     *AccessTokenResponse
 		createdUser bool
 	)
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		var terr error
 		if fs.LinkingTargetID != nil {
@@ -221,8 +222,11 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 			return internalServerError("Error consuming flow state").withInternal(derr)
 		}
 		return nil
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if createdUser {
@@ -231,6 +235,9 @@ func (a *api) finishExternalCallback(w http.ResponseWriter, r *http.Request, fs 
 			"email":    user.Email,
 			"provider": fs.ProviderType,
 		})
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 
 	if fs.IsPKCE() {
@@ -276,7 +283,8 @@ type accountLinkingResult struct {
 
 // determineAccountLinking is upstream's models.DetermineAccountLinking, reduced
 // to the single "default" linking domain (Dilion exposes no
-// GOTRUE_EXPERIMENTAL_PROVIDER_LINKING_DOMAINS and no SSO providers yet):
+// GOTRUE_EXPERIMENTAL_PROVIDER_LINKING_DOMAINS; SSO identities and users are
+// outside it, see findIdentitiesByEmails and findUsersByEmails):
 //
 //	identity (provider, sub) exists                 -> AccountExists   (sign in)
 //	no verified email                               -> CreateAccount   (never link on an unverified address)

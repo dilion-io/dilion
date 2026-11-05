@@ -93,6 +93,7 @@ func (a *api) invite(w http.ResponseWriter, r *http.Request) error {
 	created := false
 	var user *User
 
+	var sendErr error
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
 		user = existing
 		if user == nil {
@@ -112,8 +113,11 @@ func (a *api) invite(w http.ResponseWriter, r *http.Request) error {
 		}
 		user = refreshed
 		return nil
-	}); err != nil {
+	}); err != nil && !deliveryFailed(err) {
 		return err
+	} else {
+		// Only the message failed; what was written stands.
+		sendErr = err
 	}
 
 	if created {
@@ -130,6 +134,9 @@ func (a *api) invite(w http.ResponseWriter, r *http.Request) error {
 			AccessLevel: audit.AccessNA,
 			SubjectIDs:  []string{user.ID},
 		})
+	}
+	if sendErr != nil {
+		return sendErr
 	}
 
 	return sendJSON(w, http.StatusOK, user)

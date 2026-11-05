@@ -557,15 +557,18 @@ func findFactorByID(ctx context.Context, q querier, id string) (*Factor, error) 
 
 // findFactorsByUserID is upstream's `db.Load(user, "Factors")`, ordered the way
 // the (user_id, created_at) index serves it.
+const factorsByUserSQL = `select ` + factorColumns + ` from auth.mfa_factors where user_id = $1::uuid order by created_at asc`
+
 func findFactorsByUserID(ctx context.Context, q querier, userID string) ([]*Factor, error) {
-	rows, err := q.Query(ctx,
-		`select `+factorColumns+` from auth.mfa_factors where user_id = $1::uuid order by created_at asc`,
-		userID)
+	rows, err := q.Query(ctx, factorsByUserSQL, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return collectFactors(rows)
+}
 
+func collectFactors(rows pgx.Rows) ([]*Factor, error) {
+	defer rows.Close()
 	out := []*Factor{}
 	for rows.Next() {
 		f, err := scanFactor(rows)
@@ -806,9 +809,12 @@ func (a *api) loadFactors(ctx context.Context, q querier, u *User) error {
 	if u == nil {
 		return nil
 	}
-	factors, err := findFactorsByUserID(ctx, q, u.ID)
-	if err != nil {
-		return err
+	factors := u.tokenFactors
+	if factors == nil {
+		var err error
+		if factors, err = findFactorsByUserID(ctx, q, u.ID); err != nil {
+			return err
+		}
 	}
 	u.Factors = make([]any, 0, len(factors))
 	for _, f := range factors {

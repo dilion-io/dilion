@@ -16,8 +16,10 @@ func (e *Engine) runRetentionOnce(ctx context.Context) error {
 	batch := e.policies.RetentionBatchSize
 	now := e.now()
 
-	// consent-evidence / from: erasure — the pipeline snapshotted shred_after,
-	// so this sweep is policy-independent.
+	// consent-evidence is always `from: erasure` (policy validation): the
+	// pipeline snapshotted shred_after when it erased the subject, so this
+	// sweep is policy-independent, and a subject that was never erased keeps
+	// its evidence.
 	if err := e.sweepConsentShredDue(ctx, now, batch); err != nil {
 		return err
 	}
@@ -36,16 +38,7 @@ func (e *Engine) runRetentionOnce(ctx context.Context) error {
 			}
 			switch rule.Domain {
 			case DomainConsentEvidence:
-				if rule.From != FromCreated {
-					continue // handled by the shred_after sweep
-				}
-				d, err := ParseISODuration(rule.Period)
-				if err != nil {
-					return err
-				}
-				if err := e.sweepConsentFromCreated(ctx, id, d, now, batch); err != nil {
-					return err
-				}
+				// Handled by the shred_after sweep above.
 			case DomainAuditLog:
 				// The access log is the instance's, not one policy's: it is
 				// swept once below, by the longest period any policy keeps it.
@@ -136,47 +129,6 @@ func (e *Engine) sweepConsentShredDue(ctx context.Context, now time.Time, batch 
 		return fmt.Errorf("privacy: consent shred sweep: %w", err)
 	}
 	return e.shredConsentKeys(ctx, users, "shred_after")
-}
-
-// sweepConsentFromCreated shreds consent evidence whose newest ledger entry is
-// older than the policy period. The newest entry is used so that in-retention
-// evidence is never destroyed by a subject-scoped key shred.
-func (e *Engine) sweepConsentFromCreated(ctx context.Context, policyID string, d Duration, now time.Time, batch int) error {
-	cutoff := d.SubFrom(now)
-	const q = `select ce.user_id::text
-		from dilion_privacy.consent_events ce
-		join dilion_pii.subject_keys k
-			on k.user_id = ce.user_id and k.scope = 'CONSENT' and k.shredded_at is null
-		left join dilion_privacy.subject_policies sp on sp.user_id = ce.user_id
-		where coalesce(sp.policy_id, $1) = $2
-		  and not exists (
-			select 1 from dilion_privacy.legal_holds h
-			where h.user_id = ce.user_id and h.released_at is null
-			  and (h.domain is null or h.domain = $3)
-		  )
-		group by ce.user_id
-		having max(ce.created_at) <= $4
-		order by ce.user_id
-		limit $5`
-	rows, err := e.pool.Query(ctx, q, e.policies.DefaultPolicy, policyID,
-		DomainConsentEvidence, cutoff, batch)
-	if err != nil {
-		return fmt.Errorf("privacy: consent retention sweep: %w", err)
-	}
-	var users []string
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			rows.Close()
-			return fmt.Errorf("privacy: consent retention sweep: %w", err)
-		}
-		users = append(users, u)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("privacy: consent retention sweep: %w", err)
-	}
-	return e.shredConsentKeys(ctx, users, "policy:"+policyID)
 }
 
 func (e *Engine) shredConsentKeys(ctx context.Context, users []string, reason string) error {

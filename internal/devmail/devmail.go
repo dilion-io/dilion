@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/ports"
 )
 
@@ -56,11 +57,9 @@ func (s *SMS) Send(ctx context.Context, to, body string) error {
 	return nil
 }
 
+// logger tags records with the instance on their context (logctx).
 func logger(l *slog.Logger, component string) *slog.Logger {
-	if l == nil {
-		l = slog.Default()
-	}
-	return l.With("component", component)
+	return logctx.Wrap(l).With("component", component)
 }
 
 // MaskEmail renders an address as "j***@example.com".

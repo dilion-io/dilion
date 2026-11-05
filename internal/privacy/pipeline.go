@@ -320,7 +320,7 @@ func (e *Engine) stepRefreshToken(ctx context.Context, rc *runCtx, _ ErasureActi
 	if !e.tableExists(ctx, "auth.refresh_tokens") {
 		return e.skipMissing("auth.refresh_tokens")
 	}
-	tag, err := e.pool.Exec(ctx, `delete from auth.refresh_tokens where user_id::text = $1`, rc.UserID)
+	tag, err := e.pool.Exec(ctx, `delete from auth.refresh_tokens where user_id = $1`, rc.UserID)
 	if err != nil {
 		return "", false, err
 	}
@@ -333,7 +333,7 @@ func (e *Engine) stepSession(ctx context.Context, rc *runCtx, _ ErasureAction) (
 	if !e.tableExists(ctx, "auth.sessions") {
 		return e.skipMissing("auth.sessions")
 	}
-	tag, err := e.pool.Exec(ctx, `delete from auth.sessions where user_id::text = $1`, rc.UserID)
+	tag, err := e.pool.Exec(ctx, `delete from auth.sessions where user_id = $1::uuid`, rc.UserID)
 	if err != nil {
 		return "", false, err
 	}
@@ -353,7 +353,7 @@ func (e *Engine) stepMFAFactor(ctx context.Context, rc *runCtx, _ ErasureAction)
 	if !e.tableExists(ctx, "auth.mfa_factors") {
 		return e.skipMissing("auth.mfa_factors")
 	}
-	tag, err := e.pool.Exec(ctx, `delete from auth.mfa_factors where user_id::text = $1`, rc.UserID)
+	tag, err := e.pool.Exec(ctx, `delete from auth.mfa_factors where user_id = $1::uuid`, rc.UserID)
 	if err != nil {
 		return "", false, err
 	}
@@ -366,7 +366,7 @@ func (e *Engine) stepPasskey(ctx context.Context, rc *runCtx, _ ErasureAction) (
 		return e.skipMissing("auth.webauthn_credentials")
 	}
 	tag, err := e.pool.Exec(ctx,
-		`delete from auth.webauthn_credentials where user_id::text = $1`, rc.UserID)
+		`delete from auth.webauthn_credentials where user_id = $1::uuid`, rc.UserID)
 	if err != nil {
 		return "", false, err
 	}
@@ -380,7 +380,7 @@ func (e *Engine) stepOAuthIdentity(ctx context.Context, rc *runCtx, action Erasu
 		return e.skipMissing("auth.identities")
 	}
 	if action == ActionDelete {
-		tag, err := e.pool.Exec(ctx, `delete from auth.identities where user_id::text = $1`, rc.UserID)
+		tag, err := e.pool.Exec(ctx, `delete from auth.identities where user_id = $1::uuid`, rc.UserID)
 		if err != nil {
 			return "", false, err
 		}
@@ -396,7 +396,7 @@ func (e *Engine) stepOAuthIdentity(ctx context.Context, rc *runCtx, action Erasu
 		    provider_id = translate(rtrim(encode(sha256(convert_to(
 		        user_id::text || provider || ':' || provider_id, 'UTF8')), 'base64'), '='), '+/', '-_'),
 		    updated_at = $2
-		where user_id::text = $1`, rc.UserID, e.now())
+		where user_id = $1::uuid`, rc.UserID, e.now())
 	if err != nil {
 		return "", false, err
 	}
@@ -503,15 +503,12 @@ func (e *Engine) stepSubjectKey(ctx context.Context, rc *runCtx, _ ErasureAction
 		}
 	}
 
+	// consent-evidence is always `from: erasure` (policy validation).
 	var fromErasure *RetentionRule
-	var fromCreated *RetentionRule
 	for _, r := range rc.Policy.RetentionFor(DomainConsentEvidence) {
 		rule := r
-		switch rule.From {
-		case FromErasure:
+		if rule.From == FromErasure {
 			fromErasure = &rule
-		case FromCreated:
-			fromCreated = &rule
 		}
 	}
 	switch {
@@ -527,9 +524,6 @@ func (e *Engine) stepSubjectKey(ctx context.Context, rc *runCtx, _ ErasureAction
 			return "", false, err
 		}
 		return fmt.Sprintf("consent_dek_shred_after=%s", shredAfter.Format(time.RFC3339)), false, nil
-	case fromCreated != nil:
-		// The retention scanner owns this key; nothing to schedule here.
-		return "consent_dek_retained_from_created:" + fromCreated.Period, false, nil
 	default:
 		if err := e.kms.DestroyDEK(ctx, rc.UserID, ports.KeyScopeConsent); err != nil {
 			return "", false, fmt.Errorf("destroy CONSENT dek: %w", err)

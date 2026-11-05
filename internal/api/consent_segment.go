@@ -115,7 +115,7 @@ func (r *registrar) registerConsentSegments() {
 			}
 			page, err := svc.ListConsentStates(ctx, f, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toSubjectConsent)
 			r.d.emit(ctx, auditOpts{
@@ -158,7 +158,7 @@ func (r *registrar) registerConsentSegments() {
 			// deliberately pages larger, so page through the engine as needed.
 			page, err := exportAudiencePages(ctx, svc, in.Body.Purpose, limit, cursor)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := make([]AudienceMember, 0, len(page.Items))
 			for _, m := range page.Items {

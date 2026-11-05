@@ -53,6 +53,11 @@ type User struct {
 	Factors    []any      `json:"factors,omitempty"`
 	Identities []Identity `json:"identities"`
 
+	// tokenFactors are the user's factors as read with the access token that
+	// authenticated the request (loadTokenUser), for GET /user to show
+	// without another round trip; nil when not read that way.
+	tokenFactors []*Factor
+
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	BannedUntil *time.Time `json:"banned_until,omitempty"`

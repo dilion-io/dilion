@@ -96,11 +96,9 @@ func (a *api) verifyReauthentication(ctx context.Context, tx querier, nonce stri
 	// phone nonce expires on the (much shorter) SMS clock.
 	valid := false
 	if user.Email != "" {
-		valid = a.isOTPValid(generateTokenHash(user.Email, nonce),
-			tokens.ReauthenticationToken, user.ReauthenticationSentAt)
+		valid = a.isOTPValid(tokens.ReauthenticationToken, user.Email, nonce, user.ReauthenticationSentAt)
 	} else {
-		valid = a.isSMSOTPValid(generateTokenHash(user.Phone, nonce),
-			tokens.ReauthenticationToken, user.ReauthenticationSentAt)
+		valid = a.isSMSOTPValid(tokens.ReauthenticationToken, user.Phone, nonce, user.ReauthenticationSentAt)
 	}
 	if !valid {
 		return unprocessableEntityError(ErrorCodeReauthenticationNotValid, "%s", invalidNonceMessage)

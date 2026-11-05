@@ -364,3 +364,18 @@ func TestRequiredConsentKeys(t *testing.T) {
 		t.Error("marketing must not be a required key")
 	}
 }
+
+// A consent-evidence period counted from when the evidence was recorded would
+// shred proof of a consent still relied on, so a policy cannot declare one.
+func TestConsentEvidenceRetentionMustCountFromErasure(t *testing.T) {
+	_, err := LoadPolicies([]byte(`
+compliance:
+  policies:
+    custom:
+      retention:
+        - {domain: consent-evidence, period: P3Y, from: created, action: CRYPTO_SHRED}
+`))
+	if err == nil || !strings.Contains(err.Error(), "consent-evidence must be kept `from: erasure`") {
+		t.Fatalf("LoadPolicies = %v, want the consent-evidence clock refused", err)
+	}
+}

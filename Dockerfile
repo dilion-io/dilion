@@ -15,7 +15,7 @@
 # cross-compiles to the target instead of emulating it. Go cross-compiles well,
 # and this is several times faster than running the compiler under QEMU when the
 # release workflow builds amd64 and arm64 together.
-FROM --platform=$BUILDPLATFORM golang:1.26.8 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10 AS build
 
 WORKDIR /src
 

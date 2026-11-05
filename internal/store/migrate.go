@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/migrations"
 )
 
@@ -26,14 +27,16 @@ const advisoryLockKey int64 = 7264121035148
 // Migrate applies every embedded migration that has not been applied yet, in
 // lexicographic filename order, each file in its own transaction. Applied files
 // are recorded in dilion_meta.schema_migrations. It is safe to call concurrently:
-// runs are serialised with a Postgres advisory lock.
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	return migrateFS(ctx, pool, migrations.FS, migrationsTable)
+// runs are serialised with a Postgres advisory lock. Progress is logged to log
+// (slog.Default() when nil), tagged with the instance selected on ctx.
+func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
+	return migrateFS(ctx, pool, migrations.FS, migrationsTable, log)
 }
 
 // migrateFS is the testable core of Migrate. table must be a schema-qualified,
 // trusted identifier (it is interpolated into DDL).
-func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string) error {
+func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string, log *slog.Logger) error {
+	log = logctx.Wrap(log)
 	if pool == nil {
 		return fmt.Errorf("store: migrate: nil pool")
 	}
@@ -55,7 +58,7 @@ func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string
 	defer func() {
 		// Best effort: the lock is also released when the session ends.
 		if _, err := conn.Exec(context.WithoutCancel(ctx), "select pg_advisory_unlock($1)", advisoryLockKey); err != nil {
-			slog.Warn("store: advisory unlock failed", "error", err)
+			log.WarnContext(ctx, "store: advisory unlock failed", "error", err)
 		}
 	}()
 
@@ -78,7 +81,7 @@ func migrateFS(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string
 		if err := applyOne(ctx, conn, table, name, string(body)); err != nil {
 			return err
 		}
-		slog.Info("migration applied", "file", name)
+		log.InfoContext(ctx, "migration applied", "file", name)
 	}
 	return nil
 }

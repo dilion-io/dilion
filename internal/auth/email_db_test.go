@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,13 +42,23 @@ type recordedMail struct {
 type recordingMailer struct {
 	mu   sync.Mutex
 	sent []recordedMail
+	err  error // when set, every send fails
 }
 
 func (m *recordingMailer) Send(_ context.Context, to, subject, text, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
 	m.sent = append(m.sent, recordedMail{To: to, Subject: subject, Text: text})
 	return nil
+}
+
+func (m *recordingMailer) failWith(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.err = err
 }
 
 func (m *recordingMailer) all() []recordedMail {
@@ -579,6 +590,56 @@ func TestMagicLinkForExistingUser(t *testing.T) {
 	}
 }
 
+// Mail goes out after the request's transaction commits. A send that fails
+// takes back the token it carried, so asking again right away sends a fresh
+// link instead of waiting out the mail frequency limit.
+func TestMagicLinkCanBeRequestedAgainAfterAFailedSend(t *testing.T) {
+	env := newEmailEnv(t, nil)
+	env.confirmedUser(t, "retry@example.com", "hunter22")
+	env.mails.reset()
+
+	env.mails.failWith(errors.New("smtp down"))
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"email": "retry@example.com"}, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("/otp with the mailer down = %d %s", rec.Code, rec.Body.String())
+	}
+	env.mails.failWith(nil)
+	if rec := env.do(t, http.MethodPost, "/otp", map[string]any{"email": "retry@example.com"}, ""); rec.Code != http.StatusOK {
+		t.Fatalf("/otp retried at once = %d %s", rec.Code, rec.Body.String())
+	}
+	mails := env.mails.to("retry@example.com")
+	if len(mails) != 1 {
+		t.Fatalf("magic link mails = %d, want 1", len(mails))
+	}
+	rec := env.do(t, http.MethodPost, "/verify",
+		map[string]any{"type": mailMagicLink, "token_hash": mails[0].token(t)}, "")
+	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+}
+
+// The link value cannot be derived from the six-digit code: upstream's
+// unsalted sha224(email+otp) of the very code that was mailed is refused, so
+// /verify {token_hash} cannot be used to guess codes past the per-account
+// limit. The typed code itself still works.
+func TestMagicLinkHashCannotBeComputedFromTheCode(t *testing.T) {
+	env := newEmailEnv(t, nil)
+	env.confirmedUser(t, "salted@example.com", "hunter22")
+	env.do(t, http.MethodPost, "/otp", map[string]any{"email": "salted@example.com"}, "")
+	mails := env.mails.to("salted@example.com")
+	if len(mails) != 1 {
+		t.Fatalf("magic link mails = %d", len(mails))
+	}
+	otp := mails[0].otp(t)
+
+	rec := env.do(t, http.MethodPost, "/verify", map[string]any{
+		"type": mailMagicLink, "token_hash": generateTokenHash("salted@example.com", otp),
+	}, "")
+	assertAuthError(t, rec, http.StatusForbidden, ErrorCodeOTPExpired)
+
+	rec = env.do(t, http.MethodPost, "/verify", map[string]any{
+		"type": mailMagicLink, "email": "salted@example.com", "token": otp,
+	}, "")
+	decodeInto[AccessTokenResponse](t, rec, http.StatusOK)
+}
+
 // The `email` verification type accepts either a confirmation or a recovery
 // token, which is what supabase-js sends for "verify OTP".
 func TestVerifyEmailTypeAcceptsMagicLinkToken(t *testing.T) {
@@ -738,6 +799,36 @@ func TestResendRejectsUnknownType(t *testing.T) {
 }
 
 // ---- email change ----------------------------------------------------------
+
+// The typed codes of a secure email change work too: each is found from the
+// address it was sent to.
+func TestSecureEmailChangeWithTypedCodes(t *testing.T) {
+	env := newEmailEnv(t, nil)
+	session := env.confirmedUser(t, "typed-old@example.com", "hunter22")
+	rec := env.do(t, http.MethodPut, "/user", map[string]any{"email": "typed-new@example.com"}, session.Token)
+	decodeInto[User](t, rec, http.StatusOK)
+	toNew := env.mails.to("typed-new@example.com")
+	toOld := env.mails.to("typed-old@example.com")
+	if len(toNew) != 1 || len(toOld) != 1 {
+		t.Fatalf("mails: new=%d old=%d, want 1 each", len(toNew), len(toOld))
+	}
+
+	// A code is redeemed only from the address it was sent to.
+	rec = env.do(t, http.MethodPost, "/verify", map[string]any{
+		"type": mailEmailChange, "email": "typed-old@example.com", "token": toNew[0].otp(t)}, "")
+	assertAuthError(t, rec, http.StatusForbidden, ErrorCodeOTPExpired)
+
+	rec = env.do(t, http.MethodPost, "/verify", map[string]any{
+		"type": mailEmailChange, "email": "typed-new@example.com", "token": toNew[0].otp(t)}, "")
+	if half := decodeInto[map[string]string](t, rec, http.StatusOK); half["msg"] != singleConfirmationAccepted {
+		t.Fatalf("first confirmation = %v", half)
+	}
+	rec = env.do(t, http.MethodPost, "/verify", map[string]any{
+		"type": mailEmailChange, "email": "typed-old@example.com", "token": toOld[0].otp(t)}, "")
+	if final := decodeInto[AccessTokenResponse](t, rec, http.StatusOK); final.User.Email != "typed-new@example.com" {
+		t.Errorf("email = %q, want typed-new@example.com", final.User.Email)
+	}
+}
 
 // With SecureEmailChangeEnabled the change needs BOTH links.
 func TestSecureEmailChangeNeedsBothConfirmations(t *testing.T) {
@@ -976,8 +1067,8 @@ func TestGenerateLinkAllTypes(t *testing.T) {
 	if resp.RedirectTo != "https://app.test/welcome" {
 		t.Errorf("redirect_to = %q", resp.RedirectTo)
 	}
-	if resp.HashedToken != generateTokenHash("gen@example.com", resp.EmailOtp) {
-		t.Error("hashed_token is not sha224(email+otp)")
+	if !tokenHashMatches(resp.HashedToken, "gen@example.com", resp.EmailOtp) {
+		t.Error("hashed_token is not the salted hash of email+otp")
 	}
 	if got := len(env.mails.all()); got != 0 {
 		t.Errorf("generate_link sent %d mails, want 0", got)
@@ -1026,7 +1117,7 @@ func TestGenerateLinkAllTypes(t *testing.T) {
 		if typ == mailEmailChangeNew {
 			wantRelatesTo = "gen2@example.com"
 		}
-		if r.HashedToken != generateTokenHash(wantRelatesTo, r.EmailOtp) {
+		if !tokenHashMatches(r.HashedToken, wantRelatesTo, r.EmailOtp) {
 			t.Errorf("%s: hashed_token is not bound to %s", typ, wantRelatesTo)
 		}
 	}

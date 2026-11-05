@@ -176,8 +176,11 @@ func (a *api) observeAfterUserCreated(ctx context.Context, u *User) {
 // transaction) fails, exactly as a broken SMTP setup would. When the hook is
 // disabled it returns handled=false and the caller proceeds with the built-in
 // mailer.
-func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (handled bool, err error) {
-	cfg, err := a.hookConfig(ctx, nil, hookSendEmail)
+//
+// tx is the caller's transaction: the hook setting is read, and a pg-functions
+// hook runs, on it rather than on a second pool connection.
+func (a *api) sendEmailViaHook(ctx context.Context, tx querier, u *User, data EmailData) (handled bool, err error) {
+	cfg, err := a.hookConfig(ctx, tx, hookSendEmail)
 	if err != nil {
 		return true, err
 	}
@@ -189,7 +192,7 @@ func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (ha
 		User:      u,
 		EmailData: data,
 	}
-	if herr := a.runExtHook(ctx, cfg, nil, in, &SendEmailOutput{}); herr != nil {
+	if herr := a.runExtHook(ctx, cfg, tx, in, &SendEmailOutput{}); herr != nil {
 		return true, herr
 	}
 	return true, nil
@@ -197,8 +200,8 @@ func (a *api) sendEmailViaHook(ctx context.Context, u *User, data EmailData) (ha
 
 // sendSMSViaHook is sendEmailViaHook's twin for the send_sms hook. When enabled
 // the hook OWNS SMS delivery and the built-in provider is skipped.
-func (a *api) sendSMSViaHook(ctx context.Context, u *User, sms SMS) (handled bool, err error) {
-	cfg, err := a.hookConfig(ctx, nil, hookSendSMS)
+func (a *api) sendSMSViaHook(ctx context.Context, tx querier, u *User, sms SMS) (handled bool, err error) {
+	cfg, err := a.hookConfig(ctx, tx, hookSendSMS)
 	if err != nil {
 		return true, err
 	}
@@ -210,7 +213,7 @@ func (a *api) sendSMSViaHook(ctx context.Context, u *User, sms SMS) (handled boo
 		User:     u,
 		SMS:      sms,
 	}
-	if herr := a.runExtHook(ctx, cfg, nil, in, &SendSMSOutput{}); herr != nil {
+	if herr := a.runExtHook(ctx, cfg, tx, in, &SendSMSOutput{}); herr != nil {
 		return true, herr
 	}
 	return true, nil

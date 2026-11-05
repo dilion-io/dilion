@@ -28,6 +28,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dilion-io/dilion/internal/hooks"
@@ -510,6 +511,31 @@ func TestExternalAuthorizeRedirectsToProvider(t *testing.T) {
 	}
 	if fs.UserID != nil {
 		t.Error("flow state must not name a user before the callback")
+	}
+}
+
+// Unrecognised /authorize parameters are forwarded to the provider, but never
+// over the request's own: a caller-chosen redirect_uri would send the code,
+// and state the flow state id, wherever the caller likes.
+func TestExternalAuthorizeKeepsReservedParameters(t *testing.T) {
+	env := newExternalEnv(t, nil)
+	rec := env.authorize(t, "provider=github&login_hint=a%40b.test"+
+		"&redirect_uri=https%3A%2F%2Fevil.test%2Fcb&state=attacker&client_id=evil"+
+		"&response_type=token&scope=admin", "")
+	q := redirectLocation(t, rec, http.StatusFound).Query()
+	for k, want := range map[string]string{
+		"login_hint":    "a@b.test",
+		"redirect_uri":  "https://api.test/auth/v1/callback",
+		"client_id":     "github-client-id",
+		"response_type": "code",
+		"scope":         "user:email",
+	} {
+		if got := q.Get(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if _, err := findOAuthFlowStateByID(t.Context(), env.pool, q.Get("state")); err != nil {
+		t.Errorf("state = %q is not the flow state: %v", q.Get("state"), err)
 	}
 }
 
@@ -1166,5 +1192,36 @@ func TestOAuthCallbackAcceptsFormPost(t *testing.T) {
 	}
 	if env.userByEmail(t, "gina@example.com") == nil {
 		t.Fatal("the form-post callback must create the account")
+	}
+}
+
+// An SSO identity asserting an address is outside the default linking domain:
+// a later social sign-in to that address starts its own account instead of
+// joining the one the IdP created.
+func TestSocialSignInDoesNotLinkIntoSSOAccount(t *testing.T) {
+	env := newExternalEnv(t, nil)
+	ssoUser := uuid.NewString()
+	for _, q := range []string{
+		`insert into auth.users (id, instance_id, aud, role, email, is_sso_user, email_confirmed_at, created_at, updated_at)
+		 values ($1::uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+		         'gina@example.com', true, now(), now(), now())`,
+		`insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at)
+		 values ('idp-subject', $1::uuid, '{"email":"gina@example.com","email_verified":true}'::jsonb,
+		         'sso:' || gen_random_uuid()::text, now(), now())`,
+	} {
+		if _, err := env.pool.Exec(t.Context(), q, ssoUser); err != nil {
+			t.Fatalf("seed SSO account: %v", err)
+		}
+	}
+
+	back := env.signInWithGoogle(t)
+	if fragmentValues(t, back).Get("access_token") == "" {
+		t.Fatalf("social sign-in issued no session: %s", back)
+	}
+	if social := env.userByEmail(t, "gina@example.com"); social.ID == ssoUser {
+		t.Fatal("the social sign-in landed in the SSO account")
+	}
+	if ids := env.identityRows(t, ssoUser); len(ids) != 1 {
+		t.Errorf("SSO account has %d identities, want only its own", len(ids))
 	}
 }

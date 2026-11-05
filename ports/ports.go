@@ -243,10 +243,17 @@ func ContextWithInstance(ctx context.Context, instanceID string) context.Context
 
 // InstanceFromContext returns the selected instance, or DefaultInstanceID.
 func InstanceFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(instanceCtxKey{}).(string); ok && v != "" {
+	if v, ok := LookupInstance(ctx); ok {
 		return v
 	}
 	return DefaultInstanceID
+}
+
+// LookupInstance returns the instance selected on ctx and whether one was
+// selected at all, telling an explicit selection apart from the default.
+func LookupInstance(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(instanceCtxKey{}).(string)
+	return v, ok && v != ""
 }
 
 // ---- Identity federation defined in code ----

@@ -11,6 +11,7 @@ import (
 	"github.com/dilion-io/dilion/httpapi"
 	"github.com/dilion-io/dilion/internal/audit"
 	"github.com/dilion-io/dilion/internal/iam"
+	"github.com/dilion-io/dilion/internal/logctx"
 	"github.com/dilion-io/dilion/internal/privacy"
 )
 
@@ -39,6 +40,7 @@ type registrar struct {
 // newRegistrar wires the read-side services. Constructing them performs no I/O,
 // so a zero Deps (nil pool) is enough to describe every route.
 func newRegistrar(api huma.API, d Deps, svcs ServiceProvider) *registrar {
+	d.Logger = logctx.Wrap(d.Logger)
 	pools := d.pools()
 	return &registrar{
 		api:    api,
@@ -57,7 +59,7 @@ func (r *registrar) privacy(ctx context.Context) (privacy.Service, error) {
 	}
 	svc, err := r.svcs(ctx)
 	if err != nil {
-		return nil, mapPrivacyError(ctx, err)
+		return nil, r.d.mapPrivacyError(ctx, err)
 	}
 	if svc == nil {
 		return nil, NewProblem(http.StatusInternalServerError, httpapi.CodeInternal,
@@ -414,7 +416,7 @@ func (r *registrar) registerRequests() {
 				RequestedBy:    requestInfoFrom(ctx).Actor.ID,
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPrivacyRequestCreated,
@@ -438,7 +440,7 @@ func (r *registrar) registerRequests() {
 			}
 			page, err := svc.ListRequests(ctx, in.filter(), listParams(in.Limit, in.Cursor, in.Sort))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toPrivacyRequest)
 			r.d.emit(ctx, auditOpts{
@@ -462,7 +464,7 @@ func (r *registrar) registerRequests() {
 			}
 			out, err := svc.GetRequest(ctx, in.RequestID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPrivacyRequestDetailRead,
@@ -483,7 +485,7 @@ func (r *registrar) registerRequests() {
 			}
 			out, err := svc.CancelRequest(ctx, in.RequestID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionPrivacyRequestCanceled,
@@ -506,7 +508,7 @@ func (r *registrar) registerConsents() {
 			}
 			states, err := svc.GetConsents(ctx, in.UserID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(states, toConsentState)
 			r.d.emit(ctx, auditOpts{
@@ -541,7 +543,7 @@ func (r *registrar) registerConsents() {
 				Source: strings.ToLower(source),
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionConsentChanged,
@@ -575,7 +577,7 @@ func (r *registrar) registerDestinations() {
 				Secret: secret,
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionDestinationChanged,
@@ -598,7 +600,7 @@ func (r *registrar) registerDestinations() {
 			}
 			page, err := svc.ListDestinations(ctx, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toDestination)
 			// Destinations are configuration, not subject-scoped records: no
@@ -623,7 +625,7 @@ func (r *registrar) registerDestinations() {
 			}
 			out, err := svc.GetDestination(ctx, in.DestinationID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			// Not subject-scoped: no subject manifest (§5.3).
 			r.d.emit(ctx, auditOpts{
@@ -644,7 +646,7 @@ func (r *registrar) registerDestinations() {
 			}
 			out, err := svc.UpdateDestination(ctx, in.DestinationID, in.Body.Enabled, in.Body.Config)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionDestinationChanged,
@@ -663,7 +665,7 @@ func (r *registrar) registerDestinations() {
 				return nil, err
 			}
 			if err := svc.DeleteDestination(ctx, in.DestinationID); err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionDestinationChanged,
@@ -692,7 +694,7 @@ func (r *registrar) registerHolds() {
 				CreatedBy: requestInfoFrom(ctx).Actor.ID,
 			})
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionHoldCreated,
@@ -724,7 +726,7 @@ func (r *registrar) registerHolds() {
 			}
 			page, err := svc.ListHolds(ctx, f, listParams(in.Limit, in.Cursor, ""))
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			items := mapItems(page.Items, toLegalHold)
 			r.d.emit(ctx, auditOpts{
@@ -746,7 +748,7 @@ func (r *registrar) registerHolds() {
 			}
 			out, err := svc.ReleaseHold(ctx, in.HoldID, requestInfoFrom(ctx).Actor.ID)
 			if err != nil {
-				return nil, mapPrivacyError(ctx, err)
+				return nil, r.d.mapPrivacyError(ctx, err)
 			}
 			r.d.emit(ctx, auditOpts{
 				Action:      audit.ActionHoldReleased,

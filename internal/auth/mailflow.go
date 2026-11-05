@@ -406,7 +406,10 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 	if err != nil {
 		return internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hash := generateTokenHash(u.Email, otp)
+	hash, err := newTokenHash(u.Email, otp)
+	if err != nil {
+		return internalServerError("Error generating one-time token").withInternal(err)
+	}
 	now := a.now()
 
 	if _, err := updateUserFields(ctx, tx, u.ID, now, map[string]any{
@@ -419,19 +422,25 @@ func (a *api) sendReauthentication(ctx context.Context, tx querier, u *User) err
 		return internalServerError("Error sending reauthentication email").withInternal(err)
 	}
 
-	// send_email (external hook) owns delivery when enabled.
-	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+	data := EmailData{
 		Token:           otp,
 		TokenHash:       hash,
 		EmailActionType: mailReauthentication,
 		SiteURL:         a.site(ctx).SiteURL,
-	}); handled {
-		return herr
 	}
-
+	subject := a.subjectFor(mailReauthentication, otp)
 	text, htmlBody := renderActionMail("Your verification code",
 		"Use the code below to verify your identity. It expires shortly.", "", otp)
-	return a.deliver(ctx, u.Email, a.subjectFor(mailReauthentication, otp), text, htmlBody, "reauthentication")
+	return a.queueDelivery(ctx, tx, delivery{
+		send: func(ctx context.Context, q querier) error {
+			// send_email (external hook) owns delivery when enabled.
+			if handled, herr := a.sendEmailViaHook(ctx, q, u, data); handled {
+				return herr
+			}
+			return a.deliver(ctx, u.Email, subject, text, htmlBody, "reauthentication")
+		},
+		discard: discardToken(u.ID, "reauthentication_token", "reauthentication_sent_at", tokenTypeReauthentication, hash),
+	})
 }
 
 // sendEmailChange is upstream's sendEmailChange.
@@ -449,7 +458,11 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hashNew := addFlowPrefix(generateTokenHash(newEmail, otpNew), pkce)
+	hashNew, err := newTokenHash(newEmail, otpNew)
+	if err != nil {
+		return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
+	}
+	hashNew = addFlowPrefix(hashNew, pkce)
 
 	otpCurrent, hashCurrent := "", ""
 	secure := a.cfg.Mailer.SecureEmailChangeEnabled && u.Email != ""
@@ -458,7 +471,11 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 		if err != nil {
 			return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
 		}
-		hashCurrent = addFlowPrefix(generateTokenHash(u.Email, otpCurrent), pkce)
+		hashCurrent, err = newTokenHash(u.Email, otpCurrent)
+		if err != nil {
+			return nil, nil, internalServerError("Error generating one-time token").withInternal(err)
+		}
+		hashCurrent = addFlowPrefix(hashCurrent, pkce)
 	}
 
 	now := a.now()
@@ -494,57 +511,78 @@ func (a *api) sendEmailChange(ctx context.Context, tx querier, r *http.Request, 
 	if err != nil {
 		return nil, nil, internalServerError("Error building email action link").withInternal(err)
 	}
-	// send_email (external hook) owns delivery of BOTH the new-address and (when
-	// secure email change is on) the current-address confirmations.
-	emailChangeHooked, err := a.hookEnabled(ctx, tx, hookSendEmail)
-	if err != nil {
-		return nil, nil, err
-	}
-	if handled, herr := a.sendEmailViaHook(ctx, u, EmailData{
+	tokNew := &mailToken{OTP: otpNew, Hash: hashNew, Link: linkNew, RedirectTo: referrer}
+	siteURL := a.site(r.Context()).SiteURL
+	textNew, htmlNew := renderActionMail("Confirm your new email address",
+		"Follow the link below to confirm "+newEmail+" as your new email address.", linkNew, otpNew)
+	dataNew := EmailData{
 		Token:           otpNew,
 		TokenHash:       hashNew,
 		RedirectTo:      referrer,
 		EmailActionType: mailEmailChangeNew,
-		SiteURL:         a.site(r.Context()).SiteURL,
-	}); handled {
-		if herr != nil {
-			return nil, nil, herr
-		}
-	} else {
-		text, htmlBody := renderActionMail("Confirm your new email address",
-			"Follow the link below to confirm "+newEmail+" as your new email address.", linkNew, otpNew)
-		if err := a.deliver(ctx, newEmail, subject, text, htmlBody, "email change"); err != nil {
-			return nil, nil, err
-		}
+		SiteURL:         siteURL,
 	}
-	tokNew := &mailToken{OTP: otpNew, Hash: hashNew, Link: linkNew, RedirectTo: referrer}
+	discard := discardToken(u.ID, "email_change_token_new", "email_change_sent_at", tokenTypeEmailChangeNew, hashNew)
 
-	if hashCurrent == "" {
-		return tokNew, nil, nil
-	}
-
-	linkCurrent, err := a.actionLink(r, mailEmailChange, hashCurrent, mailEmailChange, referrer)
-	if err != nil {
-		return nil, nil, internalServerError("Error building email action link").withInternal(err)
-	}
-	if emailChangeHooked {
-		if _, herr := a.sendEmailViaHook(ctx, u, EmailData{
+	var tokCurrent *mailToken
+	var textCurrent, htmlCurrent string
+	var dataCurrent EmailData
+	if hashCurrent != "" {
+		linkCurrent, err := a.actionLink(r, mailEmailChange, hashCurrent, mailEmailChange, referrer)
+		if err != nil {
+			return nil, nil, internalServerError("Error building email action link").withInternal(err)
+		}
+		tokCurrent = &mailToken{OTP: otpCurrent, Hash: hashCurrent, Link: linkCurrent, RedirectTo: referrer}
+		textCurrent, htmlCurrent = renderActionMail("Confirm your new email address",
+			"Follow the link below to confirm "+newEmail+" as your new email address.", linkCurrent, otpCurrent)
+		dataCurrent = EmailData{
 			Token:           otpCurrent,
 			TokenHash:       hashCurrent,
 			RedirectTo:      referrer,
 			EmailActionType: mailEmailChangeCurrent,
-			SiteURL:         a.site(r.Context()).SiteURL,
-		}); herr != nil {
-			return nil, nil, herr
+			SiteURL:         siteURL,
 		}
-	} else {
-		text, htmlBody := renderActionMail("Confirm your new email address",
-			"Follow the link below to confirm "+newEmail+" as your new email address.", linkCurrent, otpCurrent)
-		if err := a.deliver(ctx, u.Email, subject, text, htmlBody, "email change"); err != nil {
-			return nil, nil, err
+		discardNew := discard
+		discardCurrent := discardToken(u.ID, "email_change_token_current", "email_change_sent_at",
+			tokenTypeEmailChangeCurrent, hashCurrent)
+		discard = func(ctx context.Context, q querier) error {
+			if err := discardNew(ctx, q); err != nil {
+				return err
+			}
+			return discardCurrent(ctx, q)
 		}
 	}
-	return tokNew, &mailToken{OTP: otpCurrent, Hash: hashCurrent, Link: linkCurrent, RedirectTo: referrer}, nil
+
+	// One message pair: a change needs both confirmations, so if either cannot
+	// be sent both tokens are taken back.
+	if err := a.queueDelivery(ctx, tx, delivery{
+		send: func(ctx context.Context, q querier) error {
+			// send_email (external hook) owns delivery of BOTH the new-address
+			// and (when secure email change is on) the current-address
+			// confirmations.
+			handled, herr := a.sendEmailViaHook(ctx, q, u, dataNew)
+			if herr != nil {
+				return herr
+			}
+			if !handled {
+				if err := a.deliver(ctx, newEmail, subject, textNew, htmlNew, "email change"); err != nil {
+					return err
+				}
+			}
+			if tokCurrent == nil {
+				return nil
+			}
+			if handled {
+				_, herr := a.sendEmailViaHook(ctx, q, u, dataCurrent)
+				return herr
+			}
+			return a.deliver(ctx, u.Email, subject, textCurrent, htmlCurrent, "email change")
+		},
+		discard: discard,
+	}); err != nil {
+		return nil, nil, err
+	}
+	return tokNew, tokCurrent, nil
 }
 
 // ---- the shared body of the link-carrying flows ---------------------------
@@ -586,7 +624,11 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 	if err != nil {
 		return nil, internalServerError("Error generating one-time token").withInternal(err)
 	}
-	hash := addFlowPrefix(generateTokenHash(p.relatesTo, otp), p.pkce)
+	hash, err := newTokenHash(p.relatesTo, otp)
+	if err != nil {
+		return nil, internalServerError("Error generating one-time token").withInternal(err)
+	}
+	hash = addFlowPrefix(hash, p.pkce)
 	now := a.now()
 
 	set := map[string]any{p.tokenColumn: hash, p.sentColumn: now}
@@ -617,25 +659,30 @@ func (a *api) sendLinkMail(ctx context.Context, tx querier, r *http.Request, p s
 		return nil, internalServerError("Error building email action link").withInternal(err)
 	}
 
-	// send_email (external hook): when enabled the hook owns delivery and the
-	// built-in mailer is skipped. It receives the OTP, its stored hash (PKCE
-	// prefix included), the action type and the resolved redirect, so it can
-	// render and deliver the message itself.
-	if handled, herr := a.sendEmailViaHook(ctx, p.user, EmailData{
+	data := EmailData{
 		Token:           otp,
 		TokenHash:       hash,
 		RedirectTo:      referrer,
 		EmailActionType: p.linkType,
 		SiteURL:         a.site(r.Context()).SiteURL,
-	}); handled {
-		if herr != nil {
-			return nil, herr
-		}
-		return &mailToken{OTP: otp, Hash: hash, Link: link, RedirectTo: referrer}, nil
 	}
-
+	subject := a.subjectFor(p.actionType, otp)
 	text, htmlBody := renderActionMail(p.headline, p.sentence, link, otp)
-	if err := a.deliver(ctx, p.recipient, a.subjectFor(p.actionType, otp), text, htmlBody, p.what); err != nil {
+	user, recipient, what := p.user, p.recipient, p.what
+	if err := a.queueDelivery(ctx, tx, delivery{
+		send: func(ctx context.Context, q querier) error {
+			// send_email (external hook): when enabled the hook owns delivery
+			// and the built-in mailer is skipped. It receives the OTP, its
+			// stored hash (PKCE prefix included), the action type and the
+			// resolved redirect, so it can render and deliver the message
+			// itself.
+			if handled, herr := a.sendEmailViaHook(ctx, q, user, data); handled {
+				return herr
+			}
+			return a.deliver(ctx, recipient, subject, text, htmlBody, what)
+		},
+		discard: discardToken(user.ID, p.tokenColumn, p.sentColumn, p.tokenType, hash),
+	}); err != nil {
 		return nil, err
 	}
 	return &mailToken{OTP: otp, Hash: hash, Link: link, RedirectTo: referrer}, nil

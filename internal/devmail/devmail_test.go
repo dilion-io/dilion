@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/dilion-io/dilion/ports"
 )
 
 func TestMaskEmail(t *testing.T) {
@@ -66,5 +68,20 @@ func TestNilLoggerUsesDefault(t *testing.T) {
 	}
 	if err := NewSMS(nil).Send(context.Background(), "+1555", "b"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSendLogsSelectedInstance(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := ports.ContextWithInstance(context.Background(), "tenant-a")
+	if err := NewMailer(log).Send(ctx, "a@example.com", "subject", "text", "html"); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewSMS(log).Send(ctx, "+15551234567", "message"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(buf.String(), `"instance":"tenant-a"`); got != 4 {
+		t.Fatalf("instance appears in %d of 4 mail and SMS records: %s", got, buf.String())
 	}
 }
