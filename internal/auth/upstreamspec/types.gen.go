@@ -1468,6 +1468,7 @@ type MFAFactorSchema struct {
 	// - totp
 	// - phone
 	// - webauthn
+	// - recovery_code
 	FactorType       *string             `json:"factor_type,omitempty"`
 	FriendlyName     *string             `json:"friendly_name,omitempty"`
 	Id               *openapi_types.UUID `json:"id,omitempty"`
@@ -1480,6 +1481,45 @@ type MFAFactorSchema struct {
 	Status             *string    `json:"status,omitempty"`
 	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	WebauthnCredential *string    `json:"webauthn_credential,omitempty"`
+}
+
+// MFARecoveryCodesSchema A freshly generated set of MFA recovery codes. Returned only by `POST /factors/recovery-codes` and `POST /factors/recovery-codes/regenerate`; the codes cannot be retrieved afterwards.
+type MFARecoveryCodesSchema struct {
+	// Codes The plaintext single-use codes in canonical form (16 characters by default). Show them to the user once.
+	Codes *[]string `json:"codes,omitempty"`
+
+	// FriendlyName Example: Recovery codes
+	FriendlyName *string `json:"friendly_name,omitempty"`
+
+	// Id ID of the user's `recovery_code` factor.
+	Id *openapi_types.UUID `json:"id,omitempty"`
+
+	// Total Number of codes in the set.
+	//
+	// Example: 10
+	Total *int `json:"total,omitempty"`
+
+	// Type Always `recovery_code`.
+	Type *string `json:"type,omitempty"`
+}
+
+// MFARecoveryCodesStatusSchema Enrollment status of the user's MFA recovery codes. Never contains code values.
+type MFARecoveryCodesStatusSchema struct {
+	// Id ID of the user's `recovery_code` factor.
+	Id *openapi_types.UUID `json:"id,omitempty"`
+
+	// Remaining Number of codes in the current set that have not been used yet.
+	//
+	// Example: 9
+	Remaining *int `json:"remaining,omitempty"`
+
+	// Total Number of codes in the current set.
+	//
+	// Example: 10
+	Total *int `json:"total,omitempty"`
+
+	// Type Always `recovery_code`.
+	Type *string `json:"type,omitempty"`
 }
 
 // OAuthClientSchema Represents an OAuth 2.1 client
@@ -1566,9 +1606,12 @@ type SSOProviderSchema struct {
 	Id   *openapi_types.UUID `json:"id,omitempty"`
 	Saml *struct {
 		AttributeMapping *SAMLAttributeMappingSchema `json:"attribute_mapping,omitempty"`
-		EntityId         *string                     `json:"entity_id,omitempty"`
-		MetadataUrl      *string                     `json:"metadata_url,omitempty"`
-		MetadataXml      *string                     `json:"metadata_xml,omitempty"`
+
+		// DedicatedScope When `true`, this provider's SAML ACS URL and entity ID are scoped to its own provider ID instead of the ones shared by all SAML providers in this project. The same signing key is still used. This cannot be changed once the provider is created.
+		DedicatedScope *bool   `json:"dedicated_scope,omitempty"`
+		EntityId       *string `json:"entity_id,omitempty"`
+		MetadataUrl    *string `json:"metadata_url,omitempty"`
+		MetadataXml    *string `json:"metadata_xml,omitempty"`
 	} `json:"saml,omitempty"`
 	SsoDomains *[]struct {
 		Domain *string `json:"domain,omitempty"`
@@ -1962,11 +2005,14 @@ type PutAdminOauthClientsClientIdJSONBodyTokenEndpointAuthMethod string
 
 // PostAdminSsoProvidersJSONBody defines parameters for PostAdminSsoProviders.
 type PostAdminSsoProvidersJSONBody struct {
-	AttributeMapping *SAMLAttributeMappingSchema       `json:"attribute_mapping,omitempty"`
-	Domains          *[]string                         `json:"domains,omitempty"`
-	MetadataUrl      *string                           `json:"metadata_url,omitempty"`
-	MetadataXml      *string                           `json:"metadata_xml,omitempty"`
-	Type             PostAdminSsoProvidersJSONBodyType `json:"type"`
+	AttributeMapping *SAMLAttributeMappingSchema `json:"attribute_mapping,omitempty"`
+
+	// DedicatedScope When `true`, this provider's SAML ACS URL and entity ID are scoped to its own provider ID instead of the ones shared by all SAML providers in this project. The same signing key is still used. This cannot be changed once the provider is created.
+	DedicatedScope *bool                             `json:"dedicated_scope,omitempty"`
+	Domains        *[]string                         `json:"domains,omitempty"`
+	MetadataUrl    *string                           `json:"metadata_url,omitempty"`
+	MetadataXml    *string                           `json:"metadata_xml,omitempty"`
+	Type           PostAdminSsoProvidersJSONBodyType `json:"type"`
 }
 
 // PostAdminSsoProvidersJSONBodyType defines parameters for PostAdminSsoProviders.
@@ -1984,6 +2030,12 @@ type PutAdminSsoProvidersSsoProviderIdJSONBody struct {
 type GetAdminUsersParams struct {
 	Page    *int `form:"page,omitempty" json:"page,omitempty"`
 	PerPage *int `form:"per_page,omitempty" json:"per_page,omitempty"`
+}
+
+// DeleteAdminUsersUserIdJSONBody defines parameters for DeleteAdminUsersUserId.
+type DeleteAdminUsersUserIdJSONBody struct {
+	// ShouldSoftDelete Soft delete the user instead of permanently deleting their account.
+	ShouldSoftDelete *bool `json:"should_soft_delete,omitempty"`
 }
 
 // PutAdminUsersUserIdFactorsFactorIdJSONBody defines parameters for PutAdminUsersUserIdFactorsFactorId.
@@ -2023,6 +2075,20 @@ type PostFactorsJSONBodyFactorType string
 
 // PostFactors200JSONResponseBodyType defines parameters for PostFactors.
 type PostFactors200JSONResponseBodyType string
+
+// PostFactorsRecoveryCodesJSONBody defines parameters for PostFactorsRecoveryCodes.
+type PostFactorsRecoveryCodesJSONBody struct {
+	// FriendlyName Name shown in the user's factor list. Subject to the same per-user uniqueness rule as any other factor. Defaults to `Recovery codes` when omitted or blank.
+	FriendlyName *string `json:"friendly_name,omitempty"`
+}
+
+// PostFactorsRecoveryCodesVerifyJSONBody defines parameters for PostFactorsRecoveryCodesVerify.
+type PostFactorsRecoveryCodesVerifyJSONBody struct {
+	// Code The recovery code to redeem. Separators, whitespace and letter case are ignored.
+	//
+	// Example: K4M9-X7QP-2AB8-HT3Z
+	Code string `json:"code"`
+}
 
 // PostFactorsFactorIdChallengeJSONBody defines parameters for PostFactorsFactorIdChallenge.
 type PostFactorsFactorIdChallengeJSONBody struct {
@@ -2449,6 +2515,9 @@ type PostAdminSsoProvidersJSONRequestBody PostAdminSsoProvidersJSONBody
 // PutAdminSsoProvidersSsoProviderIdJSONRequestBody defines body for PutAdminSsoProvidersSsoProviderId for application/json ContentType.
 type PutAdminSsoProvidersSsoProviderIdJSONRequestBody PutAdminSsoProvidersSsoProviderIdJSONBody
 
+// DeleteAdminUsersUserIdJSONRequestBody defines body for DeleteAdminUsersUserId for application/json ContentType.
+type DeleteAdminUsersUserIdJSONRequestBody DeleteAdminUsersUserIdJSONBody
+
 // PutAdminUsersUserIdJSONRequestBody defines body for PutAdminUsersUserId for application/json ContentType.
 type PutAdminUsersUserIdJSONRequestBody = UserSchema
 
@@ -2457,6 +2526,12 @@ type PutAdminUsersUserIdFactorsFactorIdJSONRequestBody = PutAdminUsersUserIdFact
 
 // PostFactorsJSONRequestBody defines body for PostFactors for application/json ContentType.
 type PostFactorsJSONRequestBody PostFactorsJSONBody
+
+// PostFactorsRecoveryCodesJSONRequestBody defines body for PostFactorsRecoveryCodes for application/json ContentType.
+type PostFactorsRecoveryCodesJSONRequestBody PostFactorsRecoveryCodesJSONBody
+
+// PostFactorsRecoveryCodesVerifyJSONRequestBody defines body for PostFactorsRecoveryCodesVerify for application/json ContentType.
+type PostFactorsRecoveryCodesVerifyJSONRequestBody PostFactorsRecoveryCodesVerifyJSONBody
 
 // PostFactorsFactorIdChallengeJSONRequestBody defines body for PostFactorsFactorIdChallenge for application/json ContentType.
 type PostFactorsFactorIdChallengeJSONRequestBody PostFactorsFactorIdChallengeJSONBody

@@ -26,7 +26,7 @@
 //     serializes it as domains.
 //   - OAuthClientSchema declares scope, which OAuthServerClientResponse has no
 //     field for.
-//   - The passkeys routes are absent entirely: 43 paths / 59 operations / 15
+//   - The passkeys routes are absent entirely: 46 paths / 64 operations / 17
 //     named schemas here, against the 69-operation surface Dilion implements.
 //
 // Dilion's structs were derived from upstream's Go source and are verified
