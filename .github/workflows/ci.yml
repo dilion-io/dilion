@@ -287,7 +287,7 @@ jobs:
   # upstream supabase/auth 의 openapi.yaml 이 우리가 벤더링한 사본과 달라졌는지.
   #
   # NON-BLOCKING (continue-on-error). 이 잡의 입력은 우리 저장소가 아니라 남의
-  # 저장소의 master 브랜치다 — 즉 아무 PR 도 건드리지 않은 상태에서 언제든 빨간불이
+  # 저장소의 최신 릴리스다(Makefile UPSTREAM_SPEC_REF) — 즉 아무 PR 도 건드리지 않은 상태에서 새 릴리스가 나오면 빨간불이
   # 될 수 있고, 네트워크/레이트리밋 실패도 우리 잘못이 아니다. 무관한 PR 을 전부
   # 막는 대신 "upstream 이 움직였으니 리뷰하라"는 경고로 남긴다.
   #
@@ -306,7 +306,7 @@ jobs:
 
       # make 타깃은 CI 를 모른다(평범한 stdout + exit code). 여기서 출력만 받아
       # 요약/어노테이션으로 포맷한다.
-      - name: Compare vendored openapi.yaml against supabase/auth@master
+      - name: Compare vendored openapi.yaml against the latest supabase/auth release
         id: check
         run: |
           set +e
@@ -328,7 +328,7 @@ jobs:
             {
               echo "### ✅ Upstream spec: no drift"
               echo
-              echo 'Vendored `internal/auth/upstreamspec/openapi.yaml` is identical to `supabase/auth@master`.'
+              echo 'Vendored `internal/auth/upstreamspec/openapi.yaml` is identical to the latest `supabase/auth` release.'
               echo
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -336,7 +336,7 @@ jobs:
 
           if grep -q 'DRIFT' "$log"; then
             title="Upstream spec drift"
-            headline='`supabase/auth@master` `openapi.yaml` moved — the vendored copy is stale.'
+            headline='A new `supabase/auth` release changed `openapi.yaml` — the vendored copy is stale.'
             note='This job is **non-blocking**: it only tells you the input to the conformance/parity gates is aging. No PR is blocked by it.'
           else
             title="Upstream spec check could not run"
@@ -372,7 +372,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           # run 페이지 상단에 뜨는 어노테이션 (한 줄, 개행 불가 → %0A 로 이스케이프)
-          echo "::warning title=${title}::vendored openapi.yaml vs supabase/auth@master — see the run summary.%0A대응: make upstream-spec-sync → SOURCE.md 갱신 → go test ./internal/auth/ -run TestUpstreamSpecConformance"
+          echo "::warning title=${title}::vendored openapi.yaml vs the latest supabase/auth release — see the run summary.%0A대응: make upstream-spec-sync → SOURCE.md 갱신 → go test ./internal/auth/ -run TestUpstreamSpecConformance"
 
       # 오늘과 동일한 성패 의미를 유지한다: 드리프트면 잡은 빨갛게 두되,
       # 잡 레벨 continue-on-error 로 workflow run 자체는 막지 않는다.

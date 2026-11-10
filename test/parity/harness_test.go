@@ -25,7 +25,7 @@
 //     downgraded from FAIL to KNOWN,
 //  5. records which OpenAPI operation the scenario exercised.
 //
-// A coverage report (covered / uncovered of the 69 curated ops) is emitted at
+// A coverage report (covered / uncovered of the curated ops) is emitted at
 // the end so gaps are visible, and a TODO table lists the remaining ops with
 // enough structure that filling them in is mechanical.
 package parity
@@ -132,6 +132,8 @@ func newFixtures() []fixtureUser {
 		// on them never perturbs the userA/userB single-request scenarios.
 		{name: "userC", email: fmt.Sprintf("parity-userc-%d@example.test", stamp), password: "Sup3rSecret!pw-C"},
 		{name: "userD", email: fmt.Sprintf("parity-userd-%d@example.test", stamp), password: "Sup3rSecret!pw-D"},
+		// userE is the MFA recovery-codes flow's: it ends with no factor left.
+		{name: "userE", email: fmt.Sprintf("parity-usere-%d@example.test", stamp), password: "Sup3rSecret!pw-E"},
 	}
 }
 
@@ -308,6 +310,10 @@ func scenarios() []scenario {
 
 		// ---- SAML/SSO on the DEFAULT (flags-off) stack: both must report the
 		// feature disabled identically. The flags-on twin exercises the live paths. ----
+		// MFA recovery codes with the feature off (the flags-on run covers the flow).
+		{name: "recovery-codes-generate-disabled", method: "POST", path: "/factors/recovery-codes", cred: "userA", headers: jsonHdr(), body: `{}`, compare: compareFull, wantStatus: 422, profile: "off"},
+		{name: "recovery-codes-verify-disabled", method: "POST", path: "/factors/recovery-codes/verify", cred: "userA", headers: jsonHdr(), body: `{"code":"aaaa-aaaa-aaaa-aaaa"}`, compare: compareFull, wantStatus: 422, profile: "off"},
+		{name: "recovery-codes-status-none", method: "GET", path: "/factors/recovery-codes", cred: "userA", compare: compareFull, wantStatus: 404, profile: "off"},
 		{name: "sso-disabled", method: "POST", path: "/sso", headers: jsonHdr(), body: `{"domain":"parity.example.com"}`, compare: compareFull, wantStatus: 404, profile: "off"},
 		// SAML stays disabled in BOTH the default and the flagged twin (the flags
 		// overlay does not supply SAML key material), so the disabled-metadata shape

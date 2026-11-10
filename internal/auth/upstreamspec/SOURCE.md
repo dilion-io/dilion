@@ -2,16 +2,21 @@
 
 | | |
 |---|---|
-| Source URL | https://raw.githubusercontent.com/supabase/auth/master/openapi.yaml |
+| Release | [`v2.197.0`](https://github.com/supabase/auth/releases/tag/v2.197.0), released 2026-09-09 — the file is byte-identical to the one fetched from master on 2026-09-03 |
+| Source URL | https://raw.githubusercontent.com/supabase/auth/v2.197.0/openapi.yaml |
 | Upstream commit | [`2d4680ef054bedc898da1dbac1b6a7cb9cf5b5af`](https://github.com/supabase/auth/commit/2d4680ef054bedc898da1dbac1b6a7cb9cf5b5af) — "feat(auditlogs): introduce identity linked action", authored 2026-08-12 |
-| Commit lookup | `curl -s 'https://api.github.com/repos/supabase/auth/commits?path=openapi.yaml&per_page=1'` |
+| Commit lookup | `curl -s 'https://api.github.com/repos/supabase/auth/commits?path=openapi.yaml&sha=v2.197.0&per_page=1'` |
 | Fetched | 2026-09-03 |
 | sha256 | `2e2a74a7459f377dd37e1c0e4c926e39a5be9e6a140fcf6dc1fd0c3ec8a0e621` |
 | Size | 136129 bytes, 3929 lines |
 
 The file is vendored **verbatim** — byte-for-byte as served. Do not edit it.
-`make upstream-spec-check` diffs it against upstream master and is the signal
-to review upstream changes; editing it locally would silence that signal.
+`make upstream-spec-check` diffs it against upstream's latest stable release
+(the same upstream the parity stack runs) and is the signal to review upstream
+changes; editing it locally would silence that signal.
+
+The spec lags upstream's code: v2.197.0 already serves the MFA recovery-code
+endpoints, which Dilion implements, but this document does not list them yet.
 
 ## Surface
 

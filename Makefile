@@ -190,10 +190,16 @@ parity: parity-up ## 스택 기동 → 테스트 → 종료 (teardown 보장)
 # 을 그대로(verbatim) 벤더링한 것이다. 런타임 코드는 이 패키지를 import 하지 않으며,
 # 생성된 타입은 오직 internal/auth/upstream_conformance_test.go 의 대조군으로만 쓴다.
 # 자세한 배경은 internal/auth/upstreamspec/doc.go 와 SOURCE.md 참고.
+#
+# 기준은 upstream 의 최신 stable 릴리스(GitHub releases/latest — RC 는 prerelease 라
+# 제외)다. master 가 아니라 릴리스를 따라가는 이유: parity 스택도 릴리스 이미지
+# (test/parity/compose.parity.yml)와 비교하므로, 스펙과 parity 가 같은 upstream 을
+# 가리켜야 한다. 다른 기준으로 보려면 UPSTREAM_SPEC_REF=master 처럼 덮어쓴다.
+# 태그 조회는 이 변수가 처음 쓰일 때 한 번만 일어난다(다른 타깃은 네트워크를 쓰지 않음).
 UPSTREAM_SPEC_REPO ?= supabase/auth
-UPSTREAM_SPEC_REF ?= master
-UPSTREAM_SPEC_URL := https://raw.githubusercontent.com/$(UPSTREAM_SPEC_REPO)/$(UPSTREAM_SPEC_REF)/openapi.yaml
-UPSTREAM_SPEC_API := https://api.github.com/repos/$(UPSTREAM_SPEC_REPO)/commits?path=openapi.yaml&sha=$(UPSTREAM_SPEC_REF)&per_page=1
+UPSTREAM_SPEC_REF ?= $(eval UPSTREAM_SPEC_REF := $(shell curl -fsSL https://api.github.com/repos/$(UPSTREAM_SPEC_REPO)/releases/latest | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p'))$(UPSTREAM_SPEC_REF)
+UPSTREAM_SPEC_URL = https://raw.githubusercontent.com/$(UPSTREAM_SPEC_REPO)/$(UPSTREAM_SPEC_REF)/openapi.yaml
+UPSTREAM_SPEC_API = https://api.github.com/repos/$(UPSTREAM_SPEC_REPO)/commits?path=openapi.yaml&sha=$(UPSTREAM_SPEC_REF)&per_page=1
 UPSTREAM_SPEC_DIR := internal/auth/upstreamspec
 UPSTREAM_SPEC := $(UPSTREAM_SPEC_DIR)/openapi.yaml
 GOBIN_DIR := $(shell go env GOPATH)/bin
@@ -208,13 +214,14 @@ upstream-spec-sync: ## upstream openapi.yaml 재수집 + 타입 재생성 (SOURC
 	@echo "fetched: $$(date -u +%Y-%m-%d)"
 	@git --no-pager diff --stat $(UPSTREAM_SPEC_DIR) || true
 
-upstream-spec-check: ## 벤더링 스펙 ↔ upstream master 드리프트 검출 (CI 경고용, 네트워크 필요)
+upstream-spec-check: ## 벤더링 스펙 ↔ upstream 최신 릴리스 드리프트 검출 (CI 경고용, 네트워크 필요)
+	@test -n '$(UPSTREAM_SPEC_REF)' || { echo "upstream-spec-check: upstream 최신 릴리스 태그를 조회하지 못함"; exit 1; }
 	@tmp=$$(mktemp); trap 'rm -f $$tmp' EXIT; \
 	curl -fsSL '$(UPSTREAM_SPEC_URL)' -o $$tmp; \
 	if diff -q $(UPSTREAM_SPEC) $$tmp >/dev/null; then \
 		echo "upstream-spec-check: OK — $(UPSTREAM_SPEC) 는 $(UPSTREAM_SPEC_REPO)@$(UPSTREAM_SPEC_REF) 와 동일"; \
 	else \
-		echo "upstream-spec-check: DRIFT — upstream openapi.yaml 이 변경됨"; \
+		echo "upstream-spec-check: DRIFT — $(UPSTREAM_SPEC_REPO)@$(UPSTREAM_SPEC_REF) 의 openapi.yaml 이 벤더링 사본과 다름"; \
 		echo "  vendored: $$(wc -l < $(UPSTREAM_SPEC)) lines, sha256 $$(sha256sum $(UPSTREAM_SPEC) | cut -d' ' -f1)"; \
 		echo "  upstream: $$(wc -l < $$tmp) lines, sha256 $$(sha256sum $$tmp | cut -d' ' -f1)"; \
 		echo "  --- diffstat ---"; \

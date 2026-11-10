@@ -1,7 +1,7 @@
 # Feature-flag TWIN overlay for the parity stack. Layer it on top of
 # compose.parity.yml to flip the matched flag pairs to ON — on BOTH servers at
 # once — so the flagged surfaces (OAuth 2.1 server, passkeys/WebAuthn, manual
-# identity linking) answer the SAME setup state and are differentially testable:
+# identity linking, MFA recovery codes) answer the SAME setup state and are differentially testable:
 #
 #   docker-compose -f test/parity/compose.parity.yml \
 #                  -f test/parity/compose.parity.flags.yml up -d gotrue dilion
@@ -27,6 +27,8 @@ services:
       GOTRUE_WEBAUTHN_RP_DISPLAY_NAME: "Parity"
       GOTRUE_WEBAUTHN_RP_ORIGINS: "http://localhost:3000"
       GOTRUE_SECURITY_MANUAL_LINKING_ENABLED: "true"
+      GOTRUE_MFA_RECOVERY_CODES_ENROLL_ENABLED: "true"
+      GOTRUE_MFA_RECOVERY_CODES_VERIFY_ENABLED: "true"
 
   dilion:
     environment:
@@ -36,3 +38,5 @@ services:
       DILION_AUTH_WEBAUTHN_RP_NAME: "Parity"
       DILION_AUTH_WEBAUTHN_RP_ORIGINS: "http://localhost:3000"
       DILION_AUTH_SECURITY_MANUAL_LINKING_ENABLED: "true"
+      DILION_AUTH_MFA_RECOVERY_CODES_ENROLL_ENABLED: "true"
+      DILION_AUTH_MFA_RECOVERY_CODES_VERIFY_ENABLED: "true"

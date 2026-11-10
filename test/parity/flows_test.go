@@ -21,6 +21,7 @@ package parity
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,65 @@ func flows() []flow {
 					name: "unenroll", method: "DELETE", path: "/factors/{{fid}}",
 					compare: compareFull, wantStatus: 200,
 				},
+			},
+		},
+
+		// ---- MFA recovery codes (v2.197.0), end to end on a dedicated user:
+		//   aal1 refusals → TOTP to aal2 → generate → status → redeem (wrong,
+		//   right, reused) → regenerate (old code dead) → unenroll the TOTP factor
+		//   (v2.197.0 has no recovery-code guard) → delete the codes.
+		// The plaintext codes differ per server; they are captured, not compared.
+		{
+			name: "mfa-recovery-codes", cred: "userE", profile: "on",
+			steps: []step{
+				{name: "generate-aal1", method: "POST", path: "/factors/recovery-codes", headers: jsonHdr(),
+					compare: compareFull, wantStatus: 403},
+				{name: "status-none", method: "GET", path: "/factors/recovery-codes", compare: compareFull, wantStatus: 404},
+				{
+					name: "enroll-totp", method: "POST", path: "/factors", headers: jsonHdr(),
+					compare: compareFull, wantStatus: 200,
+					body:    `{"factor_type":"totp","friendly_name":"parity-rc-totp"}`,
+					capture: map[string]string{"fid": "id", "secret": "totp.secret"},
+				},
+				{
+					name: "challenge", method: "POST", path: "/factors/{{fid}}/challenge",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 200, body: `{}`,
+					capture: map[string]string{"cid": "id"},
+				},
+				{
+					name: "verify-totp", method: "POST", path: "/factors/{{fid}}/verify",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 200,
+					body:    `{"challenge_id":"{{cid}}","code":"{{totp:secret}}"}`,
+					capture: map[string]string{"aal2": "access_token"},
+				},
+				{
+					name: "generate", method: "POST", path: "/factors/recovery-codes", token: "cap:aal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 200,
+					capture: map[string]string{"rc0": "codes.0", "rc1": "codes.1"},
+				},
+				{name: "generate-again", method: "POST", path: "/factors/recovery-codes", token: "cap:aal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 422},
+				{name: "status", method: "GET", path: "/factors/recovery-codes", token: "cap:aal2",
+					compare: compareFull, wantStatus: 200},
+				{name: "verify-wrong", method: "POST", path: "/factors/recovery-codes/verify", token: "cap:aal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 422, body: `{"code":"aaaa-aaaa-aaaa-aaaa"}`},
+				{
+					name: "verify", method: "POST", path: "/factors/recovery-codes/verify", token: "cap:aal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 200, body: `{"code":"{{rc0}}"}`,
+					capture: map[string]string{"rcaal2": "access_token"},
+				},
+				{name: "verify-used", method: "POST", path: "/factors/recovery-codes/verify", token: "cap:rcaal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 422, body: `{"code":"{{rc0}}"}`},
+				{name: "regenerate", method: "POST", path: "/factors/recovery-codes/regenerate", token: "cap:rcaal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 200},
+				{name: "verify-stale", method: "POST", path: "/factors/recovery-codes/verify", token: "cap:rcaal2",
+					headers: jsonHdr(), compare: compareFull, wantStatus: 422, body: `{"code":"{{rc1}}"}`},
+				{name: "unenroll-totp", method: "DELETE", path: "/factors/{{fid}}", token: "cap:rcaal2",
+					compare: compareFull, wantStatus: 200},
+				{name: "delete", method: "DELETE", path: "/factors/recovery-codes", token: "cap:rcaal2",
+					compare: compareFull, wantStatus: 200},
+				{name: "status-after", method: "GET", path: "/factors/recovery-codes", token: "cap:rcaal2",
+					compare: compareFull, wantStatus: 404},
 			},
 		},
 
@@ -424,16 +484,23 @@ func computeTOTP(secret string) string {
 	return code
 }
 
-// getPath extracts a dotted field path ("totp.secret") from a JSON body as a
-// string; returns "" when absent.
+// getPath extracts a dotted field path ("totp.secret", "codes.0") from a JSON
+// body as a string; a numeric segment indexes an array. Returns "" when absent.
 func getPath(body []byte, path string) string {
 	v := jsonDecode(body)
 	for _, seg := range strings.Split(path, ".") {
-		m, ok := v.(map[string]any)
-		if !ok {
+		switch t := v.(type) {
+		case map[string]any:
+			v = t[seg]
+		case []any:
+			i, err := strconv.Atoi(seg)
+			if err != nil || i < 0 || i >= len(t) {
+				return ""
+			}
+			v = t[i]
+		default:
 			return ""
 		}
-		v = m[seg]
 	}
 	switch t := v.(type) {
 	case string:

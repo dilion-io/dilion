@@ -10,21 +10,21 @@ to both; responses are normalised (volatile ids/timestamps/tokens scrubbed) and
 diffed structurally. A diff that matches an entry in [`deviations.yaml`](./deviations.yaml)
 is downgraded from **FAIL** to **KNOWN**; anything else fails the test.
 
-> Historical baseline against `supabase/auth:v2.196.0` (not a live support table), both profiles
+> Historical baseline against `supabase/auth:v2.197.0` (not a live support table), both profiles
 > green (0 FAIL):
 >
 > | profile | how it runs | ops exercised | result |
 > | --- | --- | --- | --- |
-> | **default** (flags off) | `compose.parity.yml` | **36 / 69 (52.2%)** | PASS · 67 KNOWN |
-> | **flagged** (`PARITY_FLAGS=1`) | `+ compose.parity.flags.yml` | **51 / 69 (73.9%)** | PASS · 76 KNOWN |
+> | **default** (flags off) | `compose.parity.yml` | **39 / 78 (50.0%)** | PASS · 67 KNOWN |
+> | **flagged** (`PARITY_FLAGS=1`) | `+ compose.parity.flags.yml` | **56 / 78 (71.8%)** | PASS · 86 KNOWN |
 >
-> The flagged run is a **superset** — 51 of the 69 curated operations are covered
+> The flagged run is a **superset** — 56 of the 78 curated operations are covered
 > in all (up from the original 12 / 17.4%). Coverage grew via three mechanisms:
 > single-request `scenario`s, multi-step `flow`s (flows_test.go — admin lifecycle,
-> the full MFA/TOTP enrol→challenge→verify→aal2 chain, admin factors, and
-> `generate_link`→`verify` OTP redemption without an inbox), and a matched
-> feature-flag twin overlay (OAuth 2.1 server, passkeys, manual linking). The
-> remaining 18 ops each need a capability the harness deliberately does not fake
+> the full MFA/TOTP enrol→challenge→verify→aal2 chain, MFA recovery codes, admin
+> factors, and `generate_link`→`verify` OTP redemption without an inbox), and a
+> matched feature-flag twin overlay (OAuth 2.1 server, passkeys, manual linking,
+> recovery codes). The remaining 22 ops each need a capability the harness deliberately does not fake
 > (software WebAuthn authenticator, signed SAML assertion, scriptable consent
 > cookie, stubbed external IdP) — see the coverage section and the TODO scaffold
 > in harness_test.go.
@@ -58,7 +58,7 @@ with `make parity-test PARITY_FLAGS=0 PARITY_SUMMARY_FILE=/tmp/parity-summary.md
                                 │ http://localhost:8787/auth/v1                           │ http://localhost:9999
                                 ▼                                                         ▼
                     ┌───────────────────────┐                             ┌───────────────────────────────┐
-                    │  Dilion               │   identical twinned config  │  GoTrue  supabase/auth:v2.196.0│
+                    │  Dilion               │   identical twinned config  │  GoTrue  supabase/auth:v2.197.0│
                     │  (Dockerfile.dilion   │◄───────  same JWT secret ───►│  (published image)            │
                     │   or `go run`)        │          same SITE_URL       │  gotrue migrate → gotrue serve │
                     │  self-migrates on boot│          same feature flags  │  (migrate is a SEPARATE step)  │
@@ -86,7 +86,7 @@ base, which is what makes the two mounts comparable.
 
 The canonical image is Docker Hub **`supabase/gotrue`** (the repo kept the old
 name after the project renamed to `auth`); `supabase/auth` mirrors it. Pin
-**`v2.196.0`**.
+**`v2.197.0`**.
 
 Three hard-won facts, all **verified in this environment**:
 
@@ -114,7 +114,7 @@ docker run --rm --network <net> \
   -e API_EXTERNAL_URL=http://localhost:9999 \
   -e GOTRUE_SITE_URL=http://localhost:3000 \
   -e GOTRUE_JWT_SECRET=<shared-secret> \
-  supabase/auth:v2.196.0 gotrue migrate
+  supabase/auth:v2.197.0 gotrue migrate
 
 # serve
 docker run -d --name gotrue --network <net> -p 9999:9999 \
@@ -126,7 +126,7 @@ docker run -d --name gotrue --network <net> -p 9999:9999 \
   -e GOTRUE_JWT_SECRET=<shared-secret> \
   -e GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated \
   -e GOTRUE_MAILER_AUTOCONFIRM=true -e GOTRUE_EXTERNAL_EMAIL_ENABLED=true \
-  supabase/auth:v2.196.0 gotrue serve
+  supabase/auth:v2.197.0 gotrue serve
 ```
 
 [`compose.parity.yml`](./compose.parity.yml) wires all of this — a one-shot
@@ -263,7 +263,7 @@ entry:
   aspect: body-field          # status | body-field | header | redirect | error-shape | jwt-claim
   field: version              # substring-matched against the differ's diff path ("" = whole response)
   dilion:   "0.1.0"
-  upstream: "the GoTrue release string, e.g. v2.196.0"
+  upstream: "the GoTrue release string, e.g. v2.197.0"
   reason:   "volatile build identifier; scrubbed before diffing"
   source:   internal/auth/auth.go:34   # the in-code Deviation comment, or "empirical"
 ```

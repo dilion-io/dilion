@@ -7,7 +7,7 @@
 #   docker-compose -f test/parity/compose.parity.yml down -v         # tear down
 #
 # Run from the REPO ROOT (the Dilion build context is `../..`). Verified against
-# docker-compose v5 and image supabase/auth:v2.196.0.
+# docker-compose v5 and image supabase/auth:v2.197.0.
 #
 # Ports on the host:  postgres 55433 · gotrue 9999 · dilion 8787
 # (55433 avoids clashing with the dev dilion-db on 55432.)
@@ -47,7 +47,7 @@ services:
   # This one-shot runs `gotrue migrate` then exits 0; the server waits on it.
   # --------------------------------------------------------------------------
   gotrue-migrate:
-    image: supabase/auth:v2.196.0
+    image: supabase/auth:v2.197.0
     depends_on:
       postgres-parity:
         condition: service_healthy
@@ -67,7 +67,7 @@ services:
   # Real upstream GoTrue server.
   # --------------------------------------------------------------------------
   gotrue:
-    image: supabase/auth:v2.196.0
+    image: supabase/auth:v2.197.0
     depends_on:
       postgres-parity:
         condition: service_healthy

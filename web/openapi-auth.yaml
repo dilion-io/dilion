@@ -1542,6 +1542,224 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /auth/v1/factors/recovery-codes:
+    get:
+      tags: [MFA]
+      operationId: authRecoveryCodesStatus
+      summary: Recovery code status
+      description: |
+        The user's recovery-code factor id with the number of codes in the set and how many are
+        still unused. Code values are never returned after generation. Works whether or not
+        recovery codes are enabled.
+
+        Requires a **user access token carrying a `session_id`**; anonymous users are
+        `403 no_authorization`. Not rate limited.
+      responses:
+        '200':
+          description: The status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`bad_jwt`, `user_not_found`, `user_banned`, or `no_authorization`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: '`mfa_factor_not_found` — no recovery codes enrolled.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [MFA]
+      operationId: authRecoveryCodesGenerate
+      summary: Generate recovery codes
+      description: |
+        Creates a **verified** `recovery_code` factor with a set of single-use codes and returns the
+        plaintexts exactly once (`DILION_AUTH_MFA_RECOVERY_CODES_COUNT`, default 10, of
+        `..._CODE_LENGTH`, default 16, characters). Only argon2id hashes are stored.
+
+        Requires an **`aal2`** session (`403 insufficient_aal`) and another verified factor
+        (`422 mfa_recovery_codes_sole_factor`). A user who already has codes gets
+        `422 mfa_verified_factor_exists`; rotate them with `.../regenerate`. The factor budget and
+        name rules of `POST /factors` apply. Requires
+        `DILION_AUTH_MFA_RECOVERY_CODES_ENROLL_ENABLED=true` (`422
+        mfa_recovery_codes_enroll_not_enabled`).
+
+        Requires a **user access token carrying a `session_id`**. Not rate limited.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoveryCodesGenerateParams'
+      responses:
+        '200':
+          description: The new codes. Show them to the user now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`bad_jwt`, `user_not_found`, `user_banned`, `no_authorization`, or `insufficient_aal`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            `mfa_recovery_codes_enroll_not_enabled`, `mfa_recovery_codes_sole_factor`,
+            `mfa_verified_factor_exists`, `mfa_factor_name_conflict`, `too_many_enrolled_mfa_factors`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [MFA]
+      operationId: authRecoveryCodesDelete
+      summary: Delete recovery codes
+      description: |
+        Removes the recovery-code factor and every code, and answers `{"id": "..."}`. Sessions that
+        reached `aal2` with a recovery code are downgraded, as for `DELETE /factors/{factor_id}`.
+        Requires an **`aal2`** session. Works whether or not recovery codes are enabled.
+
+        Requires a **user access token carrying a `session_id`**. Not rate limited.
+      responses:
+        '200':
+          description: The deleted factor's id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnenrollFactorResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`bad_jwt`, `user_not_found`, `user_banned`, `no_authorization`, or `insufficient_aal`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: '`mfa_factor_not_found` — no recovery codes enrolled.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/v1/factors/recovery-codes/verify:
+    post:
+      tags: [MFA]
+      operationId: authRecoveryCodesVerify
+      summary: Redeem a recovery code
+      description: |
+        Consumes one code and raises the calling session to **`aal2`** exactly as
+        `POST /factors/{factor_id}/verify` does: a `mfa/recovery_code` AMR claim, a rotated refresh
+        token, and every other session below `aal2` invalidated. The `mfa_verification_attempt`
+        hook sees the attempt; when it rejects, the user is signed out everywhere.
+
+        A wrong code, a used code and no codes enrolled are the same
+        `422 mfa_verification_failed`. `DILION_AUTH_MFA_RECOVERY_CODES_MAX_VERIFY_ATTEMPTS`
+        (default 5) failures in a row lock verification for `..._LOCKOUT_DURATION` (default 15m):
+        `429 mfa_recovery_codes_locked`. Regenerating the codes clears the lock. Requires
+        `DILION_AUTH_MFA_RECOVERY_CODES_VERIFY_ENABLED=true`.
+
+        Requires a **user access token carrying a `session_id`**. Bucket: `RATE_LIMIT_VERIFY`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoveryCodesVerifyParams'
+      responses:
+        '200':
+          description: The session at `aal2`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenResponse'
+        '400':
+          description: '`validation_failed` — empty `code`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`bad_jwt`, `user_not_found`, `user_banned`, `no_authorization`, or `mfa_verification_rejected`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`mfa_verification_failed` or `mfa_recovery_codes_verify_not_enabled`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: '`mfa_recovery_codes_locked`, or the `RATE_LIMIT_VERIFY` bucket (`over_request_rate_limit`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/v1/factors/recovery-codes/regenerate:
+    post:
+      tags: [MFA]
+      operationId: authRecoveryCodesRegenerate
+      summary: Regenerate recovery codes
+      description: |
+        Replaces every code with a new set in one transaction, clears any verification lock, and
+        returns the new plaintexts once. The previous codes stop working. Requires an **`aal2`**
+        session and `DILION_AUTH_MFA_RECOVERY_CODES_ENROLL_ENABLED=true`.
+
+        Requires a **user access token carrying a `session_id`**. Not rate limited.
+      responses:
+        '200':
+          description: The new codes. Show them to the user now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          $ref: '#/components/responses/NoAuthorization'
+        '403':
+          description: '`bad_jwt`, `user_not_found`, `user_banned`, `no_authorization`, or `insufficient_aal`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: '`mfa_factor_not_found` — no recovery codes enrolled.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`mfa_recovery_codes_enroll_not_enabled`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /auth/v1/factors/{factor_id}:
     parameters:
       - $ref: '#/components/parameters/FactorId'
@@ -1554,8 +1772,10 @@ paths:
         are downgraded, and the user is notified by mail.
 
         Removing a **verified** factor requires the calling session to be `aal2`
-        (`422 insufficient_aal`). A factor that does not exist and one that belongs to someone else
-        answer the identical `404 mfa_factor_not_found`.
+        (`422 insufficient_aal`). As in upstream v2.197.0, recovery codes do not stop it: removing
+        the user's last other factor leaves the codes as their only second factor. A factor that
+        does not exist and one that belongs to someone else answer the identical
+        `404 mfa_factor_not_found`.
 
         Requires a **user access token carrying a `session_id`**. Not rate limited.
       responses:
@@ -4739,8 +4959,12 @@ components:
           description: Unique per user. Omitted when empty.
         factor_type:
           type: string
-          enum: [totp, phone, webauthn]
-          description: Only `totp` can actually be enrolled here.
+          enum: [totp, phone, webauthn, recovery_code]
+          description: |
+            `recovery_code` is the user's set of recovery codes, created verified by
+            `POST /factors/recovery-codes`. It cannot be challenged or verified through the
+            `/factors/{factor_id}` routes (`400 validation_failed`); `DELETE /factors/{factor_id}`
+            removes it, codes and all, like `DELETE /factors/recovery-codes`.
         phone:
           type: string
           description: Always empty — phone factors are not implemented.
@@ -4847,6 +5071,54 @@ components:
           type: string
           format: uuid
       required: [id]
+
+    RecoveryCodesResponse:
+      type: object
+      title: RecoveryCodesResponse
+      description: |
+        The status of the user's recovery codes (`GET`: `remaining`, no `codes`), or a freshly
+        generated set (`POST`, `.../regenerate`: `friendly_name` and `codes`, no `remaining`).
+        `id` is the `recovery_code` factor's id.
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [recovery_code]
+        friendly_name:
+          type: string
+        total:
+          type: integer
+          description: Codes in the current set.
+        remaining:
+          type: integer
+          description: Codes in the current set not used yet. Status only.
+        codes:
+          type: array
+          description: |
+            The plaintext single-use codes, canonical form (lowercase base32, no separators). Returned
+            only by generate and regenerate; they cannot be read back.
+          items:
+            type: string
+      required: [id, type, total]
+
+    RecoveryCodesGenerateParams:
+      type: object
+      title: RecoveryCodesGenerateParams
+      properties:
+        friendly_name:
+          type: string
+          description: Defaults to `Recovery codes`. Unique per user, like every factor name.
+
+    RecoveryCodesVerifyParams:
+      type: object
+      title: RecoveryCodesVerifyParams
+      properties:
+        code:
+          type: string
+          description: Whitespace, `-` separators and letter case are ignored.
+      required: [code]
 
     AdminUpdateFactorParams:
       type: object

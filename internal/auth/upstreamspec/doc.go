@@ -41,7 +41,7 @@
 // openapi.yaml is vendored verbatim; see SOURCE.md for its provenance and
 // gen.go for the load-blocking spec bugs the generator works around.
 // `make upstream-spec-sync` re-fetches and regenerates;
-// `make upstream-spec-check` reports drift against upstream master.
+// `make upstream-spec-check` reports drift against upstream's latest release.
 //
 //go:generate go run gen.go
 package upstreamspec

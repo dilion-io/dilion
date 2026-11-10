@@ -18,7 +18,7 @@ type Operation struct {
 	Path   string // with the /auth/v1 prefix stripped, e.g. "/token"
 }
 
-// Contract is the parsed set of the 69 operations the harness measures coverage
+// Contract is the parsed set of curated operations the harness measures coverage
 // against.
 type Contract struct {
 	Ops []Operation

@@ -38,6 +38,9 @@ const (
 	FactorTypeTOTP     = "totp"
 	FactorTypePhone    = "phone"
 	FactorTypeWebAuthn = "webauthn"
+	// FactorTypeRecoveryCode is the user's set of single-use recovery codes
+	// (recovery_codes.go). It is created verified and never challenged.
+	FactorTypeRecoveryCode = "recovery_code"
 )
 
 // Factor states, matching the auth.factor_status enum
@@ -59,20 +62,22 @@ const (
 // the JWT `amr` claim, and they are copied from upstream
 // models.AuthenticationMethod.String().
 const (
-	AMRMethodOAuth        = "oauth"
-	AMRMethodPassword     = "password"
-	AMRMethodOTP          = "otp"
-	AMRMethodTOTP         = "totp"
-	AMRMethodMFAPhone     = "mfa/phone"
-	AMRMethodMFAWebAuthn  = "mfa/webauthn"
-	AMRMethodRecovery     = "recovery"
-	AMRMethodInvite       = "invite"
-	AMRMethodMagicLink    = "magiclink"
-	AMRMethodEmailSignup  = "email/signup"
-	AMRMethodEmailChange  = "email_change"
-	AMRMethodTokenRefresh = "token_refresh"
-	AMRMethodAnonymous    = "anonymous"
-	AMRMethodSSOSAML      = "sso/saml"
+	AMRMethodOAuth       = "oauth"
+	AMRMethodPassword    = "password"
+	AMRMethodOTP         = "otp"
+	AMRMethodTOTP        = "totp"
+	AMRMethodMFAPhone    = "mfa/phone"
+	AMRMethodMFAWebAuthn = "mfa/webauthn"
+	// AMRMethodMFARecoveryCode is written by POST /factors/recovery-codes/verify.
+	AMRMethodMFARecoveryCode = "mfa/recovery_code"
+	AMRMethodRecovery        = "recovery"
+	AMRMethodInvite          = "invite"
+	AMRMethodMagicLink       = "magiclink"
+	AMRMethodEmailSignup     = "email/signup"
+	AMRMethodEmailChange     = "email_change"
+	AMRMethodTokenRefresh    = "token_refresh"
+	AMRMethodAnonymous       = "anonymous"
+	AMRMethodSSOSAML         = "sso/saml"
 )
 
 // MFA error codes, copied verbatim from upstream
@@ -95,6 +100,11 @@ const (
 	ErrorCodeMFAPhoneVerifyDisabled    = "mfa_phone_verify_not_enabled"
 	ErrorCodeMFAWebAuthnEnrollDisabled = "mfa_webauthn_enroll_not_enabled"
 	ErrorCodeMFAWebAuthnVerifyDisabled = "mfa_webauthn_verify_not_enabled"
+
+	ErrorCodeMFARecoveryCodesEnrollDisabled = "mfa_recovery_codes_enroll_not_enabled"
+	ErrorCodeMFARecoveryCodesVerifyDisabled = "mfa_recovery_codes_verify_not_enabled"
+	ErrorCodeMFARecoveryCodesLocked         = "mfa_recovery_codes_locked"
+	ErrorCodeMFARecoveryCodesSoleFactor     = "mfa_recovery_codes_sole_factor"
 )
 
 // Durations upstream reads from GOTRUE_MFA_*; Config.MFA carries only the TOTP
@@ -216,6 +226,9 @@ func (c *mfaChallenge) record(sessionData []byte) MFAChallengeRecord {
 func (f *Factor) IsVerified() bool   { return f.Status == FactorStateVerified }
 func (f *Factor) IsUnverified() bool { return f.Status == FactorStateUnverified }
 
+// IsRecoveryCodeFactor is upstream Factor.IsRecoveryCodeFactor.
+func (f *Factor) IsRecoveryCodeFactor() bool { return f.FactorType == FactorTypeRecoveryCode }
+
 // amrMethod is upstream's amrMethodForFactorType: the authentication_method a
 // successful verification of this factor writes into auth.mfa_amr_claims.
 func (f *Factor) amrMethod() (string, error) {
@@ -226,6 +239,8 @@ func (f *Factor) amrMethod() (string, error) {
 		return AMRMethodMFAPhone, nil
 	case FactorTypeWebAuthn:
 		return AMRMethodMFAWebAuthn, nil
+	case FactorTypeRecoveryCode:
+		return AMRMethodMFARecoveryCode, nil
 	}
 	return "", fmt.Errorf("auth: no AMR authentication method mapped for factor type %q", f.FactorType)
 }
@@ -258,7 +273,7 @@ type amrClaim struct {
 // raise a session to aal2 — never the sign-in method that created it.
 func (c amrClaim) isAAL2Claim() bool {
 	switch c.Method {
-	case AMRMethodTOTP, AMRMethodMFAPhone, AMRMethodMFAWebAuthn:
+	case AMRMethodTOTP, AMRMethodMFAPhone, AMRMethodMFAWebAuthn, AMRMethodMFARecoveryCode:
 		return true
 	}
 	return false
