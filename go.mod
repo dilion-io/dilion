@@ -3,9 +3,10 @@ module github.com/dilion-io/dilion
 go 1.26.10
 
 require (
+	github.com/beevik/etree v1.8.1
 	github.com/boombuler/barcode v1.1.0
 	github.com/bytemare/opaque v0.18.0
-	github.com/crewjam/saml v0.5.1
+	github.com/crewjam/saml v0.5.2
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/fxamacker/cbor/v2 v2.9.3
 	github.com/go-chi/chi/v5 v5.3.2
@@ -16,8 +17,9 @@ require (
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.25.0
-	golang.org/x/crypto v0.56.0
-	golang.org/x/sync v0.23.0
+	github.com/russellhaering/goxmldsig v1.6.1
+	golang.org/x/crypto v0.58.0
+	golang.org/x/sync v0.24.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -25,7 +27,6 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/nistec v0.0.4 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
-	github.com/beevik/etree v1.8.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytemare/ecc v0.9.0 // indirect
 	github.com/bytemare/hash v0.6.2 // indirect
@@ -35,7 +36,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.3.0 // indirect
-	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/gtank/ristretto255 v0.2.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -50,10 +50,9 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/russellhaering/goxmldsig v1.6.1 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

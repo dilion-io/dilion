@@ -14,7 +14,7 @@ OPAQUE_KEY_FILE := .dev/opaque.key
 DOCKER_IMAGE ?= ghcr.io/dilion-io/dilion
 DOCKER_VERSION ?= dev
 
-.PHONY: help up down ps build vet test test-db openapi openapi-check \
+.PHONY: help up down ps build vet test vuln test-db openapi openapi-check \
         docker-build helm-lint \
         web-install web-check dev dev-web e2e-token ci clean \
         parity-up parity-test parity-down parity \
@@ -44,6 +44,9 @@ vet: ## go vet 전체
 
 test: build vet ## 유닛 테스트 (DB 불필요; DB 테스트는 skip)
 	go test ./...
+
+vuln: ## govulncheck (scripts/govulncheck-allow.txt 의 예외만 허용; GOVULNCHECK 로 바이너리 지정)
+	scripts/govulncheck-gate.sh ./...
 
 # CI 리포팅용(선택). 경로를 주면 4개 스위트의 `go test -json`(test2json) 스트림을
 # 그 파일에 누적한다 — CI 가 robherley/go-test-action 으로 렌더한다.
