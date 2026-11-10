@@ -28,13 +28,17 @@ COPY . .
 # Provided by buildx for each requested platform.
 ARG TARGETOS
 ARG TARGETARCH
+# Stamped into the binary for dilion_build_info; the module itself reports
+# "(devel)" because .git is not in the build context.
+ARG VERSION=dev
 
 # The build cache is keyed per target architecture; sharing one across arches
 # only evicts entries the other arch just wrote.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build,id=go-build-$TARGETARCH \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-    go build -trimpath -ldflags='-s -w' -o /out/dilion ./cmd/dilion
+    go build -trimpath -ldflags="-s -w -X github.com/dilion-io/dilion.version=$VERSION" \
+      -o /out/dilion ./cmd/dilion
 
 # static-debian12 carries no shell and no package manager; :nonroot runs as
 # uid 65532. CGO_ENABLED=0 above is what makes this base viable.
@@ -62,5 +66,8 @@ COPY --from=build /out/dilion /usr/local/bin/dilion
 # environment contract.
 ENV DILION_ADDR=:8787
 EXPOSE 8787
+# Prometheus metrics, served only when DILION_METRICS_ADDR is set (the Helm
+# chart sets it to :9090).
+EXPOSE 9090
 
 ENTRYPOINT ["/usr/local/bin/dilion"]

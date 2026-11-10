@@ -15,7 +15,7 @@ DOCKER_IMAGE ?= ghcr.io/dilion-io/dilion
 DOCKER_VERSION ?= dev
 
 .PHONY: help up down ps build vet test test-db openapi openapi-check \
-        docker-build \
+        docker-build helm-lint \
         web-install web-check dev dev-web e2e-token ci clean \
         parity-up parity-test parity-down parity \
         upstream-spec-sync upstream-spec-check
@@ -82,6 +82,21 @@ docker-build: ## 서버 이미지 빌드 (DOCKER_VERSION / DOCKER_IMAGE 로 태�
 	  --build-arg REVISION='$(shell git rev-parse HEAD 2>/dev/null || echo unknown)' \
 	  --build-arg CREATED='$(shell date -u +%Y-%m-%dT%H:%M:%SZ)' \
 	  -t '$(DOCKER_IMAGE):$(DOCKER_VERSION)' .
+
+## ---- Helm chart ----
+
+# 차트는 필수 Secret 없이 렌더링을 거부하므로 lint 에 자리표시 값을 준다. 그
+# 거부 자체와 ServiceMonitor 를 포함한 전체 렌더링도 함께 확인한다.
+HELM_CHART := charts/dilion
+HELM_LINT_SET := --set secrets.existingSecret=lint --set metrics.serviceMonitor.enabled=true \
+	--set ingress.enabled=true --set autoscaling.enabled=true
+
+helm-lint: ## Helm chart lint + 렌더링 검사
+	helm lint --strict $(HELM_CHART) $(HELM_LINT_SET)
+	helm template lint $(HELM_CHART) $(HELM_LINT_SET) >/dev/null
+	@if helm template lint $(HELM_CHART) >/dev/null 2>&1; then \
+		echo "helm-lint: chart rendered without secrets; it must refuse"; exit 1; fi
+	@echo "helm-lint: OK"
 
 ## ---- 프론트엔드 ----
 

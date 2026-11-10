@@ -44,6 +44,7 @@ import (
 	"github.com/dilion-io/dilion/internal/privacy"
 	"github.com/dilion-io/dilion/ports"
 
+	"github.com/dilion-io/dilion/internal/metrics"
 	"github.com/dilion-io/dilion/internal/netguard"
 )
 
@@ -155,6 +156,9 @@ type Config struct {
 	// workers (privacy.EngineDeps); zero means the privacy defaults.
 	PollInterval      time.Duration
 	RetentionInterval time.Duration
+	// Metrics is shared by every instance's privacy Engine; nil records
+	// nothing.
+	Metrics *metrics.Metrics
 }
 
 // Registry resolves instance resources from a context and owns the lazily
@@ -316,6 +320,7 @@ func (r *Registry) buildEngine(ctx context.Context, id string) (*privacy.Engine,
 		Logger:            r.cfg.Logger,
 		PollInterval:      r.cfg.PollInterval,
 		RetentionInterval: r.cfg.RetentionInterval,
+		Metrics:           r.cfg.Metrics,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("instances: engine for instance %q: %w", id, err)

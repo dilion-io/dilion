@@ -7,6 +7,7 @@
 //	DILION_JWT_SECRET     HS256 secret for the /auth/v1 surface
 //	DILION_MASTER_KEY     base64-encoded 32-byte KEK for the built-in KMS
 //	DILION_ADDR           listen address (default :8787)
+//	DILION_METRICS_ADDR   Prometheus /metrics listener, e.g. :9090 (default off)
 //	DILION_POLICY_FILE    optional compliance policy YAML (merged onto built-ins)
 //	DILION_PII_FIELDS_FILE   optional PII vault field definitions YAML
 //	                         (pii-fields: {<key>: {hint: EMAIL|NAME|PHONE|ADDRESS|GENERIC}});
@@ -55,6 +56,9 @@ func run() error {
 	opts := []dilion.Option{dilion.WithDSN(dsn)}
 	if addr := os.Getenv("DILION_ADDR"); addr != "" {
 		opts = append(opts, dilion.WithAddr(addr))
+	}
+	if addr := os.Getenv("DILION_METRICS_ADDR"); addr != "" {
+		opts = append(opts, dilion.WithMetricsAddr(addr))
 	}
 	if secret := os.Getenv("DILION_JWT_SECRET"); secret != "" {
 		opts = append(opts, dilion.WithJWTSecret([]byte(secret)))

@@ -68,8 +68,14 @@ func (e *Engine) loop(ctx context.Context, w worker) {
 			return
 		case <-timer.C:
 		}
-		if err := w.run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			e.log.Error("privacy worker tick failed", "worker", w.name, "err", err)
+		start := time.Now()
+		err := w.run(ctx)
+		// A cancelled tick is shutdown, not a failure worth counting.
+		if !errors.Is(err, context.Canceled) {
+			e.metrics.WorkerTick(w.name, time.Since(start), err)
+			if err != nil {
+				e.log.Error("privacy worker tick failed", "worker", w.name, "err", err)
+			}
 		}
 		timer.Reset(jitter(w.interval))
 	}

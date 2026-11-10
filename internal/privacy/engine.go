@@ -34,6 +34,7 @@ import (
 	"github.com/dilion-io/dilion/internal/hooks"
 	"github.com/dilion-io/dilion/internal/kmslocal"
 	"github.com/dilion-io/dilion/internal/logctx"
+	"github.com/dilion-io/dilion/internal/metrics"
 	"github.com/dilion-io/dilion/ports"
 
 	"github.com/dilion-io/dilion/internal/netguard"
@@ -86,6 +87,10 @@ type EngineDeps struct {
 	// DefaultPollInterval and DefaultRetentionInterval.
 	PollInterval      time.Duration
 	RetentionInterval time.Duration
+	// Metrics records worker ticks and delivery outcomes; nil records
+	// nothing. It is shared by every instance's engine, so nothing it records
+	// names the instance.
+	Metrics *metrics.Metrics
 }
 
 // Engine implements Service.
@@ -108,6 +113,7 @@ type Engine struct {
 	instanceID      string
 	http            *http.Client
 	log             *slog.Logger
+	metrics         *metrics.Metrics
 }
 
 var _ Service = (*Engine)(nil)
@@ -156,6 +162,7 @@ func NewEngine(d EngineDeps) (*Engine, error) {
 		connectors:     d.Connectors,
 		tombstoneKey:   append([]byte(nil), d.TombstoneKey...),
 		instanceID:     d.InstanceID,
+		metrics:        d.Metrics,
 		http:           &http.Client{Timeout: 15 * time.Second, Transport: netguard.Transport(http.DefaultTransport, d.OutboundNetworks)},
 		// The engine serves one instance, so it names it once rather than per
 		// call; logctx then leaves the attribute alone.

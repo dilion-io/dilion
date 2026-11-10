@@ -334,6 +334,7 @@ func (e *Engine) completeTask(ctx context.Context, t task, evidence map[string]a
 		where id = $1`, t.ID, e.now(), string(raw)); err != nil {
 		return fmt.Errorf("privacy: complete task: %w", err)
 	}
+	e.metrics.Delivery("completed")
 	e.log.Info("delivery task completed", "task_id", t.ID, "request_id", t.RequestID,
 		"destination_id", t.DestinationID, "attempt", t.AttemptCount)
 	return nil
@@ -362,9 +363,11 @@ func (e *Engine) failTask(ctx context.Context, t task, code string, evidence map
 		return fmt.Errorf("privacy: fail task: %w", err)
 	}
 	if dead {
+		e.metrics.Delivery("dead")
 		e.log.Error("delivery task dead-lettered", "task_id", t.ID, "request_id", t.RequestID,
 			"destination_id", t.DestinationID, "code", code, "attempts", t.AttemptCount)
 	} else {
+		e.metrics.Delivery("retry")
 		e.log.Warn("delivery task failed; will retry", "task_id", t.ID, "code", code,
 			"attempt", t.AttemptCount, "next_attempt_at", next)
 	}
