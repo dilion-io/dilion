@@ -26,22 +26,22 @@ ErrorSchema                   MFARecoveryCodesStatusSchema   UserSchema
                               OAuthClientSchema              WebAuthnChallengeResponse
 ```
 
-For comparison, Dilion implements 69 operations; the passkeys routes have no
+For comparison, Dilion implements 80 operations (web/openapi-auth.yaml); the passkeys routes have no
 entry in this document at all.
 
-### Documented upstream, not implemented by Dilion
+### Synced at bfbe078
 
-The conformance test compares response schemas, top-level properties only, so
-these pass it without being served:
+What this sync brought in, and where Dilion serves it:
 
-- MFA recovery codes — `GET|POST|DELETE /factors/recovery-codes`,
-  `POST /factors/recovery-codes/verify`, `POST /factors/recovery-codes/regenerate`
-  and the two `MFARecoveryCodes*Schema` bodies. Synced at bfbe078; no
-  conformance pair, since Dilion has no Go type for them.
-- SAML `dedicated_scope` — `saml.dedicated_scope` on SSO provider create and
-  responses, which scopes a provider's ACS URL and entity ID to its own ID
-  (`/sso/{id}/saml/acs`). It is a nested property, which the conformance test
-  does not reach.
+- MFA recovery codes — `/factors/recovery-codes*` and the two
+  `MFARecoveryCodes*Schema` bodies: `internal/auth/recovery_codes.go`,
+  migration 0122. Both schemas are conformance pairs of
+  `RecoveryCodesResponse`.
+- SAML `dedicated_scope` — `saml.dedicated_scope` on SSO providers and the
+  `/sso/{id}/saml/{metadata,acs}` routes: migration 0123, `saml_sp.go`,
+  `saml_acs.go`. The conformance test compares top-level properties only, so
+  this nested property is held by `sso_dedicated_scope_db_test.go` instead.
+- `DELETE /admin/users/{id}` now documents the `{}` it has always returned.
 
 ## Known spec bugs
 
