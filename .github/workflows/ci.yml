@@ -19,8 +19,10 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
+      # Plain `govulncheck ./...` plus the accepted findings listed, with a
+      # minimum module version each, in scripts/govulncheck-allow.txt.
       - name: Scan reachable vulnerabilities
-        run: govulncheck ./...
+        run: make vuln
 
   backend:
     name: Backend (build · vet · tests · openapi drift)
