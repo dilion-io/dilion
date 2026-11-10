@@ -1,0 +1,25 @@
+Dilion {{ .Values.image.tag | default .Chart.AppVersion }} is deploying as {{ include "dilion.fullname" . }}.
+
+API (Supabase Auth compatible at /auth/v1, privacy API at /privacy/v1):
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dilion.fullname" . }} 8787:{{ .Values.service.port }}
+  curl http://localhost:8787/healthz
+{{- end }}
+{{- if .Values.metrics.enabled }}
+
+Metrics (cluster-internal):
+  http://{{ include "dilion.fullname" . }}-metrics.{{ .Release.Namespace }}.svc:{{ .Values.metrics.port }}/metrics
+{{- if .Values.metrics.serviceMonitor.enabled }}
+  Scraped through ServiceMonitor {{ .Values.metrics.serviceMonitor.namespace | default .Release.Namespace }}/{{ include "dilion.fullname" . }};
+  make sure its labels match your Prometheus' serviceMonitorSelector.
+{{- end }}
+{{- end }}
+{{- if not (hasKey .Values.config "DILION_TRUSTED_PROXIES") }}
+
+WARNING: config.DILION_TRUSTED_PROXIES is not set. Behind an ingress or load
+balancer every client then shares the proxy's address, and its rate limits.
+{{- end }}

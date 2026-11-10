@@ -81,6 +81,10 @@ docker run --rm -p 8787:8787 \
 
 같은 이미지를 로컬에서 빌드하려면 `make docker-build`를 사용합니다.
 
+Kubernetes에는 [charts/dilion](charts/dilion/README.md)의 Helm chart로 배포합니다.
+Prometheus 메트릭은 `DILION_METRICS_ADDR`(예: `:9090`)를 주면 API와 다른 listener의
+`/metrics`로 열리며, 차트는 이를 기본으로 켜고 ServiceMonitor도 만들 수 있습니다.
+
 JS SDK는 npm에 발행됩니다.
 
 ```bash

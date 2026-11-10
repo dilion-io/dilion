@@ -1,0 +1,213 @@
+# Default values for the dilion chart.
+#
+# The minimum to install is a database and the two keys that must survive
+# restarts — see `secrets` below. The chart refuses to render without them:
+# Dilion would otherwise generate a different key in every pod, and tokens or
+# stored PII from one pod would be unreadable in the next.
+
+image:
+  repository: ghcr.io/dilion-io/dilion
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pin a digest (sha256:...) to override tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Every replica runs the privacy workers too; they coordinate through Postgres
+# locks, so more replicas are safe but each adds polling load (see
+# DILION_PRIVACY_POLL_INTERVAL).
+replicaCount: 2
+
+# ---- secrets ----
+#
+# Either name an existing Secret, or let the chart create one from the inline
+# values. Env var names are the Secret's keys, so an existing Secret must use
+# them verbatim: DILION_DSN, DILION_MASTER_KEY, DILION_JWT_SECRET and, if used,
+# DILION_AUTH_JWT_KEYS, DILION_AUTH_OPAQUE_MASTER_KEY, ... Every key of the
+# Secret becomes an env var.
+secrets:
+  existingSecret: ""
+
+  # Inline values, used only when existingSecret is empty.
+  # Postgres connection string, e.g.
+  #   postgres://dilion:pass@postgres:5432/dilion?sslmode=require&pool_max_conns=20
+  dsn: ""
+  # base64 of 32 random bytes:  head -c32 /dev/urandom | base64
+  # Encrypts stored PII. Losing it makes that PII unreadable, so back it up.
+  masterKey: ""
+  # HS256 signing secret for /auth/v1 tokens. Give this, or jwtKeys (ES256
+  # JWK set, recommended), or both.
+  jwtSecret: ""
+  jwtKeys: ""
+  # OPAQUE key (unpadded base64url of 32 bytes). Setting it enables OPAQUE.
+  opaqueMasterKey: ""
+  # Any other sensitive settings, as env var name: value, e.g.
+  #   DILION_AUTH_SMS_TWILIO_AUTH_TOKEN: ...
+  #   DILION_AUTH_SECURITY_CAPTCHA_SECRET: ...
+  extra: {}
+
+# ---- plain configuration ----
+#
+# Non-secret environment, as env var name: value. The full list is in
+# cmd/dilion/main.go and internal/auth/conf.go (DILION_AUTH_*, with the
+# upstream GOTRUE_* names as a fallback). Values must be strings.
+config:
+  DILION_LOG_LEVEL: info
+  # The ingress controller is a proxy: without trusting it, every client shares
+  # its address and therefore its rate limits. Set this to the controller's pod
+  # network, e.g. "10.0.0.0/8".
+  # DILION_TRUSTED_PROXIES: ""
+  # DILION_AUTH_SITE_URL: https://app.example.com
+  # DILION_AUTH_URI_ALLOW_LIST: https://app.example.com/**
+  # DILION_AUTH_JWT_ISSUER: https://auth.example.com/auth/v1
+  # DILION_PRIVACY_POLL_INTERVAL: 30s
+
+# Extra env entries in Kubernetes form, for valueFrom and friends.
+extraEnv: []
+# Extra envFrom sources (ConfigMaps or Secrets).
+extraEnvFrom: []
+
+# Compliance policy overrides merged onto the built-ins (DILION_POLICY_FILE),
+# as a YAML string. Empty uses the built-ins.
+policy: ""
+# PII vault field definitions (DILION_PII_FIELDS_FILE), as a YAML string, e.g.
+#   piiFields: |
+#     pii-fields:
+#       email: {hint: EMAIL}
+#       full_name: {hint: NAME}
+piiFields: ""
+
+# ---- metrics ----
+metrics:
+  # Serves Prometheus metrics at :<port>/metrics on a listener separate from the
+  # API (DILION_METRICS_ADDR), reached through a ClusterIP Service of its own,
+  # so a public API Service or Ingress never exposes it.
+  enabled: true
+  port: 9090
+  service:
+    annotations: {}
+    labels: {}
+
+  # Prometheus Operator ServiceMonitor. Needs the monitoring.coreos.com CRDs.
+  serviceMonitor:
+    enabled: false
+    # Namespace to create it in; defaults to the release namespace.
+    namespace: ""
+    # Labels the Prometheus serviceMonitorSelector matches on, e.g.
+    #   release: kube-prometheus-stack
+    labels: {}
+    annotations: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+
+# ---- networking ----
+service:
+  type: ClusterIP
+  port: 8787
+  annotations: {}
+  labels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: auth.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: auth-example-com-tls
+  #    hosts:
+  #      - auth.example.com
+
+# ---- pod ----
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # Dilion never calls the Kubernetes API.
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The image is distroless and runs as uid 65532.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# Migrations run at startup, before the listener opens, so the startup probe
+# allows them time (periodSeconds * failureThreshold = 5 minutes).
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 3
+
+# Dilion drains in-flight requests for up to 15s after SIGTERM.
+terminationGracePeriodSeconds: 30
+# e.g. give the load balancer time to drop the pod first (Kubernetes 1.30+):
+#   preStop:
+#     sleep:
+#       seconds: 5
+lifecycle: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # Takes precedence over maxUnavailable when set.
+  # minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# Defaults to spreading replicas across nodes (soft) when empty.
+topologySpreadConstraints: []
+
+extraVolumes: []
+extraVolumeMounts: []
