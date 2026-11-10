@@ -25,6 +25,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -502,9 +503,51 @@ type MFAFactorTypeConfig struct {
 	VerifyEnabled bool `json:"verify_enabled"`
 }
 
+// MFARecoveryCodesConfig mirrors upstream
+// conf.RecoveryCodesFactorTypeConfiguration (GOTRUE_MFA_RECOVERY_CODES_*).
+// Enforced by recovery_codes.go.
+type MFARecoveryCodesConfig struct {
+	// EnrollEnabled gates generating and regenerating codes (default false).
+	EnrollEnabled bool `json:"enroll_enabled"`
+	// VerifyEnabled gates redeeming a code (default false). Status and delete
+	// work regardless of either flag.
+	VerifyEnabled bool `json:"verify_enabled"`
+	// Count is the number of codes in a set (default 10, 4-16).
+	Count int `json:"count"`
+	// CodeLength is the characters per code (default 16, 13-32).
+	CodeLength int `json:"code_length"`
+	// MaxVerifyAttempts is the consecutive failures that lock verification
+	// (default 5, 3-15).
+	MaxVerifyAttempts int `json:"max_verify_attempts"`
+	// LockoutDuration is how long the lock holds (default 15m, 1m-24h).
+	LockoutDuration time.Duration `json:"lockout_duration"`
+}
+
+// validate is upstream's RecoveryCodesFactorTypeConfiguration.Validate: the
+// bounds apply only once either flag is on.
+func (c *MFARecoveryCodesConfig) validate() error {
+	if !c.EnrollEnabled && !c.VerifyEnabled {
+		return nil
+	}
+	var errs []error
+	if c.Count < 4 || c.Count > 16 {
+		errs = append(errs, fmt.Errorf("auth: MFA_RECOVERY_CODES_COUNT must be between 4 and 16, got %d", c.Count))
+	}
+	if c.CodeLength < 13 || c.CodeLength > 32 {
+		errs = append(errs, fmt.Errorf("auth: MFA_RECOVERY_CODES_CODE_LENGTH must be between 13 and 32, got %d", c.CodeLength))
+	}
+	if c.MaxVerifyAttempts < 3 || c.MaxVerifyAttempts > 15 {
+		errs = append(errs, fmt.Errorf("auth: MFA_RECOVERY_CODES_MAX_VERIFY_ATTEMPTS must be between 3 and 15, got %d", c.MaxVerifyAttempts))
+	}
+	if c.LockoutDuration < time.Minute || c.LockoutDuration > 24*time.Hour {
+		errs = append(errs, fmt.Errorf("auth: MFA_RECOVERY_CODES_LOCKOUT_DURATION must be between 1m and 24h, got %v", c.LockoutDuration))
+	}
+	return errors.Join(errs...)
+}
+
 // MFAConfig mirrors upstream conf.MFAConfiguration. Every field is enforced:
 // the per-type gates and MaxEnrolledFactors in factors.go, the OTP shape in
-// factors_phone.go.
+// factors_phone.go, RecoveryCodes in recovery_codes.go.
 type MFAConfig struct {
 	// TOTP mirrors GOTRUE_MFA_TOTP_*.
 	TOTP MFATOTPConfig `json:"totp"`
@@ -513,6 +556,8 @@ type MFAConfig struct {
 	// WebAuthn mirrors GOTRUE_MFA_WEB_AUTHN_* (WebAuthn as a second factor,
 	// distinct from first-class Passkeys). Default off.
 	WebAuthn MFAFactorTypeConfig `json:"web_authn"`
+	// RecoveryCodes mirrors GOTRUE_MFA_RECOVERY_CODES_*. Default off.
+	RecoveryCodes MFARecoveryCodesConfig `json:"recovery_codes"`
 	// MaxEnrolledFactors mirrors GOTRUE_MFA_MAX_ENROLLED_FACTORS (default 10).
 	MaxEnrolledFactors int `json:"max_enrolled_factors"`
 	// PhoneOTPLength / PhoneOTPExp mirror the MFA phone challenge OTP shape
@@ -739,9 +784,12 @@ func DefaultConfig() *Config {
 		External:        map[string]ProviderConfig{},
 		FlowStateExpiry: 5 * time.Minute,
 		MFA: MFAConfig{
-			TOTP:               MFATOTPConfig{EnrollEnabled: true, VerifyEnabled: true},
-			Phone:              MFAFactorTypeConfig{},
-			WebAuthn:           MFAFactorTypeConfig{},
+			TOTP:     MFATOTPConfig{EnrollEnabled: true, VerifyEnabled: true},
+			Phone:    MFAFactorTypeConfig{},
+			WebAuthn: MFAFactorTypeConfig{},
+			RecoveryCodes: MFARecoveryCodesConfig{
+				Count: 10, CodeLength: 16, MaxVerifyAttempts: 5, LockoutDuration: 15 * time.Minute,
+			},
 			MaxEnrolledFactors: 10,
 			PhoneOTPLength:     6,
 			PhoneOTPExp:        300 * time.Second,
@@ -881,6 +929,13 @@ func LoadConfig() (*Config, error) {
 	c.MFA.Phone.VerifyEnabled = envBool("MFA_PHONE_VERIFY_ENABLED", c.MFA.Phone.VerifyEnabled, fail)
 	c.MFA.WebAuthn.EnrollEnabled = envBool("MFA_WEB_AUTHN_ENROLL_ENABLED", c.MFA.WebAuthn.EnrollEnabled, fail)
 	c.MFA.WebAuthn.VerifyEnabled = envBool("MFA_WEB_AUTHN_VERIFY_ENABLED", c.MFA.WebAuthn.VerifyEnabled, fail)
+	rc := &c.MFA.RecoveryCodes
+	rc.EnrollEnabled = envBool("MFA_RECOVERY_CODES_ENROLL_ENABLED", rc.EnrollEnabled, fail)
+	rc.VerifyEnabled = envBool("MFA_RECOVERY_CODES_VERIFY_ENABLED", rc.VerifyEnabled, fail)
+	rc.Count = envInt("MFA_RECOVERY_CODES_COUNT", rc.Count, fail)
+	rc.CodeLength = envInt("MFA_RECOVERY_CODES_CODE_LENGTH", rc.CodeLength, fail)
+	rc.MaxVerifyAttempts = envInt("MFA_RECOVERY_CODES_MAX_VERIFY_ATTEMPTS", rc.MaxVerifyAttempts, fail)
+	rc.LockoutDuration = envDuration("MFA_RECOVERY_CODES_LOCKOUT_DURATION", rc.LockoutDuration, fail)
 	c.MFA.MaxEnrolledFactors = envInt("MFA_MAX_ENROLLED_FACTORS", c.MFA.MaxEnrolledFactors, fail)
 	c.MFA.PhoneOTPLength = envInt("MFA_PHONE_OTP_LENGTH", c.MFA.PhoneOTPLength, fail)
 	// Hooks (Supabase-compatible external extension points).
@@ -918,6 +973,9 @@ func LoadConfig() (*Config, error) {
 // Config is always usable.
 func (c *Config) Validate() error {
 	if err := c.Opaque.validate(); err != nil {
+		return err
+	}
+	if err := c.MFA.RecoveryCodes.validate(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(c.SiteURL) == "" {
