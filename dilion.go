@@ -17,6 +17,9 @@
 //	/iam/v1/*       management-plane RBAC API (huma)
 //	/healthz        liveness; /readyz database readiness
 //
+// Prometheus metrics are not on Handler: MetricsHandler serves them, and
+// WithMetricsAddr has Start serve them on a listener of their own.
+//
 // # Multiple database instances
 //
 // A Dilion "instance" is a whole isolated database (auth.* + dilion_*). The
@@ -47,6 +50,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -55,6 +59,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/dilion-io/dilion/internal/api"
 	"github.com/dilion-io/dilion/internal/audit"
@@ -65,6 +70,7 @@ import (
 	"github.com/dilion-io/dilion/internal/instances"
 	"github.com/dilion-io/dilion/internal/kmslocal"
 	"github.com/dilion-io/dilion/internal/logctx"
+	"github.com/dilion-io/dilion/internal/metrics"
 	"github.com/dilion-io/dilion/internal/netguard"
 	"github.com/dilion-io/dilion/internal/store"
 	"github.com/dilion-io/dilion/ports"
@@ -132,6 +138,8 @@ type config struct {
 	outboundNetworks string
 	authConfig       *auth.Config
 	addr             string
+	metricsAddr      string
+	metricsRegistry  *prometheus.Registry
 	clock            ports.Clock
 	log              *slog.Logger
 
@@ -359,6 +367,22 @@ func WithAuthConfig(c *auth.Config) Option { return func(cfg *config) { cfg.auth
 // WithAddr sets the listen address used by Start (default ":8787").
 func WithAddr(addr string) Option { return func(c *config) { c.addr = addr } }
 
+// WithMetricsAddr has Start serve Prometheus metrics at GET /metrics on a
+// listener of its own (":9090"). They stay off the API listener because they
+// describe the deployment — routes, pool sizes, failure rates — to anyone who
+// can reach it; scrape this address from inside the cluster only. Empty (the
+// default) opens no listener; MetricsHandler still serves them.
+func WithMetricsAddr(addr string) Option { return func(c *config) { c.metricsAddr = addr } }
+
+// WithMetricsRegistry records Dilion's metrics into an embedder's registry, to
+// be exposed by the embedder's own /metrics. The registry is expected to carry
+// the Go runtime and process collectors already, so Dilion does not add them;
+// without this option Dilion uses a private registry that does. Registering
+// two Servers into one registry fails NewServer.
+func WithMetricsRegistry(reg *prometheus.Registry) Option {
+	return func(c *config) { c.metricsRegistry = reg }
+}
+
 // WithClock replaces the time source used by the compliance engine (tests).
 func WithClock(cl ports.Clock) Option { return func(c *config) { c.clock = cl } }
 
@@ -391,6 +415,7 @@ type Server struct {
 	instances *instances.Registry
 	authz     ports.Authorizer
 	audit     ports.AuditSink
+	metrics   *metrics.Metrics
 
 	trustedProxies   netguard.Networks
 	outboundNetworks netguard.Networks
@@ -543,6 +568,19 @@ func NewServer(opts ...Option) (*Server, error) {
 		return nil, fmt.Errorf("dilion: derive tombstone key: %w", err)
 	}
 
+	// Metrics come before the registry, which hands them to every
+	// instance's privacy engine. The pool gauges ask the registry for its
+	// pools at scrape time, by which point it exists.
+	s.metrics, err = metrics.New(metrics.Options{
+		Registry: cfg.metricsRegistry,
+		Version:  buildVersion(),
+		Pools:    s.metricsPools,
+	})
+	if err != nil {
+		s.closeOwnedPool()
+		return nil, fmt.Errorf("dilion: metrics: %w", err)
+	}
+
 	// Instance resolution. Without WithInstanceResolver the whole configuration
 	// becomes one static instance under ports.DefaultInstanceID, which is
 	// exactly the pre-multi-instance behaviour.
@@ -567,6 +605,7 @@ func NewServer(opts ...Option) (*Server, error) {
 		OutboundNetworks:  s.outboundNetworks,
 		PollInterval:      cfg.privacyPoll,
 		RetentionInterval: cfg.privacyRetention,
+		Metrics:           s.metrics,
 	})
 	if err != nil {
 		s.closeOwnedPool()
@@ -600,6 +639,8 @@ func NewServer(opts ...Option) (*Server, error) {
 // buildRouter mounts the compat surface (chi) and the Dilion APIs (huma).
 func (s *Server) buildRouter() *chi.Mux {
 	r := chi.NewRouter()
+	// Outermost, so a panic is counted as the 500 Recoverer turns it into.
+	r.Use(s.metrics.Middleware)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
@@ -698,6 +739,63 @@ func (s *Server) humaConfig() huma.Config {
 // Handler returns the HTTP handler, for embedding into an existing server.
 func (s *Server) Handler() http.Handler { return s.router }
 
+// MetricsHandler serves the server's Prometheus metrics, for an embedder that
+// mounts them itself rather than through WithMetricsAddr. With
+// WithMetricsRegistry it serves that whole registry.
+func (s *Server) MetricsHandler() http.Handler { return s.metrics.Handler() }
+
+// metricsPools resolves the pool of every listed instance for the
+// dilion_db_pool_* gauges. It runs per scrape; a resolver already answers
+// Pool on every request, so it is expected to be cheap.
+func (s *Server) metricsPools(ctx context.Context) (map[string]*pgxpool.Pool, error) {
+	ids, err := s.instances.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pools := make(map[string]*pgxpool.Pool, len(ids))
+	var firstErr error
+	for _, id := range ids {
+		p, err := s.instances.PoolFor(ctx, id)
+		if err != nil {
+			// One unresolvable instance must not blank the others.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		pools[id] = p
+	}
+	return pools, firstErr
+}
+
+// buildVersion names the Dilion module this binary was built from: the
+// version an embedder's go.mod pulled in, or the -X override a release build
+// stamps on the daemon (whose own module reports "(devel)").
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	const path = "github.com/dilion-io/dilion"
+	if info.Main.Path == path && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	for _, d := range info.Deps {
+		if d.Path == path {
+			return d.Version
+		}
+	}
+	return ""
+}
+
+// version is set at link time by release builds:
+//
+//	go build -ldflags "-X github.com/dilion-io/dilion.version=v0.0.6" ./cmd/dilion
+var version string
+
 // WithOpaqueSessionKey lends the shared OPAQUE key to a short, synchronous
 // operation after checking the bearer, live session, MFA and key lifetime.
 // Select the trusted instance on ctx just as for HTTP requests. fn must not
@@ -774,21 +872,38 @@ func (s *Server) Start(ctx context.Context) error {
 		// graceful drain, not kill in-flight requests.
 	}
 
+	var metricsSrv *http.Server
+	if s.cfg.metricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", s.metrics.Handler())
+		metricsSrv = &http.Server{
+			Addr:              s.cfg.metricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+	}
+
 	workersDone := make(chan struct{})
 	go func() {
 		defer close(workersDone)
 		s.runWorkers(ctx)
 	}()
 
-	serveErr := make(chan error, 1)
-	go func() {
-		s.log.Info("dilion: listening", "addr", s.cfg.addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
+	// Either listener dying ends Start: a deployment whose metrics vanish
+	// silently is worse than one that restarts.
+	serveErr := make(chan error, 2)
+	serve := func(name string, hs *http.Server) {
+		s.log.Info("dilion: listening", "listener", name, "addr", hs.Addr)
+		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- fmt.Errorf("dilion: %s listener: %w", name, err)
 			return
 		}
 		serveErr <- nil
-	}()
+	}
+	go serve("api", srv)
+	if metricsSrv != nil {
+		go serve("metrics", metricsSrv)
+	}
 
 	var err error
 	select {
@@ -802,6 +917,12 @@ func (s *Server) Start(ctx context.Context) error {
 	defer shutdownCancel()
 	if serr := srv.Shutdown(shutdownCtx); serr != nil && err == nil {
 		err = serr
+	}
+	// Metrics go down last, so a scrape can still see the drain.
+	if metricsSrv != nil {
+		if serr := metricsSrv.Shutdown(shutdownCtx); serr != nil && err == nil {
+			err = serr
+		}
 	}
 	<-workersDone
 	return err
