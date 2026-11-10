@@ -2,17 +2,13 @@ package auth
 
 import (
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/beevik/etree"
 	"github.com/crewjam/saml"
-	"github.com/crewjam/saml/xmlenc"
 	dsig "github.com/russellhaering/goxmldsig"
 )
 
@@ -25,9 +21,10 @@ import (
 //     validateAssertion then dereferenced: a nil-pointer panic.
 //
 // v0.5.2 fixes both. These tests pin that through the ACS, with assertions
-// the registered IdP really signed (and encrypted, as it does for Dilion's SP
-// metadata), so a downgrade or a library swap that reopens either hole fails
-// here. The vulndb record does not yet name v0.5.2 as fixed; see
+// the registered IdP really signed, so a downgrade or a library swap that
+// reopens either hole fails here. They are not encrypted: Dilion's SP metadata
+// publishes only a signing key (samlMetadata), so an IdP sends them in the
+// clear. The vulndb record does not yet name v0.5.2 as fixed; see
 // scripts/govulncheck-allow.txt.
 func TestSAMLACSRejectsMalformedSignedAssertions(t *testing.T) {
 	for _, tc := range []struct {
@@ -120,11 +117,11 @@ func mustFind(t *testing.T, el *etree.Element, path string) *etree.Element {
 }
 
 // respondTampered is respond, except that the assertion element passes
-// through tamper before the IdP signs it. It repeats what
-// IdpAuthnRequest.MakeAssertionEl does — sign enveloped, then encrypt to the
-// SP's certificate when its metadata offers one — because that method signs
-// the struct's own rendering, which can express neither a missing required
-// element in every position nor a foreign namespace.
+// through tamper before the IdP signs it. It repeats the signing half of
+// IdpAuthnRequest.MakeAssertionEl, because that method signs the struct's own
+// rendering, which cannot express a foreign namespace. MakeAssertionEl would
+// then encrypt to the SP's encryption key; Dilion's metadata offers none, so
+// there is nothing to repeat for that half.
 func (ti *samlTestIdP) respondTampered(t *testing.T, e *ssoEnv, redirectURL string,
 	session *saml.Session, tamper func(*etree.Element)) url.Values {
 	t.Helper()
@@ -160,25 +157,6 @@ func (ti *samlTestIdP) respondTampered(t *testing.T, e *ssoEnv, redirectURL stri
 	}
 
 	authnReq.AssertionEl = signed
-	if cert := spEncryptionCert(t, authnReq.SPSSODescriptor); cert != nil {
-		doc := etree.NewDocument()
-		doc.SetRoot(signed)
-		plain, err := doc.WriteToBytes()
-		if err != nil {
-			t.Fatal(err)
-		}
-		enc := xmlenc.OAEP()
-		enc.BlockCipher = xmlenc.AES128CBC
-		enc.DigestMethod = &xmlenc.SHA1
-		data, err := enc.Encrypt(cert, plain, nil)
-		if err != nil {
-			t.Fatalf("encrypt tampered assertion: %v", err)
-		}
-		data.CreateAttr("Type", "http://www.w3.org/2001/04/xmlenc#Element")
-		wrapped := etree.NewElement("saml:EncryptedAssertion")
-		wrapped.AddChild(data)
-		authnReq.AssertionEl = wrapped
-	}
 
 	if err := authnReq.MakeResponse(); err != nil {
 		t.Fatalf("IdP could not make the response: %v", err)
@@ -188,37 +166,4 @@ func (ti *samlTestIdP) respondTampered(t *testing.T, e *ssoEnv, redirectURL stri
 		t.Fatalf("IdP could not build the POST binding: %v", err)
 	}
 	return url.Values{"SAMLResponse": {form.SAMLResponse}, "RelayState": {form.RelayState}}
-}
-
-// spEncryptionCert is the certificate the IdP encrypts to, chosen as
-// crewjam/saml's getSPEncryptionCert does: the first key marked for
-// encryption, else the first unmarked one; nil when there is none.
-func spEncryptionCert(t *testing.T, sp *saml.SPSSODescriptor) *x509.Certificate {
-	t.Helper()
-	pick := func(use string) string {
-		for _, kd := range sp.KeyDescriptors {
-			if kd.Use == use && len(kd.KeyInfo.X509Data.X509Certificates) > 0 {
-				if data := kd.KeyInfo.X509Data.X509Certificates[0].Data; data != "" {
-					return data
-				}
-			}
-		}
-		return ""
-	}
-	data := pick("encryption")
-	if data == "" {
-		data = pick("")
-	}
-	if data == "" {
-		return nil
-	}
-	der, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(data), ""))
-	if err != nil {
-		t.Fatalf("decode SP certificate: %v", err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatalf("parse SP certificate: %v", err)
-	}
-	return cert
 }
