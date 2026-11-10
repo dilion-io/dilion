@@ -51,6 +51,7 @@ var volatileKeys = map[string]bool{
 	"code":      true, "code_challenge": true, "client_secret": true,
 	"csrf_token": true, "nonce": true, "secret": true, "qr_code": true,
 	"uri": true, "challenge": true, "public_key": true, "credential_id": true,
+	"codes": true, // MFA recovery codes: the plaintext set, random per generation
 	// timestamps
 	"created_at": true, "updated_at": true, "last_sign_in_at": true,
 	"confirmed_at": true, "email_confirmed_at": true, "phone_confirmed_at": true,
