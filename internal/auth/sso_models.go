@@ -206,8 +206,20 @@ type SAMLProvider struct {
 
 	NameIDFormat *string `json:"name_id_format,omitempty"`
 
+	// DedicatedScope scopes this provider's SP entity ID and ACS URL to its own
+	// id (/sso/{id}/saml/...) instead of the URLs every provider shares, for
+	// IdPs such as Entra that allow one application per SP entity ID. Set on
+	// create only: changing it changes the entity ID the IdP was configured
+	// with. NULL and false both mean shared.
+	DedicatedScope *bool `json:"dedicated_scope,omitempty"`
+
 	CreatedAt time.Time `json:"-"`
 	UpdatedAt time.Time `json:"-"`
+}
+
+// HasDedicatedScope is upstream's SAMLProvider.HasDedicatedScope.
+func (p SAMLProvider) HasDedicatedScope() bool {
+	return p.DedicatedScope != nil && *p.DedicatedScope
 }
 
 // SSODomain is one auth.sso_domains row (upstream models.SSODomain).
@@ -240,6 +252,15 @@ func (p *SSOProvider) IsEnabled() bool {
 	return p == nil || p.Disabled == nil || !*p.Disabled
 }
 
+// dedicatedScopeID is the id the provider's SP URLs are scoped to, or "" when
+// it uses the shared ones (upstream: SingleSignOn's dedicatedScopeID).
+func (p *SSOProvider) dedicatedScopeID() string {
+	if p.SAMLProvider.HasDedicatedScope() {
+		return p.ID
+	}
+	return ""
+}
+
 // samlRelayState is one auth.saml_relay_states row
 // (upstream models.SAMLRelayState). It is server-side state only and never
 // serialized to a client.
@@ -263,7 +284,7 @@ func (s *samlRelayState) IsExpired(now time.Time, validity time.Duration) bool {
 
 const ssoProviderColumns = `p.id::text, p.resource_id, p.disabled, p.created_at, p.updated_at,
 	s.id::text, s.entity_id, s.metadata_xml, s.metadata_url,
-	coalesce(s.attribute_mapping, '{}'::jsonb), s.name_id_format, s.created_at, s.updated_at`
+	coalesce(s.attribute_mapping, '{}'::jsonb), s.name_id_format, s.dedicated_scope, s.created_at, s.updated_at`
 
 const ssoProviderFrom = ` from auth.sso_providers p
 	join auth.saml_providers s on s.sso_provider_id = p.id `
@@ -278,7 +299,7 @@ func scanSSOProvider(row pgx.Row) (*SSOProvider, error) {
 	)
 	err := row.Scan(&p.ID, &rid, &p.Disabled, &createdAt, &updatedAt,
 		&p.SAMLProvider.ID, &p.SAMLProvider.EntityID, &p.SAMLProvider.MetadataXML, &metadataURL,
-		&attributeMapping, &nameIDFormat, &samlCreatedAt, &samlUpdatedAt)
+		&attributeMapping, &nameIDFormat, &p.SAMLProvider.DedicatedScope, &samlCreatedAt, &samlUpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -454,10 +475,10 @@ func insertSSOProvider(ctx context.Context, tx querier, p *SSOProvider, now time
 	if _, err := tx.Exec(ctx, `
 		insert into auth.saml_providers
 			(id, sso_provider_id, entity_id, metadata_xml, metadata_url,
-			 attribute_mapping, name_id_format, created_at, updated_at)
-		values ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7, $8, $8)`,
+			 attribute_mapping, name_id_format, dedicated_scope, created_at, updated_at)
+		values ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7, $8, $9, $9)`,
 		p.SAMLProvider.ID, p.ID, p.SAMLProvider.EntityID, p.SAMLProvider.MetadataXML,
-		p.SAMLProvider.MetadataURL, mapping, p.SAMLProvider.NameIDFormat, now); err != nil {
+		p.SAMLProvider.MetadataURL, mapping, p.SAMLProvider.NameIDFormat, p.SAMLProvider.DedicatedScope, now); err != nil {
 		return err
 	}
 

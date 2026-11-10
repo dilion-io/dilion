@@ -51,6 +51,14 @@ func init() {
 			// IP with its own SAML_ASSERTION limiter; Dilion folds it into the
 			// SSO limiter, which Config already exposes (GOTRUE_RATE_LIMIT_SSO).
 			r.With(a.limit(LimiterSSO)).Post("/saml/acs", a.handle(a.samlACS))
+
+			// The same two endpoints for a provider with a dedicated scope
+			// (SAMLProvider.DedicatedScope). The static "saml" segment above
+			// wins over {sso_provider_id}.
+			r.Route("/{sso_provider_id}/saml", func(r chi.Router) {
+				r.Get("/metadata", a.handle(a.samlMetadata))
+				r.With(a.limit(LimiterSSO)).Post("/acs", a.handle(a.samlACS))
+			})
 		})
 	})
 }
@@ -158,7 +166,7 @@ func (a *api) singleSignOn(w http.ResponseWriter, r *http.Request) error {
 		return internalServerError("Error parsing SAML Metadata for SAML provider").withInternal(err)
 	}
 
-	sp, err := a.newSAMLServiceProvider(ctx, entityDescriptor, false /* idpInitiated */)
+	sp, err := a.newSAMLServiceProvider(ctx, entityDescriptor, false /* idpInitiated */, ssoProvider.dedicatedScopeID())
 	if err != nil {
 		return err
 	}

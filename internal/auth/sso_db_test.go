@@ -179,9 +179,16 @@ func (e *ssoEnv) form(t *testing.T, path string, values url.Values) *httptest.Re
 // spMetadata reads this deployment's SP metadata through the real endpoint.
 func (e *ssoEnv) spMetadata(t *testing.T) *saml.EntityDescriptor {
 	t.Helper()
-	rec := e.do(t, http.MethodGet, "/sso/saml/metadata", nil, "")
+	return e.spMetadataAt(t, "/sso/saml/metadata")
+}
+
+// spMetadataAt is spMetadata from path, e.g. a dedicated scope's
+// /sso/{id}/saml/metadata.
+func (e *ssoEnv) spMetadataAt(t *testing.T, path string) *saml.EntityDescriptor {
+	t.Helper()
+	rec := e.do(t, http.MethodGet, path, nil, "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /sso/saml/metadata = %d; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("GET %s = %d; body = %s", path, rec.Code, rec.Body.String())
 	}
 	md, err := samlsp.ParseMetadata(rec.Body.Bytes())
 	if err != nil {
@@ -210,6 +217,9 @@ type samlTestIdP struct {
 	// sp is filled in per test run: the IdP has to be able to look up the SP
 	// metadata the AuthnRequest names.
 	sp *saml.EntityDescriptor
+	// spMetadataPath is where respond reads that metadata; "" is the shared
+	// /sso/saml/metadata.
+	spMetadataPath string
 }
 
 func newSAMLTestIdP(t *testing.T) *samlTestIdP {
@@ -276,7 +286,11 @@ func (ti *samlTestIdP) entityID() string { return ti.idp.MetadataURL.String() }
 // values an IdP would POST back to the ACS.
 func (ti *samlTestIdP) respond(t *testing.T, e *ssoEnv, redirectURL string, session *saml.Session) url.Values {
 	t.Helper()
-	ti.sp = e.spMetadata(t)
+	if ti.spMetadataPath != "" {
+		ti.sp = e.spMetadataAt(t, ti.spMetadataPath)
+	} else {
+		ti.sp = e.spMetadata(t)
+	}
 
 	u, err := url.Parse(redirectURL)
 	if err != nil {
