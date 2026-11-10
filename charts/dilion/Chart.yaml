@@ -5,7 +5,7 @@ type: application
 # Chart version. Bump on every change to the chart itself.
 version: 0.1.0
 # Default image tag (ghcr.io/dilion-io/dilion:<appVersion>). Release tags drop the "v".
-appVersion: "0.0.5"
+appVersion: "0.0.6"
 home: https://github.com/dilion-io/dilion
 sources:
   - https://github.com/dilion-io/dilion
