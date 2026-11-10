@@ -122,6 +122,8 @@ type CreateSSOProviderParams struct {
 
 	ResourceID *string `json:"resource_id,omitempty"`
 	Disabled   *bool   `json:"disabled,omitempty"`
+	// DedicatedScope is SAMLProvider.DedicatedScope; create only.
+	DedicatedScope *bool `json:"dedicated_scope,omitempty"`
 }
 
 // validate is upstream's CreateSSOProviderParams.validate. forUpdate relaxes the
@@ -154,6 +156,11 @@ func (p *CreateSSOProviderParams) validate(forUpdate bool) error {
 	default:
 		return badRequestError(ErrorCodeValidationFailed,
 			"name_id_format must be unspecified or one of %v", strings.Join(samlNameIDFormats, ", "))
+	}
+
+	if forUpdate && p.DedicatedScope != nil {
+		return badRequestError(ErrorCodeValidationFailed,
+			"dedicated_scope cannot be changed after the SSO provider is created, as doing so changes the entity ID presented to the Identity Provider")
 	}
 	return nil
 }
@@ -223,6 +230,7 @@ func (a *api) adminCreateSSOProvider(w http.ResponseWriter, r *http.Request) err
 			EntityID:         metadata.EntityID,
 			MetadataXML:      string(raw),
 			AttributeMapping: params.AttributeMapping,
+			DedicatedScope:   params.DedicatedScope,
 		},
 	}
 	if params.MetadataURL != "" {

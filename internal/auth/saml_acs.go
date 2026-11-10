@@ -26,6 +26,7 @@ import (
 
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
@@ -41,9 +42,13 @@ import (
 // signing certificate must not drift between gotrue and Dilion for the same
 // SITE_URL/key pair.
 func (a *api) samlMetadata(w http.ResponseWriter, r *http.Request) error {
+	scopeID, err := a.samlMetadataScope(r)
+	if err != nil {
+		return err
+	}
 	// idpInitiated=true here only because the SP is built without IdP metadata;
 	// it has no effect on the document.
-	sp, err := a.newSAMLServiceProvider(r.Context(), nil, true)
+	sp, err := a.newSAMLServiceProvider(r.Context(), nil, true, scopeID)
 	if err != nil {
 		return err
 	}
@@ -95,6 +100,36 @@ func (a *api) samlMetadata(w http.ResponseWriter, r *http.Request) error {
 	}
 	_, err = w.Write(metadataXML)
 	return err
+}
+
+// samlMetadataScope is upstream's loadSAMLDedicatedScopeID: "" on the shared
+// /sso/saml/metadata, else the {sso_provider_id} of /sso/{id}/saml/metadata,
+// which must name a provider that has a dedicated scope — other providers have
+// no endpoint of their own.
+func (a *api) samlMetadataScope(r *http.Request) (string, error) {
+	id := chi.URLParam(r, "sso_provider_id")
+	if id == "" {
+		return "", nil
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return "", notFoundError(ErrorCodeSSOProviderNotFound, "No such SSO provider")
+	}
+	ctx := r.Context()
+	pool, err := a.db(ctx)
+	if err != nil {
+		return "", err
+	}
+	p, err := findSSOProviderByID(ctx, pool, id)
+	if err != nil {
+		if isNoRows(err) {
+			return "", notFoundError(ErrorCodeSSOProviderNotFound, "No such SSO provider")
+		}
+		return "", internalServerError("Unable to find SSO provider by ID").withInternal(err)
+	}
+	if !p.SAMLProvider.HasDedicatedScope() {
+		return "", notFoundError(ErrorCodeSSOProviderNotFound, "SSO provider does not use a dedicated scope")
+	}
+	return p.ID, nil
 }
 
 // ---- IdP metadata ----------------------------------------------------------
@@ -193,11 +228,12 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 	relayStateURL, urlErr := url.ParseRequestURI(relayStateValue)
 
 	var (
-		entityID    string
-		initiatedBy string
-		redirectTo  string
-		requestIDs  []string
-		flowState   *oauthFlowState
+		entityID        string
+		initiatedBy     string
+		redirectTo      string
+		requestIDs      []string
+		flowState       *oauthFlowState
+		peekDestination string
 	)
 
 	switch {
@@ -275,6 +311,7 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		}
 		initiatedBy = "idp"
 		entityID = peek.Issuer.Value
+		peekDestination = peek.Destination
 		redirectTo = relayStateValue
 
 	default:
@@ -292,6 +329,20 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 	if !ssoProvider.IsEnabled() {
 		return notFoundError(ErrorCodeSSOProviderDisabled,
 			"SSO Provider assigned for this domain is currently disabled")
+	}
+
+	// The scope this request arrived on comes from the URL path alone, so the
+	// ACS URL the assertion is validated against is exactly the one the IdP
+	// posted to. Whether ssoProvider — found through an Issuer that, for an
+	// IdP-initiated flow, was peeked from unverified XML — may use that scope
+	// is checked only once the assertion has been validated, below.
+	scopeID := chi.URLParam(r, "sso_provider_id")
+	if scopeID != "" {
+		id, perr := uuid.Parse(scopeID)
+		if perr != nil {
+			return notFoundError(ErrorCodeSAMLIdPNotFound, "SSO Provider does not have a SAML connection at this ACS URL")
+		}
+		scopeID = id.String() // canonical form, as provider ids are stored and advertised
 	}
 
 	idpMetadata, err := parseSAMLMetadata([]byte(ssoProvider.SAMLProvider.MetadataXML))
@@ -332,9 +383,19 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	sp, err := a.newSAMLServiceProvider(ctx, idpMetadata, initiatedBy == "idp")
+	sp, err := a.newSAMLServiceProvider(ctx, idpMetadata, initiatedBy == "idp", scopeID)
 	if err != nil {
 		return err
+	}
+
+	// Upstream's ACS confusion check. Destination is optional on a Response,
+	// and IdPs often omit it for IdP-initiated flows, so its absence passes;
+	// but one that is present must name the endpoint this request reached, so
+	// a Response built for one ACS is not accepted on another. ParseResponse's
+	// SubjectConfirmationData Recipient check would catch it too; this does
+	// not rely on the library for it.
+	if initiatedBy == "idp" && peekDestination != "" && peekDestination != sp.AcsURL.String() {
+		return badRequestError(ErrorCodeValidationFailed, "SAML Response Destination does not match this SSO Provider's ACS URL")
 	}
 
 	// ParseResponse is what verifies the XML signature against the IdP's
@@ -349,6 +410,14 @@ func (a *api) handleSAMLACS(w http.ResponseWriter, r *http.Request) error {
 		}
 		return badRequestError(ErrorCodeValidationFailed, "SAML Assertion is not valid").withInternal(err)
 	}
+
+	// Only now that the assertion is validated: the provider must use exactly
+	// the scope it arrived on — a dedicated-scope provider its own endpoint,
+	// any other provider the shared one.
+	if scopeID != ssoProvider.dedicatedScopeID() {
+		return notFoundError(ErrorCodeSAMLIdPNotFound, "SSO Provider does not have a SAML connection at this ACS URL")
+	}
+
 	assertion := &samlAssertion{Assertion: spAssertion}
 
 	userID := assertion.UserID()

@@ -78,8 +78,10 @@ func samlExternalURL(cfg *Config) string {
 }
 
 // samlSPBaseURL is samlExternalURL as a *url.URL with the "sso/" suffix, i.e.
-// upstream's `u.Path += "sso/"`.
-func samlSPBaseURL(cfg *Config) (*url.URL, error) {
+// upstream's `u.Path += "sso/"`. A non-empty dedicatedScopeID adds
+// "<id>/", scoping the entity ID, metadata and ACS URLs crewjam/samlsp derives
+// from it to that provider (SAMLProvider.DedicatedScope).
+func samlSPBaseURL(cfg *Config, dedicatedScopeID string) (*url.URL, error) {
 	u, err := url.ParseRequestURI(samlExternalURL(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("auth: SAML external URL is not usable, check SITE_URL: %w", err)
@@ -88,6 +90,9 @@ func samlSPBaseURL(cfg *Config) (*url.URL, error) {
 		u.Path += "/"
 	}
 	u.Path += samlSPPathSuffix
+	if dedicatedScopeID != "" {
+		u.Path += dedicatedScopeID + "/"
+	}
 	return u, nil
 }
 
@@ -118,7 +123,8 @@ var samlKeyCache sync.Map // samlKeyCacheKey -> *samlKeyMaterial
 // The validation messages are upstream's, verbatim: an operator reading a
 // Dilion boot failure finds the same strings gotrue would have printed.
 func (a *api) samlKeys(ctx context.Context) (*samlKeyMaterial, error) {
-	base, err := samlSPBaseURL(a.site(ctx))
+	// The certificate names the host only: every scope shares one key pair.
+	base, err := samlSPBaseURL(a.site(ctx), "")
 	if err != nil {
 		return nil, internalServerError("Error building the SAML Service Provider URL").withInternal(err)
 	}
@@ -192,9 +198,11 @@ func deriveSAMLKeyMaterial(privateKey, host string) (*samlKeyMaterial, error) {
 //
 // idpInitiated is false for an SP-initiated flow (the assertion must be an
 // InResponseTo of an AuthnRequest we minted) and true only when the RelayState
-// cannot identify a request — see saml_acs.go.
-func (a *api) newSAMLServiceProvider(ctx context.Context, idp *saml.EntityDescriptor, idpInitiated bool) (*saml.ServiceProvider, error) {
-	base, err := samlSPBaseURL(a.site(ctx))
+// cannot identify a request — see saml_acs.go. dedicatedScopeID is "" for the
+// shared SP URLs, or the SSO provider id they are scoped to; the key pair is
+// the same either way.
+func (a *api) newSAMLServiceProvider(ctx context.Context, idp *saml.EntityDescriptor, idpInitiated bool, dedicatedScopeID string) (*saml.ServiceProvider, error) {
+	base, err := samlSPBaseURL(a.site(ctx), dedicatedScopeID)
 	if err != nil {
 		return nil, internalServerError("Error building the SAML Service Provider URL").withInternal(err)
 	}
