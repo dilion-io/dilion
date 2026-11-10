@@ -65,6 +65,8 @@ var conformancePairs = []conformancePair{
 	{"AccessTokenResponse", upstreamspec.AccessTokenResponseSchema{}, []any{AccessTokenResponse{}}},
 	{"Error", upstreamspec.ErrorSchema{}, []any{HTTPError{}, OAuthError{}}},
 	{"MFAFactor", upstreamspec.MFAFactorSchema{}, []any{Factor{}}},
+	{"MFARecoveryCodes", upstreamspec.MFARecoveryCodesSchema{}, []any{RecoveryCodesResponse{}}},
+	{"MFARecoveryCodesStatus", upstreamspec.MFARecoveryCodesStatusSchema{}, []any{RecoveryCodesResponse{}}},
 	{"SSOProvider", upstreamspec.SSOProviderSchema{}, []any{SSOProvider{}}},
 	{"SAMLAttributeMapping", upstreamspec.SAMLAttributeMappingSchema{}, []any{SAMLAttributeMapping{}}},
 	{"OAuthClient", upstreamspec.OAuthClientSchema{}, []any{OAuthClientResponse{}}},
@@ -135,6 +137,16 @@ var knownExtensions = map[string]string{
 	"SSOProvider.created_at": "upstream models.SSOProvider has `CreatedAt time.Time json:\"created_at\"`; the spec " +
 		"declares created_at on most schemas but not this one.",
 	"SSOProvider.updated_at": "upstream models.SSOProvider has `UpdatedAt time.Time json:\"updated_at\"`; same omission.",
+
+	// Upstream serves both recovery-code schemas from ONE struct,
+	// api.RecoveryCodesResponse (internal/api/recovery_codes.go), whose
+	// omitempty fields are left unset on the side the spec splits off.
+	"MFARecoveryCodes.remaining": "upstream RecoveryCodesResponse has `Remaining *int json:\"remaining,omitempty\"`, " +
+		"nil on generate/regenerate, so it never appears on this schema's responses.",
+	"MFARecoveryCodesStatus.codes": "upstream RecoveryCodesResponse has `Codes []string json:\"codes,omitempty\"`, " +
+		"empty on status, so it never appears on this schema's responses.",
+	"MFARecoveryCodesStatus.friendly_name": "upstream RecoveryCodesResponse has " +
+		"`FriendlyName string json:\"friendly_name,omitempty\"`, which status leaves empty.",
 }
 
 // ---- allow-list 3: fields that are not wire fields --------------------------

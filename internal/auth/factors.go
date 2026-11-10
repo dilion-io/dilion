@@ -7,6 +7,7 @@ package auth
 //	POST   /factors/{factor_id}/challenge  challenge  -> challenge id + expiry
 //	POST   /factors/{factor_id}/verify     verify     -> a NEW aal2 session envelope
 //	DELETE /factors/{factor_id}            unenroll   -> {id}
+//	       /factors/recovery-codes[/...]   recovery codes (recovery_codes.go)
 //
 // Only the TOTP factor type is implemented. `phone` and `webauthn` are answered
 // with upstream's "…_enroll_not_enabled" / "…_verify_not_enabled" 422, which is
@@ -39,6 +40,14 @@ func init() {
 			r.Use(a.requireAuthentication)
 			r.Route("/factors", func(r chi.Router) {
 				r.Post("/", a.handle(a.enrollFactor))
+				// recovery_codes.go. The static segment wins over {factor_id}.
+				r.Route("/recovery-codes", func(r chi.Router) {
+					r.Get("/", a.handle(a.recoveryCodesStatus))
+					r.Post("/", a.handle(a.recoveryCodesGenerate))
+					r.With(a.limit(LimiterVerify)).Post("/verify", a.handle(a.recoveryCodesVerify))
+					r.Post("/regenerate", a.handle(a.recoveryCodesRegenerate))
+					r.Delete("/", a.handle(a.recoveryCodesDelete))
+				})
 				r.Route("/{factor_id}", func(r chi.Router) {
 					// Upstream guards verify/challenge with their own
 					// limiters (GOTRUE_RATE_LIMIT_FACTOR_*); Config has no
@@ -551,61 +560,12 @@ func (a *api) finalizeFactorVerification(w http.ResponseWriter, r *http.Request,
 			newlyVerified = true
 		}
 
-		method, merr := factor.amrMethod()
-		if merr != nil {
-			return internalServerError("Error resolving AMR method").withInternal(merr)
-		}
-		if err := addAMRClaimToSession(ctx, tx, mc.sessionID, method, now); err != nil {
-			return internalServerError("Database error adding AMR claim").withInternal(err)
-		}
-
-		// The session is now aal2 and belongs to this factor.
-		if err := updateSessionAALAndFactor(ctx, tx, mc.sessionID, AAL2, &factor.ID); err != nil {
-			return internalServerError("Failed to update session").withInternal(err)
-		}
-
-		// A brand new refresh token is issued so the AAL1 token the client is
-		// holding can never be replayed into an AAL2 session (upstream
-		// updateMFASessionAndClaims / GrantRefreshTokenSwap).
-		current, err := findActiveRefreshTokenForSession(ctx, tx, mc.sessionID)
-		if err != nil && !isNoRows(err) {
-			return internalServerError("Error loading refresh token").withInternal(err)
-		}
-		next, err := newRefreshToken()
-		if err != nil {
-			return internalServerError("Error generating refresh token").withInternal(err)
-		}
-		parent := ""
-		if current != nil {
-			parent = current.Token
-			if err := revokeRefreshToken(ctx, tx, current.ID, now); err != nil {
-				return internalServerError("Error revoking refresh token").withInternal(err)
-			}
-		}
-		if err := insertRefreshToken(ctx, tx, next, mc.user.ID, parent, mc.sessionID, now); err != nil {
-			return internalServerError("Error creating refresh token").withInternal(err)
-		}
-
-		// Every OTHER session that never reached aal2 dies here.
-		if err := invalidateSessionsWithAALLessThan(ctx, tx, mc.user.ID, AAL2); err != nil {
-			return internalServerError("Failed to update sessions").withInternal(err)
-		}
 		if err := deleteUnverifiedFactors(ctx, tx, mc.user.ID, factor.FactorType); err != nil {
 			return internalServerError("Error removing unverified factors").withInternal(err)
 		}
 
-		user, uerr := a.loadUserWithIdentities(ctx, tx, mc.user.ID)
-		if uerr != nil {
-			return internalServerError("Database error loading user").withInternal(uerr)
-		}
-		if lerr := a.loadFactors(ctx, tx, user); lerr != nil {
-			return internalServerError("Database error loading factors").withInternal(lerr)
-		}
-
-		// "" derives the authentication method from the session, which is the
-		// factor verified moments ago: its AMR claim was written above and is
-		// now the session's newest.
-		resp, err = a.buildSessionResponse(ctx, tx, user, mc.sessionID, next, "")
+		var err error
+		resp, err = a.upgradeSessionToAAL2(ctx, tx, mc, factor, now)
 		return err
 	}); err != nil {
 		return err
@@ -617,6 +577,64 @@ func (a *api) finalizeFactorVerification(w http.ResponseWriter, r *http.Request,
 	}
 
 	return sendJSON(w, http.StatusOK, resp)
+}
+
+// upgradeSessionToAAL2 is upstream's updateMFASessionAndClaims followed by
+// InvalidateSessionsWithAALLessThan, for a factor whose credential check has
+// passed: it writes the factor's AMR claim, raises the session to aal2 and
+// binds it to the factor, rotates the refresh token so the aal1 token the
+// client holds can never be replayed into the aal2 session, drops every other
+// sub-aal2 session of the user and returns the new session envelope.
+func (a *api) upgradeSessionToAAL2(ctx context.Context, tx pgx.Tx, mc *mfaContext, factor *Factor, now time.Time) (*AccessTokenResponse, error) {
+	method, merr := factor.amrMethod()
+	if merr != nil {
+		return nil, internalServerError("Error resolving AMR method").withInternal(merr)
+	}
+	if err := addAMRClaimToSession(ctx, tx, mc.sessionID, method, now); err != nil {
+		return nil, internalServerError("Database error adding AMR claim").withInternal(err)
+	}
+
+	// The session is now aal2 and belongs to this factor.
+	if err := updateSessionAALAndFactor(ctx, tx, mc.sessionID, AAL2, &factor.ID); err != nil {
+		return nil, internalServerError("Failed to update session").withInternal(err)
+	}
+
+	current, err := findActiveRefreshTokenForSession(ctx, tx, mc.sessionID)
+	if err != nil && !isNoRows(err) {
+		return nil, internalServerError("Error loading refresh token").withInternal(err)
+	}
+	next, err := newRefreshToken()
+	if err != nil {
+		return nil, internalServerError("Error generating refresh token").withInternal(err)
+	}
+	parent := ""
+	if current != nil {
+		parent = current.Token
+		if err := revokeRefreshToken(ctx, tx, current.ID, now); err != nil {
+			return nil, internalServerError("Error revoking refresh token").withInternal(err)
+		}
+	}
+	if err := insertRefreshToken(ctx, tx, next, mc.user.ID, parent, mc.sessionID, now); err != nil {
+		return nil, internalServerError("Error creating refresh token").withInternal(err)
+	}
+
+	// Every OTHER session that never reached aal2 dies here.
+	if err := invalidateSessionsWithAALLessThan(ctx, tx, mc.user.ID, AAL2); err != nil {
+		return nil, internalServerError("Failed to update sessions").withInternal(err)
+	}
+
+	user, uerr := a.loadUserWithIdentities(ctx, tx, mc.user.ID)
+	if uerr != nil {
+		return nil, internalServerError("Database error loading user").withInternal(uerr)
+	}
+	if lerr := a.loadFactors(ctx, tx, user); lerr != nil {
+		return nil, internalServerError("Database error loading factors").withInternal(lerr)
+	}
+
+	// "" derives the authentication method from the session, which is the
+	// factor verified moments ago: its AMR claim was written above and is
+	// now the session's newest.
+	return a.buildSessionResponse(ctx, tx, user, mc.sessionID, next, "")
 }
 
 // ---- unenroll --------------------------------------------------------------
@@ -635,6 +653,10 @@ func (a *api) unenrollFactor(w http.ResponseWriter, r *http.Request) error {
 	if ferr != nil {
 		return ferr
 	}
+	if factor.IsRecoveryCodeFactor() {
+		return unprocessableEntityError(ErrorCodeValidationFailed,
+			"Recovery codes cannot be unenrolled with this endpoint, use DELETE /factors/recovery-codes")
+	}
 
 	if factor.IsVerified() {
 		aal, aerr := a.sessionAAL(ctx, pool, mc.sessionID)
@@ -647,6 +669,11 @@ func (a *api) unenrollFactor(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := a.inTx(ctx, func(tx pgx.Tx) error {
+		if factor.IsVerified() {
+			if err := a.guardRecoveryCodesSoleFactor(ctx, tx, mc.user.ID, factor.ID); err != nil {
+				return err
+			}
+		}
 		return a.downgradeAndDeleteFactor(ctx, tx, factor)
 	}); err != nil {
 		return err
