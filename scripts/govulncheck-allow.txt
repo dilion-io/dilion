@@ -1,0 +1,18 @@
+# Vulnerabilities `make vuln` (scripts/govulncheck-gate.sh) tolerates although
+# govulncheck reports them as called.
+#
+#   <OSV id> <module> <minimum version>
+#
+# An entry applies only while the module is at or above the minimum version,
+# so a downgrade fails again. Each entry needs a reason, and a test that holds
+# the reason true. Once govulncheck stops reporting the vulnerability, the gate
+# warns that the entry is stale; delete it then.
+
+# crewjam/saml: Subject.NameID matched <NameID> in any namespace, and
+# validateAssertion dereferenced a missing Subject / Conditions /
+# SubjectConfirmationData. v0.5.2 fixes both (namespaced tags, nil checks).
+# The record lists every version as affected because it was published before
+# v0.5.2 and names no fixed version: https://github.com/golang/vulndb/issues/6909
+# Held by TestSAMLACSRejectsMalformedSignedAssertions
+# (internal/auth/saml_assertion_shape_db_test.go).
+GO-2026-6909 github.com/crewjam/saml v0.5.2
