@@ -600,9 +600,8 @@ func (a *api) adminDeleteUser(w http.ResponseWriter, r *http.Request) error {
 		"soft":    params.ShouldSoftDelete,
 	})
 
-	// Upstream answers 200 with an empty JSON object. (openapi.yaml documents a
-	// UserSchema here, but the implementation sends `{}` — the implementation is
-	// what clients such as supabase-js are written against.)
+	// Upstream answers 200 with an empty JSON object, as its openapi.yaml has
+	// documented since supabase/auth 010c534 (it used to claim a UserSchema).
 	return sendJSON(w, http.StatusOK, map[string]any{})
 }
 
